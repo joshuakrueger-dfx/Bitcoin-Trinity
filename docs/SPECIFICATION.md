@@ -17,7 +17,7 @@
 
 1. Ein Rust-Kern (rust-bitcoin / BDK, über uniffi eingebunden) hält **alles Geheime**; die Schnittstelle zur UI-Schicht ist ausschließlich **PSBT rein → PSBT raus**, und weder Seed noch xpriv noch Passphrase überqueren jemals die JS-Bridge.
 2. Die Wallet ist ein `wsh(sortedmulti(2, A, B, C))` über **drei unabhängig erzeugte Master-Seeds** auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), von denen A und B als hardware-gebundene, verschlüsselte Blobs auf dem Telefon liegen (A: biometrischer Zugriff, B: Hardware-Key ⊕ Argon2id-Passphrase) und C als Papier-/Stahl-Backup offline bleibt.
-3. Ein Sendevorgang kostet den Nutzer im Regelfall **eine Geste**: Eine biometrische Auswertung öffnet A und B, und darüber liegt eine **im Rust-Kern durchgesetzte Ausgabegrenze** (Default: 20 % des Guthabens in 24 h, gedeckelt auf den Sat-Gegenwert von 500 €), oberhalb derer die Passphrase unumgehbar wird — das macht aus dem klassischen „entrissenes Handy = alles weg" ein „bis zur Quote weg, Rest mit Backup-B plus C rettbar".
+3. Ein Sendevorgang kostet den Nutzer im Regelfall **eine Geste**: Eine biometrische Auswertung öffnet A und B, und darüber liegt eine **im Rust-Kern durchgesetzte Ausgabegrenze** (Default: `clamp(20 % des Guthabens, 200 €, 500 €)` je 24 h, durchgesetzt auf gespeicherten Sat-Werten), oberhalb derer die Passphrase unumgehbar wird — das macht aus dem klassischen „entrissenes Handy = alles weg" ein „bis zur Quote weg, Rest mit Backup-B plus C rettbar".
 4. Der Code ist in einen **Watch-only-Kern ohne jeden Schlüsselzugriff** (Descriptor, Adressen, UTXOs, PSBT-Bau, Chain-Anbindung) und ein **Signing-Modul** getrennt — der Großteil der App ist damit ohne Schlüsselmaterial testbar und der Sparrow-/Core-Export fällt als Nebenprodukt an.
 5. Vor jeder Signatur prüft ein **vom Builder unabhängiges `verify`-Modul** das PSBT gegen den gespeicherten Descriptor neu — Change-Zugehörigkeit, Ableitungspfade, Gebührenplausibilität — weil die gefälschte Change-Adresse der eine reale Angriffsvektor ist, der nach allen anderen Maßnahmen übrig bleibt.
 6. Korrektheit wird nicht durch eigene Assertions behauptet, sondern durch **Differential Testing gegen Bitcoin Core 30.2** (`deriveaddresses`, `walletprocesspsbt`) und einen **Signet-Recovery-Durchlauf in CI** belegt.
@@ -1279,20 +1279,39 @@ Hier kommt die Sicherheit her, die die eine Geste kostet.
 pub struct SpendPolicy {
     /// Anteil des Guthabens im gleitenden Fenster.
     pub window_fraction: Option<Ratio>,        // Default: 20 %
-    /// Absoluter Deckel, IMMER in Sat. Wirkt zusammen mit der Quote als Minimum.
+    /// Sockel: so viel geht IMMER ohne Passphrase. In Sat.
+    pub window_floor_sat: Option<u64>,         // Default: Sat-Gegenwert von 200 €
+    /// Deckel: darüber IMMER Passphrase. In Sat.
     pub window_cap_sat: Option<u64>,           // Default: Sat-Gegenwert von 500 €
     pub window: Duration,                      // Default: 24 h
     /// Erste Signatur nach Neuinstallation verlangt immer die Passphrase.
     pub passphrase_on_first_use: bool,         // Default: true, nicht abschaltbar
 }
 
-/// Was ohne Passphrase ausgegeben werden darf.
+/// Was im Fenster ohne Passphrase ausgegeben werden darf.
 fn allowance(p: &SpendPolicy, balance_sat: u64) -> u64 {
     let by_fraction = p.window_fraction.map(|f| f * balance_sat).unwrap_or(u64::MAX);
-    let by_cap      = p.window_cap_sat.unwrap_or(u64::MAX);
-    by_fraction.min(by_cap)          // die STRENGERE der beiden gewinnt
+    let floor = p.window_floor_sat.unwrap_or(0);
+    let cap   = p.window_cap_sat.unwrap_or(u64::MAX);
+    debug_assert!(floor <= cap, "Sockel über Deckel — bei jedem Setzen zu erzwingen");
+    by_fraction.clamp(floor, cap)
+    // Natürlich zusätzlich durch das Guthaben selbst begrenzt.
 }
 ```
+
+**Die Kurve, die daraus entsteht** — und in der Praxis erlebt fast jeder Nutzer nur zwei der drei Bereiche:
+
+| Guthaben | Ohne Passphrase pro 24 h | Was greift |
+|---|---|---|
+| unter 1.000 € | **200 €** (bzw. das gesamte Guthaben, wenn kleiner) | **Sockel** |
+| 1.000 – 2.500 € | 200 – 500 €, gleitend | **die 20-%-Quote** |
+| über 2.500 € | **500 €** | **Deckel** |
+
+Für die Nutzerkommunikation heißt das: **„200 € am Tag ohne Passphrase, bei größerem Guthaben bis zu 500 €."** Die Quote sorgt nur für den weichen Übergang dazwischen und dafür, dass die Regel begründet statt willkürlich ist.
+
+> **Der Sockel ist eine bewusste Lockerung, und zwar die einzige im Entwurf.** Bei einem Guthaben unter 1.000 € kann ein Dieb bis zu 200 € abziehen — bei sehr kleinen Beständen also fast alles. Das ist gewollt: Wer 150 € hält, braucht keine Diebstahlsbremse, sondern eine Wallet, die sich benutzen lässt (T20). Ab dem Punkt, an dem echtes Geld im Spiel ist, greifen Quote und Deckel.
+
+**Zum Deckel als Tages- und nicht als Transaktionsgrenze:** Die 500 € gelten kumulativ pro 24 Stunden, nicht je Überweisung. Eine Grenze pro Transaktion würde nichts bewirken, weil ein Dieb stückelt — dieselbe Begründung wie oben, S29 testet es.
 
 `sign_b` prüft die Policy **vor** dem Entsperren von B und verlangt bei Überschreitung `SecretBytes`. Der geführte Zähler liegt im verschlüsselten Zustand des Kerns, nicht in einer JS-lesbaren Datei.
 
@@ -1300,7 +1319,7 @@ fn allowance(p: &SpendPolicy, balance_sat: u64) -> u64 {
 
 **Warum nicht empfängerbasiert statt betragsbasiert.** Naheliegend wäre: bekannte Empfänger ohne Passphrase, neue mit. Ein Dieb sendet immer an eine neue Adresse und wäre damit vollständig blockiert — bei einer kontobasierten Chain wäre das die überlegene Lösung. **Bei Bitcoin funktioniert es nicht:** Adressen wechseln bei jeder Zahlung, und das ist gewollt. Fast jeder Empfänger wäre „neu", die Passphrase käme ständig, und eine Wiedererkennung „gleicher Empfänger, neue Adresse" ist genau das, was Address Poisoning (T8) ausnutzt. Betragsbasiert ist hier die einzig tragfähige Variante.
 
-**Warum Quote *und* Deckel, und warum die strengere gewinnt.** Die Quote allein skaliert mit dem Guthaben — wer 10 BTC hält, verlöre bei 20 % zwei BTC. Der Deckel allein wäre bei kleinen Guthaben wirkungslos. Zusammen gilt: `min(20 % des Guthabens, Deckel)`.
+**Warum alle drei Größen zusammen.** Die Quote allein skaliert mit dem Guthaben — wer 10 BTC hält, verlöre bei 20 % zwei BTC; dagegen der **Deckel**. Die Quote allein ist bei kleinen Guthaben zugleich zu streng — bei 200 € wären 20 % nur 40 €, und die Passphrase käme bei jeder normalen Zahlung; dagegen der **Sockel**. Zusammen: `clamp(20 % des Guthabens, 200 €, 500 €)`.
 
 **Was die Grenze leistet — und wogegen sie nichts ausrichtet:**
 
@@ -1315,7 +1334,7 @@ Also: **eine echte Grenze gegen die zwei häufigsten realen Angriffe, keine gege
 
 #### 3.6.4 Die Eigenschaft, die daraus folgt und die kein Software-Wallet hat
 
-> Wird dir das entsperrte Telefon entrissen, kommt der Dieb an höchstens ein Fünftel deines Guthabens — und nie an mehr als 500 € am Tag. Für alles darüber braucht er die Passphrase. **Du nimmst dein Backup von B, holst C aus dem zweiten Aufbewahrungsort und schiebst den Rest in ein frisches Setup** — mit genau den zwei Schlüsseln, die der Dieb nicht hat.
+> Wird dir das entsperrte Telefon entrissen, kommt der Dieb an höchstens 200 € am Tag — bei größeren Beständen an ein Fünftel, aber nie an mehr als 500 €. Für alles darüber braucht er die Passphrase. **Du nimmst dein Backup von B, holst C aus dem zweiten Aufbewahrungsort und schiebst den Rest in ein frisches Setup** — mit genau den zwei Schlüsseln, die der Dieb nicht hat.
 
 Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne jede Handlungsoption. Das ist der konkrete, in einem Satz erklärbare Grund, warum sich der Umstieg lohnt — und er kostet den Nutzer eine einmalig eingestellte Zahl.
 
@@ -1330,8 +1349,9 @@ Damit das trägt, sind drei Dinge **nicht** mit der Signatur-Geste änderbar, so
 | Einstellung | Default | Bereich |
 |---|---|---|
 | Gleitendes Fenster | **20 % des Guthabens in 24 h** | 1 %–100 %, Fenster 1 h–7 d, oder aus |
-| Absoluter Deckel | **Sat-Gegenwert von 500 €** | frei in Sat oder Fiat setzbar, oder aus |
-| Kombination | `min(Quote, Deckel)` | die strengere gewinnt |
+| Sockel | **Sat-Gegenwert von 200 €** | frei in Sat oder Fiat, oder aus |
+| Deckel | **Sat-Gegenwert von 500 €** | frei in Sat oder Fiat, oder aus |
+| Kombination | `clamp(Quote, Sockel, Deckel)` | Sockel ≤ Deckel wird beim Setzen erzwungen |
 | Pro Transaktion | **keine** | entfällt bewusst, siehe oben |
 | Erste Nutzung nach Installation | Passphrase | **nicht abschaltbar** |
 
@@ -1350,18 +1370,27 @@ Der durchgesetzte Wert ist **immer** eine Sat-Zahl im verschlüsselten Kernzusta
 
 **Neuverankerung bei Kursbewegung.** Steigt der Kurs, entspricht der gespeicherte Sat-Deckel real weniger Euro; fällt er, entsprechend mehr. Die App weist darauf hin, sobald die Abweichung eine Schwelle überschreitet („Dein Tagesdeckel entspricht jetzt etwa 900 € statt 500 € — anpassen?"). Dabei gilt:
 
-- **Deckel senken** (in Sat) — jederzeit ohne Passphrase. Eine Verschärfung ist nie ein Risiko.
-- **Deckel anheben** (in Sat) — **verlangt die Passphrase.** Es ist eine Lockerung der Policy und fällt unter dieselbe Regel wie jede andere (3.6.4).
+- **Sat-Wert senken** — jederzeit ohne Passphrase. Eine Verschärfung ist nie ein Risiko.
+- **Sat-Wert anheben** — **verlangt die Passphrase.** Es ist eine Lockerung der Policy und fällt unter dieselbe Regel wie jede andere (3.6.4).
 
-Diese Asymmetrie ist der Kern: Ein Dieb kann die Grenze nicht durch Warten auf einen Kursverfall oder durch eine manipulierte Neuverankerung weiten.
+Das gilt für **Sockel und Deckel gleichermaßen**, und die Richtungen gehen dabei sauber auf:
+
+| Kursbewegung | Der gespeicherte Sat-Wert entspricht | Anpassung wäre | Passphrase? |
+|---|---|---|---|
+| Kurs **steigt** | mehr Euro als gewollt → Grenze zu weit | Sat-Wert **senken** | ✅ nein — die sichere Richtung ist frei |
+| Kurs **fällt** | weniger Euro als gewollt → Grenze zu streng | Sat-Wert **anheben** | 🔒 ja |
+
+Diese Asymmetrie ist der Kern: Ein Dieb kann die Grenze weder durch Warten auf eine Kursbewegung noch durch eine manipulierte Neuverankerung weiten — und die einzige Richtung, in der Nichtstun schadet, ist die, die ohnehin keine Passphrase kostet.
 
 **Woher der Kurs kommt.** Kursquelle ist **optional und standardmäßig aus**. Wer sie nutzt, erfährt vorher, was sie kostet: Der Anbieter lernt die IP und dass von dort eine Bitcoin-Wallet nach dem Kurs fragt — dieselbe Kategorie von Preisgabe wie ein fremder Electrum-Server (1.6), und ebenso deutlich zu kennzeichnen. Ohne konfigurierte Quelle setzt der Nutzer den Deckel direkt in Sat.
 
 **Wann gefragt wird.** Nicht im Onboarding — bei leerer Wallet kann niemand sinnvoll beantworten, wie hoch ein Tagesdeckel sein soll. Stattdessen **beim ersten Mal, an dem die Grenze tatsächlich greift**: Der Nutzer steht davor, versteht die Frage und kann sie beantworten. Bis dahin gilt der Default aus der Tabelle oben.
 
+**Invariante bei jedem Setzen:** `Sockel ≤ Deckel`. Wird der Sockel über den Deckel gehoben oder der Deckel unter den Sockel gesenkt, wird die Eingabe abgelehnt statt stillschweigend zurechtgebogen — eine vertauschte Klammer wäre sonst eine lautlose Aufhebung der Grenze.
+
 **Plausibilitätsprüfung bei jeder Verankerung**, auch wenn der Kurs nur zum Setzen dient: Ein Kurs außerhalb eines fest einkompilierten Plausibilitätsbereichs oder mit einem Sprung von mehr als einer Größenordnung gegenüber dem zuletzt bekannten Wert wird abgelehnt, nicht verrechnet. Kostet nichts und schließt den gröbsten Manipulationsversuch aus.
 
-> **Bekannte Konsequenz, die eine spätere Entscheidung braucht (O17):** Bei kleinen Guthaben greift die 20-%-Quote früh — bei 200 € Guthaben sind das 40 €, und eine Zahlung darüber verlangt die Passphrase. Das absolute Risiko ist dort gering, die Reibung aber real. Möglicher Ausgleich wäre ein Sockelbetrag („bis X immer ohne Passphrase"), der die Quote nach unten begrenzt. Ich habe ihn **nicht** eingebaut, weil er nicht Teil der getroffenen Entscheidung war; er steht als O17 zur Entscheidung.
+> **Der Sockel unterliegt derselben Verankerung wie der Deckel.** Beide sind Fiat-Eingaben, die einmalig in Sat umgerechnet und danach ausschließlich als Sat-Werte durchgesetzt werden. Für den Sockel ist die Asymmetrie besonders wichtig: Ihn anzuheben weitet die Grenze für **jedes** Guthaben und ist damit die wirksamste denkbare Lockerung — sie verlangt die Passphrase.
 
 **„Immer fragen"** stellt den Zustand vor dieser Entscheidung her — Passphrase bei jedem Send, zwei echte Faktoren. Das bleibt für alle verfügbar, die es wollen, und ist mit der Bedienbarkeitsarbeit aus 6.2.1 auf 10–15 Sekunden gebracht. Es ist nicht der Default, weil es dem Maßstab aus 0.1 widerspricht.
 
@@ -1382,7 +1411,7 @@ Diese Asymmetrie ist der Kern: Ein Dieb kann die Grenze nicht durch Warten auf e
 | **T3** | **Malware ohne Root/Jailbreak**, andere App auf demselben Gerät | keine | ✅ **Ja.** iOS/Android-Sandbox trennt Prozessspeicher und Dateisystem; `…ThisDeviceOnly` + SE/StrongBox verhindern KEK-Export; `blob_*` liegt in der App-Sandbox. Die Kette bricht an der OS-Prozessisolation. | Eine Kernel-Lücke oder ein Sandbox-Escape hebt das auf. Dann gilt T4b. |
 | **T4a** | **Kompromittierte JS-Schicht** — bösartige npm-Abhängigkeit, ohne native Codeausführung | keine direkt | ✅ **Ja, und das ist der wahrscheinlichste Supply-Chain-Weg bei React Native.** Die JS-Schicht sieht kein Schlüsselmaterial (1.3), kann die Ausgabegrenze weder lesen noch umgehen (3.6.3) und kann kein manipuliertes PSBT durchbringen (Verifier, 1.5) — der Bestätigungsdialog wird nativ aus dem `PsbtVerdict` gerendert. | Sie kann **täuschen**, nicht stehlen: eine falsche Adresse anzeigen. Dagegen der native Dialog (6.2) und das Adressbuch. |
 | **T4b** | **Kompromittiertes Telefon** — native Codeausführung im App-Kontext, Jailbreak/Root, Zero-Day | **A und B** | ❌ **Nein.** Der Angreifer wartet die Biometrie-Freigabe ab und liest beide Schlüssel im Moment der Signatur. Rust-Kern, `zeroize` und Hardware-Bindung **verkleinern das Zeitfenster**, schließen es aber nicht. Die Ausgabegrenze hilft hier **nicht** — wer im Prozess Code ausführt, umgeht jede App-Politik. | 🔴 **Vollständiger Verlust. Explizit nicht abgedeckt** — genau wie bei jedem Single-Sig-Wallet auf demselben Telefon; wir sind hier gleichauf, nicht schlechter. Einzige echte Gegenmaßnahme: B auf externe Hardware (6.6). |
-| **T5a** | **Entrissenes, entsperrtes Telefon** ohne Kenntnis der Passphrase — der häufigste reale Angriff auf Handy-Wallets | A und B, begrenzt | ⚠️ **Teilweise, und genau hier liegt der Hauptgewinn gegenüber Single-Sig.** Der Dieb kann bis zur `SpendPolicy`-Grenze ausgeben (Default `min(20 % des Guthabens, 500 €)` in 24 h). Darüber verlangt der **Rust-Kern** die Passphrase — die Kette bricht in `sign_b`, bevor B entsperrt wird. Policy abschalten geht ebenfalls nur mit Passphrase (3.6.4). | ⚠️ **Verlust bis zur Quote.** Der Rest ist rettbar: Backup-B plus C in ein frisches Setup sweepen, mit genau den zwei Schlüsseln, die der Dieb nicht hat. **Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.** Quote nutzerseitig auf „immer fragen" stellbar (3.6.5). |
+| **T5a** | **Entrissenes, entsperrtes Telefon** ohne Kenntnis der Passphrase — der häufigste reale Angriff auf Handy-Wallets | A und B, begrenzt | ⚠️ **Teilweise, und genau hier liegt der Hauptgewinn gegenüber Single-Sig.** Der Dieb kann bis zur `SpendPolicy`-Grenze ausgeben (Default `clamp(20 % des Guthabens, 200 €, 500 €)` in 24 h — praktisch also 200 € bei kleinen und 500 € bei großen Beständen). Darüber verlangt der **Rust-Kern** die Passphrase — die Kette bricht in `sign_b`, bevor B entsperrt wird. Policy abschalten geht ebenfalls nur mit Passphrase (3.6.4). | ⚠️ **Verlust bis zur Quote.** Der Rest ist rettbar: Backup-B plus C in ein frisches Setup sweepen, mit genau den zwei Schlüsseln, die der Dieb nicht hat. **Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.** Quote nutzerseitig auf „immer fragen" stellbar (3.6.5). |
 | **T5b** | **Diebstahl mit beobachteter Passphrase** (Shoulder-Surfing, Kamera, Nötigung) + entsperrbares Gerät | **A und B** | ❌ **Nein bei Software-B.** Wer das entsperrte Gerät und die Passphrase hat, hat beide Schlüssel und kann zusätzlich die Ausgabegrenze abschalten. ✅ **Ja bei Hardware-B:** B liegt dann gar nicht auf dem Telefon; der Angreifer braucht zusätzlich das physische Gerät **und** dessen PIN, die ein Secure Element mit Wipe nach N Fehlversuchen durchsetzt (6.6.1). | 🔴 **Vollständiger Verlust bei Software-B.** Teilminderungen: Screenshot-Sperre und keine Zeichenvorschau auf dem Eingabescreen, kein Autofill — und die Passphrase wird durch E7 **seltener** eingegeben, was die Gelegenheiten zum Mitlesen reduziert. Ein Duress-Wallet ist **nicht** vorgesehen (Zustand, gestrichen). |
 | **T6** | **Manipulierte Change-Adresse** — kompromittierter Builder oder JS-Schicht leitet Change an den Angreifer | keine (Schlüssel bleiben sicher) | ✅ **Ja, das ist der Kernzweck von `trinity-verify`.** Die Kette bricht bei V3/V4: Jeder Output, der weder ein erklärter Empfänger noch eine **unabhängig aus dem gespeicherten Descriptor abgeleitete** Change-Adresse ist, führt zur Ablehnung **vor** jedem Schlüsselzugriff. Da der Verifier weder `miniscript` noch den Builder-Code nutzt, kann sich ein Builder-Bug nicht selbst bestätigen. | Ein Angreifer, der zusätzlich `descriptor.json` **und** `trinity-verify` ersetzt, gewinnt — das ist aber bereits T4b oder T9. Restrisiko: ein Bug im eigenen Parser. Gegenmaßnahme: Differential Testing gegen Core (5.1). |
 | **T7** | **Manipulierte Empfängeradresse** — JS-Schicht zeigt X, PSBT enthält Y | keine | ✅ **Weitgehend.** Die Kette bricht an der **nativen** Bestätigungsanzeige: der Dialog wird aus dem `PsbtVerdict` des Rust-Verifiers gerendert, nicht aus JS-State. Der Nutzer sieht, was tatsächlich im PSBT steht. | Der Nutzer muss die Adresse **lesen**. Gegenmaßnahme: Anzeige in Vierergruppen, erste und letzte 8 Zeichen hervorgehoben, plus ein Adressbuch mit Wiedererkennung bekannter Empfänger. |
@@ -1506,7 +1535,9 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **S27** | **Ein-Gesten-Send** unterhalb der Quote: vom Bestätigen bis zum Broadcast | **Genau ein** biometrischer Prompt. Zwei Prompts sind ein Fehlschlag — dann greift die Kontext-Wiederverwendung (iOS) bzw. das Zeitfenster (Android) nicht. Gesamtdauer ≤ 5 s. |
 | **S28** | **Ausgabegrenze greift:** Transaktion über der Quote ohne Passphrase | `SignError::SpendLimitExceeded`, **und** Mock-Assertion, dass weder `unwrap_kek(A)` noch `unwrap_kek(B)` aufgerufen wurde. Kein Biometrie-Prompt erscheint. |
 | **S29** | **Fenstergrenze greift kumulativ:** viele kleine Transaktionen, bis das 24-h-Fenster ausgeschöpft ist | Ab Überschreitung wird die Passphrase verlangt. **Der Test belegt, dass Stückelung nicht hilft** — genau deshalb gibt es keine Transaktionsgrenze. Zähler überlebt App-Neustart und Gerätereboot und lässt sich nicht durch Löschen JS-lesbarer Dateien zurücksetzen. |
-| **S29b** | **`min(Quote, Deckel)`:** Guthaben so wählen, dass einmal die Quote und einmal der Deckel strenger ist | In beiden Fällen greift die strengere Grenze. Grenzfall Quote == Deckel getestet. |
+| **S29b** | **`clamp(Quote, Sockel, Deckel)`:** Guthaben über alle drei Bereiche variieren — unter 1.000 €, zwischen 1.000 und 2.500 €, über 2.500 € | In jedem Bereich greift die richtige Größe. Grenzfälle bei exakt 1.000 € und 2.500 € getestet, ebenso Guthaben **kleiner als der Sockel** (dann begrenzt das Guthaben selbst) und `Sockel == Deckel`. |
+| **S29f** | **Invariante `Sockel ≤ Deckel`:** Sockel über den Deckel setzen, Deckel unter den Sockel senken | Beides wird abgelehnt, nicht zurechtgebogen. Auch direkt über die FFI-Fassade geprüft. |
+| **S29g** | **Sockel anheben ohne Passphrase** versuchen | Wird abgelehnt. Der Sockel ist die wirksamste Lockerung überhaupt, weil er für jedes Guthaben gilt — er unterliegt derselben Asymmetrie wie der Deckel. |
 | **S29c** | **Kursmanipulation:** Kursquelle liefert „1 BTC = 1 €", „1 BTC = 10⁹ €", einen Sprung um mehrere Größenordnungen, gar nichts, oder eine Zeitüberschreitung | In **allen** Fällen bleibt die durchgesetzte Sat-Grenze unverändert. Der Plausibilitätsfilter lehnt ab statt zu verrechnen. Es findet zur Signaturzeit **nachweislich kein** Netzwerkabruf statt (Assertion auf dem Netzwerk-Mock). |
 | **S29d** | **Neuverankerung asymmetrisch:** Deckel in Sat senken und anheben | Senken gelingt ohne Passphrase, Anheben wird ohne Passphrase abgelehnt. Auch direkt über die FFI-Fassade geprüft, nicht nur über die UI. |
 | **S29e** | **Signatur im Flugmodus** unterhalb der Grenze | Läuft vollständig durch. Die Ausgabegrenze hat keine Netzwerkabhängigkeit. |
@@ -1814,7 +1845,7 @@ Der naheliegende Einwand gegen Hardware-B lautet: dann kann eben das Gerät gest
 | ~~**O1**~~ | ~~Wo wird C erzeugt?~~ | — | — | ✅ **Entschieden (E6):** Nutzer wählt bei der Erstellung; Hardware-Signer ist hervorgehobener Default, in-App bleibt möglich. Umgesetzt in 2.2.5 und 2.7. |
 | ~~**O2**~~ | ~~Zusatzentropie verpflichtend?~~ | — | — | ✅ **Entschieden (E3): durchgehend optional**, auch für C — abweichend von meiner Empfehlung. Konsequenz ist in T10 und 4.2 Punkt 8 dokumentiert: Wer für alle drei Schlüssel überspringt und C in der App erzeugt, ist gegen den Coldcard-Fehlertyp ungeschützt. Die App macht das an der Übersprungstelle sichtbar und blockiert nicht. |
 | ~~**O15**~~ | ~~Default-Grenze der `SpendPolicy`~~ | — | — | ✅ **Entschieden: `min(20 % des Guthabens, 500 €)` je 24 h**, keine Transaktionsgrenze. Umgesetzt in 3.6.3 und 3.6.5. Die Zahl bleibt im Nutzertest zu überprüfen (5.5, Punkt 15) — sie ist der einzige Parameter des Entwurfs, der Sicherheit und Bedienbarkeit direkt gegeneinander stellt. |
-| **O17** | Sockelbetrag für kleine Guthaben | (a) keiner (aktuell) · (b) fester Sockel, z.B. 50 € · (c) im Nutzertest ermitteln | Bei 200 € Guthaben sind 20 % nur 40 €; die Passphrase käme auch bei normalen Zahlungen. Absolutes Risiko dort gering, Reibung real — und Reibung ist eine Kostenposition (T20). | **(c).** Ein Sockel ist plausibel, aber die Höhe aus dem Bauch zu setzen wiederholt genau den Fehler, den O15 vermeiden sollte. Im Nutzertest mit erheben, bis dahin (a). |
+| ~~**O17**~~ | ~~Sockelbetrag für kleine Guthaben~~ | — | — | ✅ **Entschieden: 200 €.** Zusammen mit Quote und Deckel ergibt sich `clamp(20 %, 200 €, 500 €)`. Umgesetzt in 3.6.3; im Nutzertest (5.5, Punkt 15) mit zu überprüfen, weil der Sockel die einzige bewusste Lockerung des Entwurfs ist. |
 | ~~**O16**~~ | ~~Absoluter Deckel zusätzlich zur Quote?~~ | — | — | ✅ **Entschieden: ja, 500 € als Default.** Der Kurs setzt die Grenze einmalig, durchgesetzt wird ausschließlich ein gespeicherter Sat-Wert — Herleitung und Manipulationsschutz in 3.6.6. Gefragt wird beim ersten Greifen der Grenze, nicht im Onboarding. |
 | **O13** | Umfang der Zusatzentropie-Quellen in v1 | (a) nur Würfel · (b) Würfel + Münzen + Karten · (c) zusätzlich Klasse-B-Sensorquellen | Jede Quelle ist eigener Code, eigene kanonische Kodierung und eigene Testvektoren. Klasse B bringt keine anrechenbaren Bit und verleitet zu falscher Sicherheit (2.2.1). | **(b).** Würfel, Münzen und Karten sind alle drei zählbar, teilen dieselbe ASCII-Kodierungslogik und decken die realistischen Fälle ab („ich habe keine Würfel, aber ein Kartendeck"). Klasse B **nicht in v1** — der Nutzen ist null anrechenbare Bit, das Risiko ist ein Fortschrittsbalken, der lügt. |
 | **O14** | BLE-Transport: Reihenfolge BitBox02 Nova vs. Ledger | (a) BitBox zuerst · (b) Ledger zuerst · (c) parallel | `bitbox-api 0.13.0` ist aktuell gepflegt; für Ledger existiert **kein** Rust-Crate auf App-Ebene, BIP-388-Registrierung und Signatur wären selbstgeschriebene APDU-Sequenzen ohne gepflegte Referenz (2.7.6). | **(a) BitBox02 Nova zuerst.** Erst klären, ob `bitbox-api` den Whisper-BLE-Transport abdeckt (Anhang B, Punkt 8). Ledger danach, mit eigenem Review-Budget für den APDU-Code. |
