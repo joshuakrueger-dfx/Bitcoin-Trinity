@@ -1,0 +1,127 @@
+# cargo-deny — Supply-Chain-Gates (docs/SPECIFICATION.md §1.7)
+#
+# Läuft in CI bei jedem Push. Rot bricht den Build.
+
+[graph]
+all-features = false
+
+# ---------------------------------------------------------------------------
+# Lizenzen: Allowlist, nicht Denylist.
+#
+# Eine unbekannte Lizenz bricht den Build, statt durchzurutschen. Anforderung
+# aus dem Auftrag: keine Lizenzgebühren, kein kommerzielles SDK, kein Dienst mit
+# laufenden Kosten im Signatur- oder Chain-Pfad (Freigabekriterium 9b).
+# ---------------------------------------------------------------------------
+[licenses]
+# Permissiv — keine Auflagen über die Namensnennung hinaus, keine Gebühren.
+allow = [
+    "MIT",
+    "MITNFA",                          # MIT + "no false attribution", via hex_lit
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "0BSD",
+    "BSL-1.0",                         # Boost, via ryu
+    "BlueOak-1.0.0",                   # via minicbor (ur, QR-Transport)
+    "CC0-1.0",                         # rust-bitcoin, secp256k1, miniscript
+    "Unicode-3.0",
+    "Unlicense",                       # via memchr
+    "Zlib",
+
+    # ── Datei-Copyleft, bewusst zugelassen ────────────────────────────────
+    # MPL-2.0 deckt uniffi ab, und uniffi trägt Entscheidung E1 (die
+    # FFI-Vertrauensgrenze). Die Auflage wirkt auf DATEIEBENE: wer eine
+    # MPL-Datei ändert, veröffentlicht diese Datei unter MPL. Sie greift NICHT
+    # auf die übrige Anwendung durch, anders als GPL/AGPL, und sie kostet
+    # nichts. Da wir uniffi verwenden statt es zu ändern, entsteht keine
+    # Verpflichtung über das ohnehin quelloffene Projekt hinaus.
+    #
+    # ⚠️ Wird eine uniffi-Datei je gepatcht, ist diese Datei zu veröffentlichen.
+    #    Das ist im PR zu vermerken; ein Fork von uniffi braucht eine
+    #    ausdrückliche Entscheidung.
+    "MPL-2.0",
+]
+
+# Ausdrücklich NICHT zugelassen und ohne Einzelfallprüfung abzulehnen:
+# GPL-*, AGPL-*, SSPL-*, BUSL-*, kommerzielle Lizenzen und alles mit
+# Nutzungsgebühr. Projektweites Copyleft ist mit einer proprietär
+# auslieferbaren Mobil-App unvereinbar; eine Gebühr erzwänge eine
+# Serverabhängigkeit, die der Auftrag ausschließt.
+confidence-threshold = 0.93
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"          # keine "*"-Versionen
+deny = [
+    # miniscript darf NICHT in trinity-verify landen. Der Verifier leitet
+    # unabhängig ab; nutzte er dieselbe Bibliothek wie der Builder, bestätigte
+    # sich ein Parser-Bug selbst (SPECIFICATION.md §1.5, Entscheidung E2).
+    # `wrappers` erlaubt miniscript ausschliesslich als transitive Abhaengigkeit dieser
+    # Crates. Ein direkter Eintrag in trinity-verify bricht damit den Build.
+    # (`deny-multiple-versions` darf hier nicht zusaetzlich stehen — cargo-deny
+    #  lehnt die Kombination ab; Mehrfachversionen deckt `multiple-versions = "deny"` ab.)
+    { name = "miniscript", wrappers = ["bdk_wallet", "bdk_chain", "trinity-watch"] },
+
+    # hwi wickelt das Python-HWI und braucht eine Python-Laufzeit — auf
+    # Mobilgeräten unbrauchbar (SPECIFICATION.md §2.7.4).
+    { name = "hwi" },
+
+    # Kein Logging in den Secret-Crates. Ein versehentliches Debug-Log im
+    # Signaturpfad ist ein Leck (SPECIFICATION.md §2.5).
+    # Stand WP-00: log kommt ausschließlich über bbqr (QR-Transport) herein und
+    # damit NICHT in den Signaturpfad. Weitere Wrapper werden eingetragen, wenn
+    # M1/M5 die Backends anbinden — ein unbenutzter Wrapper ist eine Warnung
+    # wert, kein Vorrat.
+    { name = "log", wrappers = ["bbqr"] },
+]
+
+# Akzeptierte Mehrfachversionen. JEDER Eintrag braucht eine Begründung, und die
+# Liste wird bei jedem Release gereviewt — wächst sie, ist das ein Befund.
+skip = [
+    # ur 0.5.2 nutzt bitcoin_hashes 1.x für die UR-Kodierung, während der
+    # bitcoin-0.32-Baum auf 0.14 steht. Betrifft AUSSCHLIESSLICH
+    # trinity-transport (QR-Transport) und liegt damit außerhalb des
+    # Signaturpfads — dort wandern nur PSBTs und xpubs, nichts Geheimes.
+    # Auflösung erwartet, sobald bdk_wallet auf rust-bitcoin 0.33 geht.
+    { name = "bitcoin_hashes", version = "=1.2.0" },
+
+    # argon2 0.5.3 zieht über password-hash → rand_core 0.6 ein getrandom 0.2.
+    # Unsere eigene Entropie ruft getrandom 0.4.3 direkt auf (WP-30); alle
+    # Versionen bedienen denselben OS-Syscall. Auflösung mit argon2 0.6.
+    # ur 0.5.2 zieht über rand_xoshiro ein rand_core 0.10, während der
+    # bdk/argon2-Baum auf 0.6 steht.
+    #
+    # ⚠️ Zur Einordnung, weil ein PRNG in einer Bitcoin-Wallet Aufmerksamkeit
+    #    verdient: rand_xoshiro dient der Fountain-Kodierung animierter
+    #    QR-Codes (UR), NICHT der Schlüssel- oder Nonce-Erzeugung. Es sitzt in
+    #    trinity-transport, außerhalb des Signaturpfads (scripts/dep_budget.py
+    #    zählt es nicht mit). Entropie kommt ausschließlich aus WP-30
+    #    (OS-CSPRNG + Zusatzquelle), Nonces aus RFC 6979 über libsecp256k1.
+    { name = "rand_core", version = "=0.10.1" },
+]
+
+skip-tree = [
+    # Nur Test-Werkzeuge. Nicht im ausgelieferten Artefakt.
+    { name = "proptest", depth = 5 },
+    { name = "trybuild", depth = 5 },
+]
+
+# ---------------------------------------------------------------------------
+# Advisories
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "deny"
+ignore = []     # jede Ausnahme braucht einen Kommentar mit Begründung und Datum
+
+# ---------------------------------------------------------------------------
+# Quellen: ausschließlich crates.io, und der Build zieht aus vendor/ (WP-04)
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

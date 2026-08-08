@@ -1,0 +1,67 @@
+# BTC Trinity — Workspace
+#
+# Alle Versionen sind exakt gepinnt (`=`), nicht als Bereich. Begründung und der
+# vollständige, gegen die Registry aufgelöste Stand stehen in docs/SPECIFICATION.md §0.3.
+#
+# WICHTIG: "neueste Version" ist hier die falsche Regel. bdk_wallet 3.1.0 deklariert
+# miniscript ^12.3.5 und bitcoin ^0.32.8. Wer miniscript 13.x oder secp256k1 0.31.x
+# direkt aufnimmt, linkt zwei Kopien von libsecp256k1 und bekommt inkompatible Typen
+# an den Modulgrenzen. secp256k1 wird deshalb NICHT direkt deklariert — es kommt
+# transitiv über bitcoin 0.32 als 0.29.x.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Amoxidx/BTC-Trinity-Save-"
+
+[workspace.dependencies]
+# --- Bitcoin-Kern (Versionen aus SPECIFICATION.md §0.3) ---
+bitcoin      = { version = "=0.32.11", default-features = false, features = ["std", "serde"] }
+miniscript   = { version = "=12.3.7", default-features = false, features = ["std"] }
+bdk_wallet   = { version = "=3.1.0" }
+bdk_chain    = { version = "=0.23.3" }
+bdk_core     = { version = "=0.6.3" }
+
+# --- Chain-Backends ---
+bdk_electrum     = { version = "=0.24.0" }
+bdk_bitcoind_rpc = { version = "=0.22.0" }
+bdk_kyoto        = { version = "=0.17.0" }
+
+# --- Kryptografie und Geheimnisbehandlung ---
+argon2    = { version = "=0.5.3" }
+zeroize   = { version = "=1.9.0", features = ["derive"] }
+getrandom = { version = "=0.4.3" }
+subtle    = { version = "=2.6.1" }          # konstantzeitiger Vergleich, WP-35
+bip39     = { version = "=2.2.2" }
+
+# --- Hardware-Transport (M5) ---
+bbqr = { version = "=0.5.0" }
+ur   = { version = "=0.5.2" }
+
+# --- FFI ---
+uniffi = { version = "=0.32.0" }
+
+# --- Allgemein ---
+serde      = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.145" }
+thiserror  = { version = "=2.0.17" }
+
+# --- Nur für Tests ---
+proptest = { version = "=1.8.0" }
+trybuild = { version = "=1.0.114" }
+
+[profile.release]
+# Kein Unwinding: verhindert halb aufgeräumte Secrets auf dem Stack (SPECIFICATION.md §2.5)
+panic         = "abort"
+lto           = true
+codegen-units = 1
+strip         = true
+
+[profile.dev]
+panic = "abort"
