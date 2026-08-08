@@ -1092,9 +1092,7 @@ Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), d
 
 #### 2.7.8 Neue Bedrohung durch die Anbindung
 
-| ID | Angriff | Greift die Architektur | Restrisiko |
-|---|---|---|---|
-| **T19** | **Manipulierter Transportkanal** — BLE-MITM beim Pairing, gefälschter QR-Code, NFC-Relay | ✅ **Teilweise.** Was über den Kanal geht, sind PSBTs und xpubs — kein privates Material. Ein Angreifer kann ein manipuliertes PSBT einschleusen, aber der Signer prüft es auf seinem **eigenen Display** (2.7.3), und unser Verifier prüft die Rückgabe erneut gegen den gespeicherten Descriptor. Die Kette bricht an einem der beiden Displays. | Ein Angreifer, der beim **xpub-Import** MITM spielt, kann einen eigenen xpub unterschieben — dann steht sein Schlüssel im Descriptor. **Gegenmaßnahme: der importierte xpub wird auf dem Gerätedisplay bestätigt, nicht nur auf dem Telefon.** Ohne diesen Schritt ist der Import der schwächste Punkt der Hardware-Anbindung. |
+Die Hardware-Anbindung führt einen zusätzlichen Angriffsweg ein: den Transportkanal selbst. Er ist als **T19** im Bedrohungsmodell (4.1) geführt — dort steht die vollständige Angriffskette. Kurzfassung: Über den Kanal wandern ausschließlich PSBTs und xpubs, nie privates Material; der schwächste Punkt ist der **xpub-Import**, und die Gegenmaßnahme ist die Bestätigung auf dem Gerätedisplay (2.7.3).
 
 #### 2.7.9 Gerätefreigabe — Coldcard zunächst ausgegraut
 

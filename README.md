@@ -66,8 +66,21 @@ Sparrow und Bitcoin Core. Das ist die eigentliche Versicherung: Sie funktioniert
 wenn es dieses Projekt nicht mehr gibt. Die Abläufe darin sind Testfälle S5 und S6 und laufen
 bei jedem Merge in CI.
 
-Vor Implementierungsbeginn zu klären: die sechs Entscheidungen in der Executive Summary
-und die ⟨API-VERIFY⟩-Punkte in Anhang B der Spezifikation.
+**→ [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)** — die Arbeitsliste.
+28 Arbeitspakete in 8 Meilensteinen, jedes mit Abhängigkeiten, Spec-Verweis, Abnahmekriterien
+und den Tests, die grün sein müssen. Jedes Paket ist so geschnitten, dass es ohne Rückfragen
+abgearbeitet werden kann.
+
+**→ [`docs/TESTING.md`](docs/TESTING.md)** — Testumgebung, Coverage-Politik, CI-Pipeline.
+100 % Zeilen und Zweige für die Sicherheitskerne, Mutation Testing als eigentliches Gate,
+Ausnahmen nur mit Begründung in einer eingecheckten Datei.
+
+Alle vier Dokumente werden von `just check-plan` gegeneinander geprüft: jede Test-ID hat
+genau ein Arbeitspaket, jede Entscheidung hat ein umsetzendes Paket, jeder Abschnittsverweis
+zeigt auf einen existierenden Abschnitt. Läuft das rot, ist der Plan unvollständig.
+
+Vor Implementierungsbeginn zu klären: die 14 Punkte in Anhang B der Spezifikation — das ist
+WP-05 und blockiert die Meilensteine M1 bis M5.
 
 ## Was dieses Modell nicht abdeckt
 
