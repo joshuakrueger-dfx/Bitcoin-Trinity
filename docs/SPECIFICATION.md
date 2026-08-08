@@ -37,10 +37,11 @@ Diese sechs sind nachträglich nicht oder nur unter Neuaufbau korrigierbar. Deta
 |---|---|---|---|
 | **E1** | Lage der FFI-Vertrauensgrenze: nur `PSBT ⟶ PSBT` + Callback-Interface für KEK-Unwrapping | Wird die Grenze später gezogen, sind Seeds längst durch JS-Heaps gewandert. Praktisch nicht nachrüstbar. | **Verbindlich festschreiben** (Abschnitt 1.3), CI-Lint gegen verbotene FFI-Typen. |
 | **E2** | Verifier baut auf eigenem, minimalem Descriptor-Parser statt auf `miniscript` | Wenn der Verifier dieselbe Bibliothek nutzt wie der Builder, bestätigt sich ein Bug selbst. Später umzubauen heißt: den Verifier neu schreiben. | Eigener ~250-Zeilen-Parser für genau die Grammatik `wsh(sortedmulti(2,…))`, eigene BIP-32-Ableitung; geteilt bleiben nur secp256k1 und Hashes (Abschnitt 1.5). |
-| **E3** | Entropie-Konstruktion und Anzeigbarkeit der Roh-Entropie | Ein Seed, der unter falscher Konstruktion entstanden ist, wird durch kein Update repariert (Coldcard 2026). Das Format muss ab dem allerersten erzeugten Seed stehen. | `entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = würfel_bytes)[0..32]`, Roh-Entropie anzeigbar, BIP-39-Ableitung extern nachrechenbar, Würfel **Pflicht für C** (Abschnitt 2.2). |
-| **E3b** | Wortlänge: 24 Wörter (256 bit) vs. 12 (128 bit) | Bestimmt Backup-Format, Stahlplatten-Kauf, Onboarding-UX und Stichproben-Design. | **24 Wörter** für alle drei Schlüssel. Konsistenz > Bequemlichkeit; 256 bit passt zur `HMAC-SHA512[0..32]`-Konstruktion ohne Kürzung. |
-| **E4** | Argon2id-Parameter und deren Speicherung im Blob-Header | Ein späterer Parameterwechsel erzwingt Re-Encryption aller Blobs und einen Migrationspfad. | `m = 262144 KiB (256 MiB), t = 3, p = 4`, Fallback-Profil `m = 65536 KiB, t = 6, p = 4` auf Geräten < 4 GB RAM; Profil-ID **im Blob-Header** (Abschnitt 2.4). |
-| **E5** | B ist ab v1 ein austauschbarer Signer hinter derselben PSBT-Schnittstelle | Wenn `sign_with_b` intern an den lokalen Keystore gekoppelt wird, ist der Wechsel auf Fremd-Hardware eine Architekturänderung statt eines Drop-in. | `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` mit `LocalSigner` und `ExternalSigner` ab Tag 1; der `ExternalSigner`-Pfad muss in v1 real getestet sein, auch wenn kein Gerät ausgeliefert wird (Abschnitt 6.6). |
+| **E3** | Entropie-Konstruktion und Anzeigbarkeit der Roh-Entropie | Ein Seed, der unter falscher Konstruktion entstanden ist, wird durch kein Update repariert (Coldcard 2026). Das Format muss ab dem allerersten erzeugten Seed stehen. | ✅ **Entschieden.** `entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = zusatz_bytes)[0..L]`, Roh-Entropie anzeigbar, BIP-39-Ableitung extern nachrechenbar. **Zusatzentropie ist durchgehend optional** — auch für C (Abschnitt 2.2). |
+| **E3b** | Wortlänge: 24 Wörter (256 bit) vs. 12 (128 bit) | Bestimmt Backup-Format, Stahlplatten-Kauf, Onboarding-UX und Stichproben-Design. | ✅ **Entschieden: pro Wallet wählbar** bei der Erstellung, einmalig und danach unveränderlich; Default 24. Gilt einheitlich für alle drei Schlüssel einer Wallet (Abschnitt 2.2.3). |
+| **E4** | Argon2id-Parameter und deren Speicherung im Blob-Header | Ein späterer Parameterwechsel erzwingt Re-Encryption aller Blobs und einen Migrationspfad. | ✅ **Entschieden.** `m = 262144 KiB (256 MiB), t = 3, p = 4`, Fallback-Profil `m = 65536 KiB, t = 6, p = 4` auf Geräten < 4 GB RAM, automatische Wahl; Profil-ID **im Blob-Header** (Abschnitt 2.4). |
+| **E5** | B ist ab v1 ein austauschbarer Signer hinter derselben PSBT-Schnittstelle | Wenn `sign_with_b` intern an den lokalen Keystore gekoppelt wird, ist der Wechsel auf Fremd-Hardware eine Architekturänderung statt eines Drop-in. | ✅ **Entschieden.** `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` mit `LocalSigner` und `ExternalSigner` ab Tag 1; der `ExternalSigner`-Pfad muss in v1 real getestet sein (Abschnitt 2.7, 6.6). |
+| **E6** | Hardware-Signer als optionale Quelle für C bei der Wallet-Erstellung | Die Transport-Abstraktion und die BIP-388-Registrierung müssen im Datenmodell stehen, bevor der erste Descriptor erzeugt wird — sonst ist ein Hardware-C nachträglich ein neues Setup. | ✅ **Entschieden.** C wahlweise in-App oder auf einem angebundenen Hardware-Signer erzeugt (nur xpub importiert). Vier Transporte hinter einem Trait; **QR und NFC in v1, BLE für BitBox02 Nova und Ledger in v1.1** — Begründung der Staffelung in Abschnitt 2.7. |
 
 > **Zwei Annahmen, die dieses Dokument durchzieht und die vor Implementierungsbeginn bestätigt werden müssen:**
 > **(A1)** Zielplattformen sind iOS ≥ 16 und Android ≥ 10 (API 29). Darunter fehlen `kSecAccessControlBiometryCurrentSet`-Semantiken bzw. `setUnlockedDeviceRequired` in verlässlicher Form.
@@ -93,6 +94,11 @@ Alle Versionsstände unten wurden am **2026-08-08** direkt gegen `crates.io/api/
 | `bdk_electrum` | `=0.24.0` | 0.24.0 (2026-05-08) | → `electrum-client 0.25.0` |
 | `bdk_bitcoind_rpc` | `=0.22.0` | 0.22.0 (2025-09-12) | → `bitcoincore-rpc 0.19.0` |
 | `bdk_kyoto` | `=0.17.0` | 0.17.0 (2026-05-12) | → `bip157 0.6.3` (2026-07-21), BIP-157/158 |
+| `bbqr` | `=0.5.0` | 0.5.0 (2026-07-16) | BBQr-Animated-QR — Hardware-Transport v1 |
+| `ur` | `=0.5.2` | 0.5.2 (2026-07-29) | Uniform Resources — Hardware-Transport v1 |
+| `bitbox-api` | `=0.13.0` | 0.13.0 (2026-07-18) | BitBox02 — **v1.1**, BLE-Abdeckung offen (Anhang B.8) |
+| `ledger-transport`, `ledger-apdu` | `=0.11.0` | 0.11.0 (2024-05-09) | Ledger — **v1.1**, nur generisch; **kein** App-Level-Crate für die Bitcoin-App |
+| ~~`hwi`~~ | **nicht verwenden** | 0.10.0 (2024-09-13) | Wrapper um Python-HWI, braucht eine Python-Laufzeit → **auf Mobilgeräten unbrauchbar** |
 
 **Kompatibilitätsprüfung:** `bdk_electrum 0.24.0` fordert `bdk_core ^0.6.1`, `bdk_bitcoind_rpc 0.22.0` fordert `bdk_core ^0.6.1` und `bitcoin ^0.32.0`, `bdk_kyoto 0.17.0` fordert `bdk_wallet ^3`. Alle drei koexistieren mit dem obigen Pinning. ✔
 
@@ -106,6 +112,10 @@ Alle Versionsstände unten wurden am **2026-08-08** direkt gegen `crates.io/api/
 | **iOS Keychain** | `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`: nur bei gesetztem Passcode, **nie** in iCloud- oder lokalem Backup; Entfernen des Passcodes **löscht** die Items. `kSecAccessControlBiometryCurrentSet`: bindet an den aktuellen Biometrie-Enrollment-Satz; Neuregistrierung invalidiert. | Apple Developer Documentation |
 | **Android Keystore** | `setIsStrongBoxBacked(true)` (dedizierter Sicherheitschip, z.B. Titan M2); `setInvalidatedByBiometricEnrollment(true)` invalidiert bei Änderung der Biometrie-Registrierung; `setUnlockedDeviceRequired(true)` verbietet Nutzung bei gesperrtem Gerät. | Android Developers / AOSP Keystore Features |
 | **Descriptor-Interop** | Sparrow übersetzt `wsh(multi(...))` beim Import nach `wsh(sortedmulti(...))`; BIP-48-Unterstützung impliziert BIP-67-Sortierung. BSMS (BIP-129) seit Sparrow v1.7.3; Coldcard als Signer und Coordinator. | bips.dev/129, Sparrow-Release-Notes, Coldcard-Doku |
+| **BIP-388 Wallet Policies** | Externe Signer — **Ledger, BitBox02 und Jade** — nutzen für Multisig BIP-388, um Descriptor-Policies auf dem Gerät anzuzeigen und zu beschränken. Im Ledger-Bitcoin-App implementiert **seit Version 2.1.0**. Nach registrierter und auf dem Gerät bestätigter Policy verhält sich die Multisig-Signatur für den Nutzer wie eine Single-Sig-Signatur. | bips.dev/388, Ledger-Doku |
+| **iOS-USB-Beschränkung** | Zugriff auf beliebige USB-HID-Geräte ist Apps auf iOS/iPadOS **nicht möglich**; HIDDriverKit und die IOKit-HID-APIs stehen dort nicht zur Verfügung, und Kommunikation mit USB-C-Zubehör ohne MFi-Zertifizierung ist ausgeschlossen. Gleiches gilt für serielles Bluetooth außerhalb der von iOS unterstützten Profile. | Apple Developer Forums (mehrere Threads), Apple MFi-Programm-FAQ |
+| **BitBox02 Nova / Whisper** | Nutzt BLE für iOS, weil USB-Kommunikation dort stark eingeschränkt ist. Dedizierter Bluetooth-Chip **DA14531** mit eigener Firmware, **ohne** Zugriff auf den Flash des Haupt-MCU und ohne Kenntnis von Wallet-Geheimnissen; Ende-zu-Ende-verschlüsselte Übertragung, Pairing-Code-Bestätigung auf dem Gerät, Bluetooth per BitBoxApp über USB abschaltbar. | BitBox-Blog „Whisper", BitBox Support Hub |
+| **BBQr** | Animiertes QR-Protokoll von Coinkite, offene Spezifikation. Zieldateitypen PSBT (BIP-174) und fertige Transaktionen; jedes Frame trägt Dateityp, Gesamtzahl und Index. Multisig-PSBTs liegen typisch bei **5–20 KB** und brauchen daher mehrere Frames. Coldcard unterstützt PSBT v0 (BIP-174) und v2 (BIP-370). | bbqr.org, Coldcard-Doku |
 | **bdk-ffi** | 3.0.0 (Juni 2026): produktionsreife Bindings für Kotlin/JVM, Swift, Python. React-Native- und Dart-Bindings 2026 in Integrationstests. | ⚠️ Sekundärquelle (Blogaggregation); `github.com/bitcoindevkit/bdk-ffi` war in dieser Session nicht abrufbar. |
 | **Address Poisoning 2026** | Industrialisiert: Bots erzeugen Lookalike-Adressen mit identischen Anfangs- und Endzeichen und platzieren Dust in der Historie des Opfers. Ein einzelner Angreifer-Contract erreichte ≈ 3 Mio Dust-Transfers an > 1 Mio Adressen für ≈ 5.175 USD. Fortgeschrittene Varianten beobachten den Mempool auf Test-Transaktionen und vergiften unmittelbar danach. | Chainalysis, Blockaid, Branchenberichte 2026 |
 
@@ -138,6 +148,8 @@ btc-trinity/
 │   ├── trinity-entropy/           # 🟥 Entropie-Erzeugung, Würfel, BIP-39-Ableitung
 │   ├── trinity-keystore/          # 🟥 Blob-Format, AEAD, Argon2id, KEK-Handling, zeroize
 │   ├── trinity-signer/            # 🟥 Signer-Trait, LocalSigner, ExternalSigner-Adapter
+│   ├── trinity-transport/         # ⬜ PsbtTransport: QR (bbqr/ur), NFC, BLE, USB.
+│   │                              #    Sieht nur PSBTs, xpubs, BIP-388-Policies.
 │   ├── trinity-verify/            # ⬜ UNABHÄNGIGER PSBT-Verifier. Darf `miniscript` NICHT nutzen.
 │   ├── trinity-watch/             # ⬜ BDK-Wallet, Descriptor-Persistenz, TxBuilder, Adressen
 │   ├── trinity-chain/             # ⬜ ChainBackend-Trait + Electrum / Core-RPC / CBF
@@ -267,7 +279,7 @@ impl SecretBytes {
 - ⚠️ **uniffi kopiert `Vec<u8>` durch einen `RustBuffer`.** Diese Zwischenkopie muss explizit genullt werden, sonst ist die Passphrase noch im FFI-Puffer. Die Nullung ist im Konstruktor durchzuführen; **⟨API-VERIFY⟩** ob uniffi 0.32.0 hierfür einen Hook bietet oder ob der Puffer manuell über `RustBuffer::destroy` behandelt werden muss.
 - ⚠️ **Die Plattform-Kopie muss die Plattform nullen.** Swift-`String` und Kotlin-`String` sind — wie JS-Strings — unveränderlich und nicht überschreibbar. **Die Passphrase darf auch in Swift und Kotlin nie als `String` existieren.**
   - iOS: `UITextField` mit eigenem `UIKeyInput`-Delegate, Zeichen direkt in ein `UnsafeMutableRawBufferPointer`; Löschung per `memset_s`. Kein `.text`-Zugriff, kein SwiftUI-`@State private var pass: String`.
-  - Android: `EditText` mit `getText().getChars(...)` in ein `CharArray`, Umwandlung in `ByteArray`, danach `Arrays.fill(chars, ' ')` und `ByteArray.fill(0)`. Kein `.toString()`.
+  - Android: `EditText` mit `getText().getChars(...)` in ein `CharArray`, Umwandlung in `ByteArray`, danach `Arrays.fill(chars, '\u0000')` und `ByteArray.fill(0)`. Kein `.toString()`.
 - ❌ **Nicht geleistet:** Schutz gegen Swapping, Speicher-Snapshots des Betriebssystems oder einen Debugger im Prozess. `mlock`/`memlock` ist auf iOS für Apps nicht verfügbar; auf Android nur eingeschränkt. **Diese Lücke bleibt offen und ist nicht schließbar.**
 
 #### Die exportierte Fassade
@@ -302,9 +314,18 @@ impl TrinityCore {
     pub fn broadcast(&self, tx_hex: String) -> Result<String, ChainError>;       // → txid
 
     // ── Onboarding / Export ────────────────────────────────────────
+    /// SetupConfig { word_count: 24|12, c_source: InApp|Hardware, extra_entropy: Vec<ExtraSource> }
+    /// word_count und c_source sind nach begin_setup unveränderlich (E3b, E6).
     pub fn begin_setup(&self, cfg: SetupConfig) -> Result<SetupHandle, SetupError>;
     pub fn quiz_challenge(&self, slot: KeySlot) -> Vec<u32>;        // Wortindizes, nicht Wörter
     pub fn quiz_answer(&self, slot: KeySlot, answers: Vec<String>) -> QuizResult;
+
+    // ── Hardware-Signer (Abschnitt 2.7) ────────────────────────────
+    pub fn hw_discover(&self, kind: TransportKind) -> Result<Vec<DeviceRef>, TransportError>;
+    pub fn hw_import_xpub(&self, dev: DeviceRef, slot: KeySlot)
+        -> Result<XpubWithOrigin, TransportError>;               // Bestätigung auf Gerätedisplay
+    pub fn hw_register_policy(&self, dev: DeviceRef) -> Result<String, TransportError>; // PolicyId
+    pub fn hw_sign(&self, dev: DeviceRef, psbt_b64: String) -> Result<String, TransportError>;
     pub fn export_bsms(&self) -> String;
     pub fn export_sparrow(&self) -> String;
     pub fn export_core_importdescriptors(&self) -> String;
@@ -468,11 +489,12 @@ Drei Lehren, die sich hier direkt in Anforderungen übersetzen:
 ### 2.2 Entropieerzeugung (Anforderung 3, Entscheidung E3)
 
 ```
+L           := 32 (24 Wörter) oder 16 (12 Wörter)         // pro Wallet gewählt, s. 2.2.3
 raw_csprng  := getrandom(32)                              // OS-CSPRNG
-dice_bytes  := kanonische Kodierung der Würfe (s.u.)      // ggf. leer
-extract     := HMAC-SHA512(key = raw_csprng, msg = dice_bytes)
-entropy     := extract[0..32]                             // 256 bit
-mnemonic    := BIP-39(entropy)                            // 24 Wörter
+extra_bytes := kanonische Kodierung der Zusatzquelle       // OPTIONAL, ggf. leer
+extract     := HMAC-SHA512(key = raw_csprng, msg = extra_bytes)
+entropy     := extract[0..L]
+mnemonic    := BIP-39(entropy)                            // 24 bzw. 12 Wörter
 seed        := PBKDF2-HMAC-SHA512(mnemonic, "mnemonic", 2048, 64)   // BIP-39, ohne Passphrase
 xprv        := BIP-32-Master(seed)
 ```
@@ -481,40 +503,98 @@ xprv        := BIP-32-Master(seed)
 
 HMAC ist die Extract-Stufe von HKDF (RFC 5869) und ein etablierter Randomness-Extractor. Für die Kombination zweier Quellen ergibt sich:
 
-| Fall | `raw_csprng` | `dice_bytes` | Entropie des Ergebnisses |
+| Fall | `raw_csprng` | `extra_bytes` | Entropie des Ergebnisses |
 |---|---|---|---|
-| Normalfall | 256 bit gut | leer oder bekannt | **256 bit** — HMAC mit unbekanntem Key ist ein PRF |
-| CSPRNG gebrochen (Coldcard-Szenario) | 0 bit, Angreifer kennt den Key | 128+ bit geheim | **≥ 128 bit** — Angreifer muss die Würfe raten |
-| Beides gebrochen | 0 bit | 0 bit | 0 bit — nicht reparierbar, aber auch nicht schlechter als jede Alternative |
+| Normalfall | 256 bit gut | leer oder bekannt | **min(256, 8·L) bit** — HMAC mit unbekanntem Key ist ein PRF |
+| CSPRNG gebrochen (Coldcard-Szenario) | 0 bit, Angreifer kennt den Key | 128+ bit geheim | **≥ 128 bit** — Angreifer muss die Zusatzquelle raten |
+| **CSPRNG gebrochen, keine Zusatzquelle** | 0 bit | leer | 🔴 **0 bit — der Seed ist vorhersagbar** |
+| Beides gebrochen | 0 bit | 0 bit | 0 bit |
 
-Die Konstruktion ist damit ein **OR-Kombinierer**: sie ist so stark wie die *stärkere* der beiden Quellen. Genau das ist die Eigenschaft, die im Coldcard-Fall gefehlt hätte, wenn der Nutzer keine Würfel benutzt hätte.
+Die Konstruktion ist ein **OR-Kombinierer**: sie ist so stark wie die *stärkere* der beiden Quellen, und eine zusätzliche Quelle kann das Ergebnis **nie verschlechtern**. Genau deshalb darf jede beliebige Zusatzquelle eingespeist werden — die einzige Frage ist, wie viele Bit man ihr *anrechnet*.
 
-**Kanonische Würfelkodierung** (muss extern nachrechenbar sein, deshalb exakt festgelegt):
-`dice_bytes` = ASCII-Bytes der Würfe in Eingabereihenfolge, Ziffern `1`–`6`, ohne Trennzeichen, ohne abschließenden Zeilenumbruch. Beispiel: 5 Würfe 3,1,6,6,2 → `"31662"` → `0x33 0x31 0x36 0x36 0x32`. Bei leerer Würfelmenge ist `dice_bytes` die leere Bytefolge.
+Zeile 3 der Tabelle ist der Coldcard-Fall. Ohne Zusatzquelle ist er nicht abgedeckt (siehe T10).
 
-**Würfelanforderungen** (log₂ 6 ≈ 2,585 bit pro Wurf):
+#### 2.2.1 Zusatzentropie — was zählt und was nicht
 
-| Schlüssel | Würfel | Mindestwürfe | Erreichte Wurf-Entropie |
-|---|---|---|---|
-| **C** | **Pflicht** | **99** | ≈ 256 bit |
-| A, B | optional, ab v1 angeboten | 50 (wenn genutzt) | ≈ 129 bit |
+Zusatzentropie ist durchgehend **optional** (Entscheidung E3, abweichend von meiner ursprünglichen Empfehlung). Die App bietet mehrere Quellen an; sie zerfallen in zwei Klassen, und die Unterscheidung ist die eigentliche Sicherheitsaussage.
 
-Begründung der Pflicht für C: C ist der einzige Schlüssel, der die Implementierungsdiversität herstellt (R2). Ein C aus derselben RNG-Quelle wie A und B trägt dazu nichts bei. 99 Würfe sind mühsam — das ist der Preis dafür, dass ein RNG-Bug nicht alle drei Schlüssel gleichzeitig entwertet.
+**Klasse A — zählbare Entropie.** Die Bit lassen sich aus der Kombinatorik exakt berechnen, deshalb darf der Fortschrittsbalken sie gutschreiben.
 
-**Nachweisbarkeit — was die App anzeigen und exportieren können muss:**
+| Quelle | Bit pro Einheit | Für 128 bit | Für 256 bit | Kanonische Kodierung |
+|---|---|---|---|---|
+| **Würfel (d6)** | log₂ 6 ≈ 2,585 | 50 Würfe | 99 Würfe | ASCII `1`–`6`, ohne Trennzeichen |
+| **Münzwurf** | 1,000 | 128 Würfe | 256 Würfe | ASCII `0`/`1` |
+| **Spielkarten**, vollständig gemischtes 52er-Deck | log₂(52!) ≈ 225,6 pro Deck | 1 Deck (gekürzt) | 2 Mischungen | ASCII, Rang+Farbe je Karte, z.B. `AS`, `10H`, `KD` |
+| **Hardware-Signer als Quelle** | RNG des Geräts | — | — | **Kein `extra_bytes`** — das Gerät erzeugt den Seed selbst, die App sieht nur den xpub (Abschnitt 2.7) |
+| **Zweites Telefon / anderer OS-CSPRNG** | ⚠️ 0 anrechenbar | — | — | Nicht anbieten. Beide Geräte können denselben Implementierungsfehler haben; „anderes Gerät" ist keine andere Implementierung. |
+
+**Klasse B — nicht zählbare Entropie.** Darf eingespeist, aber **nie angerechnet** werden.
+
+| Quelle | Warum nicht zählbar |
+|---|---|
+| Kamerarauschen | In einem dunklen oder gleichmäßig ausgeleuchteten Raum ist das Bild nahezu konstant. Der Sensor liefert oft bereits entrauschte, komprimierte Frames. |
+| Mikrofonrauschen | In stiller Umgebung nahezu konstant; viele Geräte wenden Rauschunterdrückung an, bevor die App die Samples sieht. |
+| Beschleunigungssensor, Gyroskop | Liegendes Gerät = konstante Werte. Bei Bewegung wenige Bit, stark autokorreliert. |
+| Touch-Jitter, Eingabe-Timing | Wenige Bit, systematisch verzerrt, aus Sensordaten teilweise rekonstruierbar. |
+| Systemzeit, Uptime, Geräte-ID | Öffentlich oder erratbar. Null Bit. |
+
+> **Die Regel dazu, und sie ist nicht verhandelbar:** Klasse-B-Quellen werden in `extra_bytes` mit aufgenommen, wenn der Nutzer sie aktiviert — der OR-Kombinierer macht das nie schlechter. Der Entropie-Zähler in der UI schreibt ihnen **exakt 0 bit** gut. Die klassische Fehlerquelle bei selbstgebauten Entropiequellen ist nicht, dass Sensorrauschen genutzt wird, sondern dass ihm 128 bit angerechnet werden, die es nicht hat. Ein Fortschrittsbalken, der bei „Handy schütteln" auf 100 % springt, erzeugt falsche Sicherheit — und falsche Sicherheit ist hier schlimmer als gar keine Zusatzquelle, weil der Nutzer dann die zählbare Quelle weglässt.
+
+#### 2.2.2 Kanonische Kodierung von `extra_bytes`
+
+Muss extern nachrechenbar sein, deshalb exakt festgelegt. Mehrere aktivierte Quellen werden in fester Reihenfolge mit einem `0x1E` (Record Separator) getrennt konkateniert; die Reihenfolge ist die Enum-Reihenfolge `Dice < Coin < Cards < SensorNoise`, nicht die Aktivierungsreihenfolge.
+
+```
+extra_bytes = [dice_ascii] 0x1E [coin_ascii] 0x1E [cards_ascii] 0x1E [sensor_blob]
+```
+
+Nicht aktivierte Quellen liefern eine leere Bytefolge; ihr Separator entfällt. Sind **keine** Quellen aktiv, ist `extra_bytes` die leere Bytefolge, und `extract = HMAC-SHA512(raw_csprng, "")`. Beispiel Würfel: 5 Würfe 3,1,6,6,2 → `"31662"` → `0x33 0x31 0x36 0x36 0x32`.
+
+Das Verifikationsblatt (2.2.4) druckt `extra_bytes` als Hex mit, sonst ist die Ableitung nicht nachrechenbar.
+
+#### 2.2.3 Wortlänge — pro Wallet wählbar (Entscheidung E3b)
+
+Bei der Wallet-Erstellung wählt der Nutzer **24 Wörter (256 bit, Default)** oder **12 Wörter (128 bit)**. Die Wahl gilt einheitlich für A, B und C derselben Wallet und ist nach Abschluss des Onboardings **unveränderlich** — eine spätere Änderung wäre ein neues Setup mit Sweep.
+
+| | 24 Wörter | 12 Wörter |
+|---|---|---|
+| `L` | 32 Byte | 16 Byte |
+| Entropie | 256 bit | 128 bit |
+| Zählbare Zusatzquelle für volle Deckung | 99 Würfel / 256 Münzen / 2 Kartenmischungen | 50 Würfel / 128 Münzen / 1 Kartendeck |
+| Backup-Aufwand | 3 × 24 Wörter abschreiben, größere Stahlplatte | 3 × 12 Wörter, kleinere Platte |
+| Quiz-Stichprobe | 4 aus 24 | **3 aus 12** (s.u.) |
+
+**Zur Sicherheitsfrage:** 128 bit sind gegen Brute-Force nach heutigem Stand ausreichend — der Aufwand liegt jenseits dessen, was physikalisch erreichbar ist, und Bitcoins eigenes Sicherheitsniveau liegt für einen einzelnen Schlüssel bei ~128 bit (secp256k1). 12 Wörter sind hier also **kein Sicherheitskompromiss gegen einen Rechenangriff.** Der reale Unterschied ist ein anderer: bei 12 Wörtern trägt die Zusatzquelle nur halb so viel Reserve, falls der CSPRNG teilweise versagt, und die Wahl ist nicht rückholbar. Empfehlung im UI-Text: 24 als Default, 12 sichtbar als bewusste Option mit dieser Begründung — **ohne** Angstsprache, weil 12 Wörter kein Fehler sind.
+
+**Wichtig für das Datenmodell:** Die Wortlänge geht als `word_count`-Feld in den Blob-Header (2.4) und in `descriptor.json`. Ohne dieses Feld kann die Recovery-UI nicht wissen, wie viele Eingabefelder sie zeigen muss, und der Quiz-Generator nicht, aus welchem Bereich er Positionen zieht.
+
+#### 2.2.4 Nachweisbarkeit
+
+Was die App anzeigen und exportieren können muss:
 
 1. `raw_csprng` als 64 Hex-Zeichen, auf Wunsch anzeigbar
-2. `dice_bytes` als eingegebene Ziffernfolge, anzeigbar
-3. `entropy` als 64 Hex-Zeichen, anzeigbar
-4. Die 24 BIP-39-Wörter
-5. Ein **Verifikationsblatt** mit exakt der obigen Formelkette, sodass jeder mit `openssl dgst -sha512 -hmac` und einem BIP-39-Tool die Ableitung offline nachrechnen kann
+2. `extra_bytes` als Hex **und** in der jeweiligen Eingabedarstellung (Ziffernfolge, Kartenliste), anzeigbar
+3. `entropy` als 32 bzw. 64 Hex-Zeichen, anzeigbar
+4. Die 24 bzw. 12 BIP-39-Wörter
+5. Ein **Verifikationsblatt** mit exakt der obigen Formelkette inklusive `L` und der Separator-Regel aus 2.2.2, sodass jeder mit `openssl dgst -sha512 -hmac` und einem BIP-39-Tool die Ableitung offline nachrechnen kann
 
 Punkt 5 ist die eigentliche Anforderung. Ohne ihn ist „nachweisbare Entropie" ein Wort ohne Inhalt.
 
-**C außerhalb der A/B-Session erzeugen** — konkret:
-Die C-Erzeugung läuft in einem separaten Ablauf, der (a) erst startet, nachdem A und B erzeugt, verschlüsselt und aus dem Speicher genullt wurden, (b) einen expliziten Prozess-Neustart erzwingt (`exit(0)` und Kaltstart, nicht nur Screen-Wechsel), (c) den Flugmodus prüft und bei aktiver Netzwerkverbindung warnt, (d) keinen Schreibzugriff auf `blob_A`/`blob_B` hat. Nach Abschluss existiert von C **nur** der xpub in `descriptor.json`.
+#### 2.2.5 Erzeugung von C — drei Wege
 
-> **Offene Alternative (Abschnitt 7, O4):** C stattdessen auf einer Fremd-Hardware-Wallet erzeugen und nur den xpub importieren. Sicherheitstechnisch überlegen (echte Implementierungsdiversität statt nur Session-Trennung), aber es setzt Hardwarebesitz voraus.
+C ist der Schlüssel, der die Implementierungsdiversität herstellen kann (R2). Wie weit er das tut, hängt vom gewählten Weg ab, und die App muss das benennen statt es zu verwischen.
+
+| Weg | Verfahren | Deckt T10 (RNG-Fehler) | Deckt T9 (Supply Chain) | Aufwand |
+|---|---|---|---|---|
+| **(a) Hardware-Signer** ⭐ | C wird auf dem angebundenen Gerät erzeugt, die App importiert nur `xpub_C` mit Origin (Abschnitt 2.7) | ✅ anderer Chip, andere Firmware, anderer RNG | ✅ **andere Codebasis** — der einzige Weg, der das wirklich tut | Gerätekauf |
+| **(b) In-App mit zählbarer Zusatzquelle** | Prozess-Neustart, dann Würfel/Münzen/Karten | ✅ bei ausreichend Würfen | ❌ gleiche Codebasis wie A und B | ~10 min |
+| **(c) In-App ohne Zusatzquelle** | Prozess-Neustart, nur OS-CSPRNG | ❌ | ❌ | ~0 min |
+
+**Weg (a) ist der empfohlene Default** und wird im Onboarding als erste Option angeboten (Entscheidung E6). Wählt der Nutzer (b) oder (c), zeigt die App in einem Satz, was dadurch offen bleibt — einmal, ohne Wiederholung und ohne Blockade.
+
+**Für (b) und (c) — C außerhalb der A/B-Session erzeugen:** Der Ablauf (a) startet erst, nachdem A und B erzeugt, verschlüsselt und aus dem Speicher genullt wurden, (b) erzwingt einen expliziten Prozess-Neustart (`exit(0)` und Kaltstart, nicht nur Screen-Wechsel), (c) prüft den Flugmodus und warnt bei aktiver Netzwerkverbindung, (d) hat keinen Schreibzugriff auf `blob_A`/`blob_B`. Nach Abschluss existiert von C **nur** der xpub in `descriptor.json`.
+
+> **Ehrlich zur Reichweite von Weg (b):** Der Prozess-Neustart trennt die *Session*, nicht die *Implementierung*. Ein Bug im RNG-Aufruf oder in der BIP-39-Ableitung trifft C genauso wie A und B — der Neustart hilft nur gegen Speicherreste und versehentliche Kopplung. Gegen den Coldcard-Fehlertyp hilft ausschließlich die zählbare Zusatzquelle (Klasse A) oder Weg (a).
 
 ### 2.3 Ableitung und Descriptor (Anforderung 6)
 
@@ -543,7 +623,9 @@ Descriptor (Change):  identisch, /1/* statt /0/*
 | Drei getrennte Master-Seeds | Randbedingung 1. Ein Seed mit drei Ableitungspfaden macht das Quorum wertlos: wer den Seed hat, hat alle drei Schlüssel. **CI-Test:** Setup wird abgelehnt, wenn zwei der drei Master-Fingerprints identisch sind (Abschnitt 5.2, P7). |
 | Netzwerk-Trennung | Signet/Testnet nutzen Coin-Type `1'` und einen separaten Descriptor-Store. Kein gemeinsamer Zustand mit Mainnet. |
 
-**Descriptor-Persistenz:** `descriptor.json` mit Klartext-Descriptor, allen drei xpubs mit Origin, `birthday_height` je Schlüssel, Netzwerk, Erstellungszeitstempel und einer Format-Version. Zusätzlich als **BSMS-Record (BIP-129)** exportierbar — der Standard, den Sparrow seit v1.7.3 und Coldcard als Signer und Coordinator unterstützen.
+**Descriptor-Persistenz:** `descriptor.json` mit Klartext-Descriptor, allen drei xpubs mit Origin, `birthday_height` je Schlüssel, Netzwerk, Erstellungszeitstempel, Format-Version, **`word_count`** (24 oder 12, E3b) sowie — bei Hardware-C — **`policy_id` je registriertem Gerät** (BIP-388, Abschnitt 2.7.3). Zusätzlich als **BSMS-Record (BIP-129)** exportierbar — der Standard, den Sparrow seit v1.7.3 und Coldcard als Signer und Coordinator unterstützen.
+
+> **Beide Zusatzfelder gehören auf den Backup-Ausdruck.** `word_count` sagt der Recovery-UI, wie viele Eingabefelder sie zeigen muss; `policy_id` erspart bei einem Gerätewechsel die erneute Bestätigung aller drei xpubs auf dem Gerätedisplay. Keines der beiden ist geheim.
 
 ### 2.4 Schlüssel A und B: symmetrische Implementierung (Anforderung 2)
 
@@ -587,12 +669,12 @@ pub const POLICY_B: SlotPolicy = SlotPolicy {
 │ version     u8 = 1                        1 B                     │
 │ slot        u8 (0=A, 1=B)                 1 B                     │
 │ kdf_profile u8 (0=none, 1=HIGH, 2=LOW)    1 B    ← Entscheidung E4 │
-│ reserved    u8 = 0                        1 B                     │
+│ word_count  u8 (24 oder 12)               1 B    ← Entscheidung E3b│
 │ argon_salt  16 B (nur wenn kdf_profile≠0)                         │
 │ nonce       24 B (XChaCha20 random)                               │
 │ birthday    u32 LE (Blockhöhe)            4 B                     │
 ├─ Ciphertext ──────────────────────────────────────────────────────┤
-│ entropy     32 B                                                  │
+│ entropy     L Byte (32 bei 24 Wörtern, 16 bei 12)                 │
 │ created_at  u64 LE                         8 B                    │
 ├─ Tag ─────────────────────────────────────────────────────────────┤
 │ Poly1305    16 B                                                  │
@@ -600,9 +682,10 @@ pub const POLICY_B: SlotPolicy = SlotPolicy {
 ```
 
 - **AEAD:** XChaCha20-Poly1305. Gewählt gegen AES-256-GCM wegen des 192-bit-Nonce (zufällige Nonces ohne Kollisionsrisiko, kein Zählerzustand) und weil die Software-Implementierung auf Mobilgeräten ohne AES-NI nicht seitenkanalanfällig über Tabellen-Lookups ist.
-- **Header als AAD:** Ein Angreifer kann `kdf_profile` nicht auf ein schwächeres Profil herunterdrehen — der Tag würde nicht verifizieren.
+- **Header als AAD:** Ein Angreifer kann weder `kdf_profile` auf ein schwächeres Profil herunterdrehen noch `word_count` manipulieren — der Tag würde nicht verifizieren. Letzteres ist wichtiger, als es aussieht: ohne AAD-Schutz könnte ein Angreifer `word_count` von 24 auf 12 setzen und den Entschlüsseler dazu bringen, nur die halbe Entropie zu lesen.
 - **`kdf_profile` im Header:** Entscheidung E4. Ohne das Feld ist ein Parameterwechsel eine Migration mit Re-Encryption; mit ihm ist er ein neuer Enum-Wert.
-- **Gespeichert wird `entropy` (32 B), nicht der Mnemonic-String.** Der Mnemonic wird bei Bedarf deterministisch neu erzeugt. Ein String weniger im Speicher.
+- **`word_count` im Header:** Entscheidung E3b. Bestimmt `L` und damit die Ciphertext-Länge; die Recovery-UI und der Quiz-Generator lesen es hier.
+- **Gespeichert wird `entropy` (L Byte), nicht der Mnemonic-String.** Der Mnemonic wird bei Bedarf deterministisch neu erzeugt. Ein String weniger im Speicher.
 
 #### KEK-Ableitung
 
@@ -778,6 +861,112 @@ stateDiagram-v2
 | Biometrie-Änderung | A allein invalidiert; B, C und Descriptor bleiben unberührt. |
 | App-Deinstallation | iOS: Keychain-Items mit `…ThisDeviceOnly` überleben eine Deinstallation je nach iOS-Version **möglicherweise**. `blob_A`/`blob_B` verschwinden mit der Sandbox, damit ist der KEK ohne Nutzen. ⟨**verifizieren**: Verhalten unter iOS 17/18/19 testen und dokumentieren⟩ |
 
+### 2.7 Hardware-Signer-Anbindung (Entscheidung E6)
+
+Ein angebundener Hardware-Signer erfüllt in dieser Architektur zwei Aufgaben: er kann **C bei der Wallet-Erstellung erzeugen** (nur `xpub_C` wird importiert, Abschnitt 2.2.5 Weg a) und er kann später **B als externer Signer ablösen** (Abschnitt 6.6). Beides läuft über dieselbe Abstraktion, weil beides nur PSBTs und xpubs bewegt.
+
+#### 2.7.1 Die harte Randbedingung: iOS erlaubt kein USB
+
+Der Befund, der die gesamte Transportplanung bestimmt: **iOS gestattet Apps keinen Zugriff auf beliebige USB-HID-Geräte.** HIDDriverKit und die IOKit-HID-APIs stehen auf iOS/iPadOS nicht zur Verfügung; Kommunikation mit einem USB-C-Zubehör ohne MFi-Zertifizierung ist nicht möglich. Dasselbe gilt für serielles Bluetooth außerhalb der von iOS unterstützten Profile.
+
+Genau deshalb hat BitBox für die iOS-Unterstützung des **BitBox02 Nova** einen eigenen BLE-Weg gebaut („Whisper"): ein **separater Bluetooth-Chip (DA14531)** mit eigener Firmware, ohne Zugriff auf den Flash des Haupt-MCU und ohne Kenntnis von Wallet-Geheimnissen, mit Ende-zu-Ende-verschlüsselter Übertragung und Pairing-Bestätigung auf dem Gerät. Ledger löst dasselbe Problem über BLE (Nano X) und NFC.
+
+Konsequenz für dieses Projekt: **USB ist ein Android-only-Transport.** Wer plattformgleiche Anbindung will, kommt an BLE, NFC oder QR nicht vorbei.
+
+#### 2.7.2 Transport-Abstraktion
+
+```rust
+// crates/trinity-signer/src/transport.rs
+pub trait PsbtTransport: Send + Sync {
+    fn kind(&self) -> TransportKind;                 // Qr | Nfc | Ble | Usb
+    fn discover(&self) -> Result<Vec<DeviceRef>, TransportError>;
+    fn get_xpub(&self, dev: &DeviceRef, path: &DerivationPath)
+        -> Result<XpubWithOrigin, TransportError>;
+    /// BIP-388: Policy auf dem Gerät registrieren. Ohne das erkennt der
+    /// Signer die Change-Adressen des Multisig nicht als eigene.
+    fn register_policy(&self, dev: &DeviceRef, policy: &WalletPolicy)
+        -> Result<PolicyId, TransportError>;
+    fn sign_psbt(&self, dev: &DeviceRef, psbt: Psbt) -> Result<Psbt, TransportError>;
+}
+```
+
+Weil `ExternalSigner` (E5) nur `PsbtTransport` konsumiert, ist ein neuer Transport oder ein neues Gerät eine zusätzliche Implementierung — kein Eingriff in den Signaturpfad.
+
+#### 2.7.3 BIP-388 Wallet Policies — nicht optional
+
+Externe Signer wie **Ledger, BitBox02 und Blockstream Jade** nutzen für Multisig **BIP-388 Wallet Policies**, um die Descriptor-Policy auf dem Gerät anzuzeigen und zu beschränken. Im Ledger-Bitcoin-App ist das seit Version 2.1.0 implementiert.
+
+Was das praktisch heißt: Der Descriptor muss **vor der ersten Nutzung einmalig auf dem Gerät registriert** werden. Ohne diese Registrierung erkennt das Gerät die Change-Adressen der 2-von-3-Wallet nicht als eigene und zeigt sie dem Nutzer als fremde Empfänger an — eine Transaktion sieht dann so aus, als würde sie Geld verlieren.
+
+```
+Wallet-Policy-Template:  wsh(sortedmulti(2,@0/**,@1/**,@2/**))
+Key-Information-Vektor:  [ [fpA/48'/0'/0'/2']xpubA,
+                           [fpB/48'/0'/0'/2']xpubB,
+                           [fpC/48'/0'/0'/2']xpubC ]
+```
+
+Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), die bei jeder späteren Signatur mitgegeben wird. **Diese ID gehört in `descriptor.json` und auf den Backup-Ausdruck** — geht sie verloren, muss die Policy neu registriert werden, was eine erneute Bestätigung aller drei xpubs auf dem Gerätedisplay bedeutet.
+
+> **Der Sicherheitswert der Registrierung liegt in der Bestätigung, nicht in der Speicherung.** Bei der Registrierung liest der Nutzer alle drei xpubs auf dem Display des Hardware-Signers — also auf einem Bildschirm, den weder unsere App noch ein kompromittiertes Telefon kontrolliert. Das ist die eine Stelle im gesamten Ablauf, an der T4 (kompromittiertes Telefon) nicht greift. Der Schritt darf deshalb nicht als lästige Formalität gerahmt werden.
+
+#### 2.7.4 Transport-Matrix
+
+| Transport | iOS | Android | Rust-Crate | Aufwand | Angriffsfläche |
+|---|---|---|---|---|---|
+| **QR** (BBQr + UR) | ✅ Kamera + Bildschirm | ✅ | `bbqr 0.5.0` (2026-07-16), `ur 0.5.2` (2026-07-29) | 🟢 gering | **Kleinste.** Kein Vendor-SDK, keine Entitlements, kein Pairing, keine Funkstrecke. Datenkanal ist optisch und vom Nutzer sichtbar. |
+| **NFC** | ✅ CoreNFC, Entitlement nötig | ✅ voller Zugriff | keins — pro Gerät zu implementieren | 🟡 mittel | Kurze Reichweite, aber proprietäre Protokolle pro Hersteller. |
+| **BLE** | ✅ einziger Weg für BitBox/Ledger | ✅ | keins — Vendor-Protokoll (Whisper bzw. Ledger-BLE) | 🔴 hoch | Funkstrecke, Pairing, E2E-Krypto des Herstellers. Sicherheit hängt am Vendor-Protokoll, das wir nicht kontrollieren. |
+| **USB** | ❌ **nicht möglich** ohne MFi | ✅ USB-OTG | `bitbox-api 0.13.0` (2026-07-18), `ledger-transport`/`ledger-apdu 0.11.0` (2024-05) | 🟡 mittel, Android-only | Physische Verbindung, kein Funk. |
+
+**Zu `hwi 0.10.0`:** Das ist ein Rust-Wrapper um das Python-HWI und setzt eine Python-Laufzeit voraus. **Auf Mobilgeräten unbrauchbar** — als Abkürzung ausgeschlossen, auch wenn der Crate-Name das Gegenteil nahelegt.
+
+#### 2.7.5 Gerätematrix
+
+| Gerät | Transport zum Telefon | BIP-388 | Als C-Quelle | Als Hardware-B |
+|---|---|---|---|---|
+| **Coldcard Q** | QR (BBQr, eigene Kamera + Display), NFC, microSD | ✅ | ✅ | ✅ |
+| **Coldcard Mk4** | NFC, microSD | ✅ | ✅ | ✅ |
+| **Keystone** | QR (UR, animiert) | ✅ | ✅ | ✅ |
+| **SeedSigner** | QR (UR) | ✅ | ✅ | ⚠️ speichert selbst keine Seeds |
+| **Blockstream Jade Plus** | QR, USB, BLE | ✅ | ✅ | ✅ |
+| **Foundation Passport** | QR, microSD | ✅ | ✅ | ✅ |
+| **BitBox02 Nova** | **BLE (Whisper)** auf iOS · USB-C auf Android | ✅ | ✅ | ✅ |
+| **BitBox02** (ohne Nova) | USB-C — **Android-only** | ✅ | ✅ | ✅ |
+| **Ledger Nano X** | **BLE** · NFC | ✅ ab App 2.1.0 | ✅ | ✅ |
+| **Ledger Nano S Plus** | USB — **Android-only** | ✅ ab App 2.1.0 | ✅ | ✅ |
+| **Coinkite Tapsigner** | NFC | ❌ Einzelschlüssel-Karte, keine Policy-Registrierung | ✅ | ⚠️ signiert PSBT, zeigt aber nichts an — kein eigenes Display, damit kein Schutz nach 2.7.3 |
+
+#### 2.7.6 Staffelung und Begründung
+
+| Phase | Transporte | Damit abgedeckt |
+|---|---|---|
+| **v1** | **QR + NFC** | Coldcard Q/Mk4, Keystone, SeedSigner, Jade Plus, Passport, Tapsigner |
+| **v1.1** | **+ BLE** | **BitBox02 Nova, Ledger Nano X** |
+| **v1.1** | **+ USB (Android)** | BitBox02, Ledger Nano S Plus, Jade |
+
+**Warum QR zuerst und nicht BitBox/Ledger zuerst:** QR ist auf beiden Plattformen identisch, braucht kein Vendor-SDK, kein Pairing, keine Entitlements und keine Funkstrecke — und die Rust-Crates sind aktuell gepflegt (`bbqr` Juli 2026, `ur` Juli 2026). Damit steht der `ExternalSigner`-Pfad in v1 **real getestet** (Anforderung aus E5), statt nur als Interface zu existieren.
+
+**Warum BitBox02 Nova und Ledger trotzdem fest eingeplant sind:** Es sind die Geräte, die du genannt hast, und sie sind für viele Nutzer die realistische Wahl. Der Grund für v1.1 ist Aufwand, nicht Ablehnung:
+
+- **BitBox02 Nova:** `bitbox-api 0.13.0` ist aktuell gepflegt. ⟨**offen**: ob der Crate den Whisper-BLE-Transport abdeckt oder nur USB — falls nur USB, ist das BLE-Protokoll nachzubauen, und iOS-Unterstützung hängt daran.⟩
+- **Ledger:** `ledger-transport`/`ledger-apdu 0.11.0` sind generisch und seit Mai 2024 unverändert; ein Rust-Crate auf App-Ebene für die Bitcoin-App existiert **nicht**. BIP-388-Registrierung und PSBT-Signatur müssten als APDU-Sequenzen selbst geschrieben werden — sicherheitskritischer Code ohne gepflegte Referenz. Das ist der teuerste Posten der ganzen Liste und der Grund, warum er nicht in v1 steht.
+
+#### 2.7.7 Was die Anbindung sicherheitstechnisch ändert
+
+| Bedrohung | Ohne Hardware-C | Mit Hardware-C |
+|---|---|---|
+| **T9 Supply Chain** | 🔴 A, B, C teilen eine Codebasis — ein Angriff trifft alle drei | 🟡 C stammt aus fremder Codebasis, fremdem RNG, fremder Firmware. Das Quorum hat erstmals **zwei** Implementierungen. |
+| **T10 RNG-Fehler** | 🔴 ohne Zusatzquelle nicht abgedeckt | ✅ C hat einen unabhängigen RNG |
+| **T4 kompromittiertes Telefon** | 🔴 unverändert | 🔴 **unverändert** — C signiert im Normalbetrieb nicht. Erst Hardware-**B** (6.6) ändert daran etwas. |
+
+> **Die wichtigste Zeile ist die letzte.** Ein Hardware-C verbessert die Erzeugung und die Supply-Chain-Lage, aber **nicht** den Alltagsbetrieb — im Normalfall signieren weiterhin A und B auf demselben Telefon. Wer T4 adressieren will, muss B verlagern, nicht C. Das ist kein Argument gegen Hardware-C, sondern gegen die Erwartung, damit sei das Telefonproblem gelöst.
+
+#### 2.7.8 Neue Bedrohung durch die Anbindung
+
+| ID | Angriff | Greift die Architektur | Restrisiko |
+|---|---|---|---|
+| **T19** | **Manipulierter Transportkanal** — BLE-MITM beim Pairing, gefälschter QR-Code, NFC-Relay | ✅ **Teilweise.** Was über den Kanal geht, sind PSBTs und xpubs — kein privates Material. Ein Angreifer kann ein manipuliertes PSBT einschleusen, aber der Signer prüft es auf seinem **eigenen Display** (2.7.3), und unser Verifier prüft die Rückgabe erneut gegen den gespeicherten Descriptor. Die Kette bricht an einem der beiden Displays. | Ein Angreifer, der beim **xpub-Import** MITM spielt, kann einen eigenen xpub unterschieben — dann steht sein Schlüssel im Descriptor. **Gegenmaßnahme: der importierte xpub wird auf dem Gerätedisplay bestätigt, nicht nur auf dem Telefon.** Ohne diesen Schritt ist der Import der schwächste Punkt der Hardware-Anbindung. |
+
 ---
 
 ## 3. Signaturfluss
@@ -926,8 +1115,9 @@ Zusätzlich prüft `sign_b`, dass die bereits vorhandene Signatur von A zum erwa
 | **T6** | **Manipulierte Change-Adresse** — kompromittierter Builder oder JS-Schicht leitet Change an den Angreifer | keine (Schlüssel bleiben sicher) | ✅ **Ja, das ist der Kernzweck von `trinity-verify`.** Die Kette bricht bei V3/V4: Jeder Output, der weder ein erklärter Empfänger noch eine **unabhängig aus dem gespeicherten Descriptor abgeleitete** Change-Adresse ist, führt zur Ablehnung **vor** jedem Schlüsselzugriff. Da der Verifier weder `miniscript` noch den Builder-Code nutzt, kann sich ein Builder-Bug nicht selbst bestätigen. | Ein Angreifer, der zusätzlich `descriptor.json` **und** `trinity-verify` ersetzt, gewinnt — das ist aber bereits T4 oder T9. Restrisiko: ein Bug im eigenen Parser. Gegenmaßnahme: Differential Testing gegen Core (5.1). |
 | **T7** | **Manipulierte Empfängeradresse** — JS-Schicht zeigt X, PSBT enthält Y | keine | ✅ **Weitgehend.** Die Kette bricht an der **nativen** Bestätigungsanzeige: der Dialog wird aus dem `PsbtVerdict` des Rust-Verifiers gerendert, nicht aus JS-State. Der Nutzer sieht, was tatsächlich im PSBT steht. | Der Nutzer muss die Adresse **lesen**. Gegenmaßnahme: Anzeige in Vierergruppen, erste und letzte 8 Zeichen hervorgehoben, plus ein Adressbuch mit Wiedererkennung bekannter Empfänger. |
 | **T8** | **Address Poisoning** — Lookalike-Adresse mit identischen Anfangs-/Endzeichen wird per Dust in die Historie gesetzt; 2026 industrialisiert (≈ 3 Mio Dust-Transfers durch einen einzelnen Contract) | keine | ⚠️ **Teilweise.** Maßnahmen: (a) **Kein Copy-Paste aus der Transaktionshistorie** — Adressen aus eingehenden Transaktionen sind in der UI nicht als Sendeziel wählbar; (b) eingehender Dust unterhalb einer Schwelle wird markiert und aus der Coin Selection ausgeschlossen; (c) Adressbucheinträge nur explizit mit Label anlegbar; (d) Warnung, wenn eine neue Zieladresse mit einer bekannten in den ersten/letzten 6 Zeichen übereinstimmt, aber nicht identisch ist. | Ein Nutzer, der außerhalb der App kopiert (Messenger, E-Mail), ist ungeschützt. Die Warnung nach (d) ist der letzte Schutz und hängt davon ab, dass die echte Adresse bereits bekannt ist. |
-| **T9** | **Supply-Chain-Angriff auf die App** — kompromittierte Dependency, Build-Server oder Update | **A und B gleichzeitig** | ⚠️ **Teilweise, und das ist die unangenehmste Zeile der Tabelle.** Maßnahmen: `cargo vendor`, exakte Pins, reproducible builds mit ≥ 2 unabhängigen Verifizierern, `cargo-deny`/`-audit`/`-vet`, keine dynamischen Nachladewege, Dependency-Budget für den Signaturpfad. **Aber:** A und B teilen die Codebasis — ein erfolgreicher Angriff trifft beide. Der Coldcard-Fall war genau das: ein Build-Fehler, keine Kryptografie-Schwäche. | 🔴 **Hoch.** Die einzige strukturelle Antwort ist Implementierungsdiversität: B auf Fremd-Hardware (6.6) und C aus einer anderen Quelle. Bis dahin ist das Quorum implementierungsseitig 1-von-1. **Muss so im Onboarding stehen.** |
-| **T10** | **RNG-Fehler** — OS-CSPRNG schwach, virtualisiert, oder Build-Fehler wie bei Coldcard | alle drei bei Erzeugung | ✅ **Ja, bei genutzter Würfeloption.** Die Kette bricht am OR-Kombinierer (2.2): mit ≥ 50 geheimen Würfen bleiben ≥ 128 bit, selbst wenn der CSPRNG vollständig vorhersagbar ist. Für C sind 99 Würfe **Pflicht**. Zusätzlich: Roh-Entropie anzeigbar, Ableitung extern nachrechenbar. | Für A und B ist die Würfeloption freiwillig — wer sie überspringt, ist gegen T10 ungeschützt. **Zu erwägen (Abschnitt 7, O2): Würfel auch für B verpflichtend machen.** |
+| **T9** | **Supply-Chain-Angriff auf die App** — kompromittierte Dependency, Build-Server oder Update | **A und B gleichzeitig** | ⚠️ **Teilweise, und das ist die unangenehmste Zeile der Tabelle.** Maßnahmen: `cargo vendor`, exakte Pins, reproducible builds mit ≥ 2 unabhängigen Verifizierern, `cargo-deny`/`-audit`/`-vet`, keine dynamischen Nachladewege, Dependency-Budget für den Signaturpfad. **Aber:** A und B teilen die Codebasis — ein erfolgreicher Angriff trifft beide. Der Coldcard-Fall war genau das: ein Build-Fehler, keine Kryptografie-Schwäche. | 🟡 **Reduzierbar ab v1.** Die einzige strukturelle Antwort ist Implementierungsdiversität. **C auf einem Hardware-Signer erzeugen (2.2.5 Weg a) ist ab der Wallet-Erstellung möglich** und macht aus 1-von-1 ein 2-von-1. Vollständig gelöst erst mit Hardware-**B** (6.6). Wer C in der App erzeugt, bleibt bei 1-von-1 — **muss so im Onboarding stehen.** |
+| **T10** | **RNG-Fehler** — OS-CSPRNG schwach, virtualisiert, oder Build-Fehler wie bei Coldcard | alle drei bei Erzeugung | ⚠️ **Nur bei genutzter Zusatzquelle oder Hardware-C.** Die Kette bricht am OR-Kombinierer (2.2): mit einer zählbaren Klasse-A-Quelle (≥ 50 Würfe / 128 Münzen / 1 Kartendeck) bleiben ≥ 128 bit, selbst wenn der CSPRNG vollständig vorhersagbar ist. Ein auf Hardware erzeugtes C hat ohnehin einen unabhängigen RNG. Zusätzlich: Roh-Entropie anzeigbar, Ableitung extern nachrechenbar. | 🔴 **Zusatzentropie ist durchgehend optional (E3).** Wer sie für alle drei Schlüssel überspringt **und** C in der App erzeugt, ist gegen genau den Fehlertyp ungeschützt, der bei Coldcard ≈594 BTC gekostet hat. Die App muss das an der Stelle sagen, an der übersprungen wird — einmal, sachlich, ohne Blockade. Klasse-B-Quellen (Sensorrauschen) ändern daran **nichts**, weil ihnen 0 bit angerechnet werden (2.2.1). |
+| **T19** | **Manipulierter Transportkanal zum Hardware-Signer** — BLE-MITM beim Pairing, gefälschter QR, NFC-Relay | keine (über den Kanal geht nur Öffentliches) | ✅ **Teilweise.** Es wandern nur PSBTs und xpubs über den Kanal, nie privates Material. Ein untergeschobenes PSBT wird auf dem **Display des Signers** geprüft — einem Bildschirm außerhalb der Kontrolle unserer App — und die Rückgabe erneut von `trinity-verify` gegen den gespeicherten Descriptor. Die Kette bricht an einem der beiden Displays. | MITM beim **xpub-Import** kann einen fremden Schlüssel in den Descriptor bringen. **Gegenmaßnahme: importierter xpub und BIP-388-Policy werden auf dem Gerätedisplay bestätigt, nicht nur auf dem Telefon** (2.7.3). Ohne diesen Schritt ist der Import der schwächste Punkt der Hardware-Anbindung. |
 | **T11** | **Descriptor-Verlust** — Backups vorhanden, aber die Wallet-Konfiguration fehlt | keine, aber Mittel unzugänglich | ✅ **Ja, wenn die UX-Maßnahmen greifen.** Descriptor ist Pflichtbestandteil jedes Backup-Ausdrucks, wird beim Backup-Nachweis mit abgefragt, ist als BSMS-Record (BIP-129) exportierbar und liegt zusätzlich unverschlüsselt in `descriptor.json` (Cloud-Backup ausdrücklich **erlaubt** — er ist nicht geheim). | Mit allen drei xpubs, aber ohne Descriptor, ist die Rekonstruktion trivial (`wsh(sortedmulti(2,…))`, Reihenfolge egal dank BIP-67). Mit nur zwei Seeds und **ohne** dritten xpub ist die Wallet **unwiederbringlich verloren** — kein Brute-Force möglich. 🔴 Deshalb ist der Descriptor auf Papier nicht optional. |
 | **T12** | **Backup-B und C am selben Ort** — Einbruch, Hausdurchsuchung, Feuer | **B und C** | ❌ **Nein — und diese Regel trägt das gesamte Modell.** Wer beide Papier-Backups findet, hat das Quorum. Die Passphrase hilft **nicht**: sie schützt nur die Gerätekopie von B, nicht das Papier. | 🔴 **Vollständiger Verlust.** Nur durch UX adressierbar: Ortstrennung ist Pflichtabfrage im Onboarding, wird beim Backup-Ausdruck wiederholt, und die App fragt periodisch nach Bestätigung. Die App kann es nicht prüfen. **Feuer/Wasser sind der Gegenfall:** dieselbe Trennung, die vor Einbruch schützt, schützt auch vor dem Verlust beider Backups in einem Brand. |
 | **T13** | **Nonce-Fehler / Nonce-Wiederverwendung** | der signierende Schlüssel | ✅ **Ja.** RFC 6979 über libsecp256k1, kein RNG im Signaturpfad, plus Determinismus-Test in CI und Eigenverifikation nach jeder Signatur (3.4). | Seitenkanal in libsecp256k1 selbst. Nicht durch uns adressierbar; libsecp256k1 ist die am intensivsten geprüfte Implementierung. |
@@ -945,9 +1135,10 @@ Diese Liste gehört in die App, nicht nur in dieses Dokument.
 2. **Diebstahl mit beobachteter Passphrase** (T5) — Gerät + Passphrase = Quorum.
 3. **Beide Papier-Backups am selben Ort** (T12) — die eine Regel, die der Nutzer einhalten muss und die die App nicht prüfen kann.
 4. **Nötigung** (T17).
-5. **Supply-Chain-Angriff auf die App** (T9) — nur reduziert, nicht ausgeschlossen, solange A und B dieselbe Implementierung teilen.
+5. **Supply-Chain-Angriff auf die App** (T9) — nur reduziert, nicht ausgeschlossen, solange A und B dieselbe Implementierung teilen. Ein Hardware-C verbessert die Lage, löst sie aber nicht.
 6. **Verlust von Descriptor *und* drittem xpub** bei nur zwei vorhandenen Seeds (T11) — kryptografisch unwiederbringlich.
 7. **Nutzer, der die Empfängeradresse nicht liest** (T7, T8).
+8. **RNG-Fehler bei vollständig übersprungener Zusatzentropie und in-App erzeugtem C** (T10) — die Entscheidung, Zusatzentropie optional zu halten (E3), verschiebt diesen Fall bewusst in die Verantwortung des Nutzers. Die App macht das an der Übersprungstelle sichtbar; sie blockiert nicht.
 
 ---
 
@@ -977,6 +1168,9 @@ Der Grundgedanke: Eigene Assertions belegen, dass der Code tut, was der Autor da
 | **D14** | Descriptor-Import Sparrow | `export_sparrow` | Sparrow-Import, Adressvergleich | erste 20 Receive- und Change-Adressen identisch | manuell je Release, dokumentiert |
 | **D15** | BSMS-Record | `export_bsms` | Sparrow-BSMS-Import (≥ v1.7.3) | Wallet identisch rekonstruiert | manuell je Release |
 | **D16** | Argon2id | `argon2 0.5.3` | RFC-9106-Testvektoren + `argon2` CLI | Output bitgleich für beide Profile | Vektoren + 100 zufällige |
+| **D17** | **12-Wort-Ableitung** | `trinity-entropy` mit `L=16` | BIP-39-Testvektoren + unabhängiges Tool | Mnemonic und Seed identisch | offizielle Vektoren + 1.000 zufällige |
+| **D18** | **BIP-388 Wallet Policy** | `trinity-export` Policy-Serialisierung | Bitcoin Core `importdescriptors` aus dem expandierten Template **und** Gerätedisplay-Abgleich | Expandierte Policy ergibt bitgleiche Adressen wie der Descriptor | 200 Setups + 1 manueller Geräteabgleich je Release |
+| **D19** | **BBQr / UR Roundtrip** | `bbqr 0.5.0`, `ur 0.5.2` | Coldcard Q bzw. Keystone: PSBT hin, signiertes PSBT zurück | PSBT nach Roundtrip bytegleich; Signatur valide | 200 PSBTs, inkl. mehrframiger 5–20 KB Multisig-PSBTs |
 
 **D7/D8 verdienen eine Erklärung:** Dass zwei unabhängige Implementierungen *bitgleiche* Signaturen erzeugen, ist nur wegen RFC 6979 möglich. Wäre die Nonce zufällig, könnte man nur „beide verifizieren" prüfen — deutlich schwächer. Der Determinismus ist damit nicht nur eine Sicherheitseigenschaft, sondern auch das, was diesen Test überhaupt scharf macht.
 
@@ -996,6 +1190,10 @@ Der Grundgedanke: Eigene Assertions belegen, dass der Code tut, was der Autor da
 | **P10** | Entropie-Kombinierer: bei festem `raw_csprng` sind unterschiedliche Würfelfolgen ⇒ unterschiedliche Entropie (Kollisionsfreiheit in der Stichprobe) | zufällige Würfelfolgen |
 | **P11** | Ein PSBT mit anderem SIGHASH als `SIGHASH_ALL` wird abgelehnt | alle SIGHASH-Werte |
 | **P12** | Ein PSBT mit `non_witness_utxo` statt `witness_utxo` wird abgelehnt (V9) | konstruiert |
+| **P13** | **Jede Mutation von `word_count` im Blob-Header führt zum AEAD-Fehler**, nie zu einer teilweisen Entschlüsselung | Header-Bitflips über beide gültigen Werte |
+| **P14** | **Kanonische `extra_bytes`-Kodierung ist injektiv:** verschiedene Quellkombinationen ergeben nie dieselbe Bytefolge (Separator-Regel aus 2.2.2) | zufällige Kombinationen aus Würfeln, Münzen, Karten, inkl. leerer Teilmengen |
+| **P15** | **Der Entropie-Zähler schreibt Klasse-B-Quellen exakt 0 bit gut**, unabhängig von der Datenmenge | zufällige Sensor-Blobs beliebiger Länge |
+| **P16** | Ein 12-Wort- und ein 24-Wort-Setup mit identischem `raw_csprng` und `extra_bytes` ergeben **verschiedene** Master-Fingerprints | zufällige Eingaben |
 
 ### 5.3 Signet-CI-Szenarien
 
@@ -1017,6 +1215,12 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **S12** | RBF-Fee-Bump | Neue Transaktion durchläuft die volle Verifikation und konfirmiert |
 | **S13** | Backend-Ausfall: Electrum-Server während des Syncs abschalten | Sauberer Fehler, kein Datenverlust, kein Absturz, kein stiller Fallback auf ein anderes Backend |
 | **S14** | Biometrie-Invalidierung: Enrollment-Änderung simulieren | App erkennt den Zustand, meldet ihn korrekt, bietet Neu-Setup an, verliert **keine** Descriptor-Daten |
+| **S15** | **Onboarding mit 12 Wörtern**, vollständig durch bis zur ersten Adresse, danach S4-Recovery | Quiz zieht 3 aus 12; `word_count=12` im Header und in `descriptor.json`; Recovery-UI zeigt 12 Felder; Sweep erfolgreich |
+| **S16** | **Onboarding mit Hardware-C über QR** (Coldcard-Q-Emulator oder Gerät in der Testbank): xpub importieren, BIP-388-Policy registrieren, Wallet abschließen | Descriptor enthält den Geräte-xpub mit korrekter Origin; `PolicyId` persistiert; erste Adresse identisch zur Core-Referenz |
+| **S17** | **Signatur mit Hardware-C** im Recovery-Fall: PSBT per BBQr raus, signiert zurück | Signatur valide, Transaktion konfirmiert |
+| **S18** | **BIP-388-Change-Erkennung:** Sweep-PSBT mit Change an den Hardware-Signer geben | Gerät zeigt den Change-Output **als eigenen** an, nicht als fremden Empfänger. Schlägt das fehl, ist die Policy-Registrierung fehlerhaft. |
+| **S19** | **Zusatzentropie vollständig übersprungen** für A, B und C | Setup läuft durch (keine Blockade, E3), der T10-Hinweis erscheint genau einmal je Schlüssel, und die Roh-Entropie-Anzeige ist trotzdem vollständig |
+| **S20** | **Entropie-Nachrechnung** aus dem Verifikationsblatt für alle Quellkombinationen | Ein externes Shell-Skript reproduziert `entropy` aus `raw_csprng` und `extra_bytes` für Würfel, Münzen, Karten und Mischformen |
 
 ### 5.4 Weitere Testebenen
 
@@ -1027,7 +1231,8 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **FFI-Grenz-Test** | Automatisierter Vergleich aller `#[uniffi::export]`-Signaturen gegen `ffi-allowlist.toml` (1.3). |
 | **Reproducible-Build-Test** | Zwei unabhängige CI-Runner bauen dasselbe Tag; Artefakt-Hashes müssen übereinstimmen. |
 | **Dependency-Gates** | `cargo-deny`, `cargo-audit`, `cargo-vet`; Dependency-Zahl des Signaturpfads ≤ 40 (1.7). |
-| **Interop-Regression** | Bei jedem Sparrow- und Core-Update: D14, D15, S5, S6 erneut. Ein Descriptor, der gestern importierbar war, kann es morgen nicht mehr sein. |
+| **Interop-Regression** | Bei jedem Sparrow- und Core-Update: D14, D15, S5, S6 erneut. Bei jedem Firmware-Update eines unterstützten Hardware-Signers: D18, D19, S16–S18 erneut. Ein Descriptor oder ein QR-Format, das gestern funktionierte, kann es morgen nicht mehr tun. |
+| **Hardware-Testbank** | Physische Geräte in CI-Reichweite für die QR-Pfade (Kamera-Rig oder Frame-Injection auf Protokollebene). Für BLE/USB ab v1.1 zusätzlich BitBox02 Nova und Ledger Nano X. Ohne echte Geräte ist der `ExternalSigner`-Pfad nicht als getestet zu behaupten. |
 
 ### 5.5 „Release-fähig" — Definition of Done
 
@@ -1035,9 +1240,11 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 
 | # | Kriterium |
 |---|---|
-| 1 | D1–D16 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
-| 2 | P1–P12 grün mit ≥ 100.000 Fällen je Property. |
-| 3 | S1–S14 grün auf Signet **und** Regtest. |
+| 1 | D1–D19 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
+| 2 | P1–P16 grün mit ≥ 100.000 Fällen je Property. |
+| 3 | S1–S20 grün auf Signet **und** Regtest. |
+| 3b | **Beide Wortlängen** (24 und 12) durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
+| 3c | **Mindestens ein realer Hardware-Signer** über QR in der Testbank: S16, S17, S18 grün. Emulator allein genügt nicht, weil BIP-388-Displayverhalten nur am Gerät prüfbar ist. |
 | 4 | **S4 und S5 grün** — Recovery mit und ohne diese App. Diese beiden allein sind ein Veto. |
 | 5 | S9 grün **inklusive** der Assertion, dass kein Schlüsselzugriff stattfand. |
 | 6 | Fuzzing ≥ 24 h ohne Crash oder Timeout auf allen drei Zielen. |
@@ -1059,20 +1266,34 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 ```mermaid
 flowchart TD
     A0["Start"] --> A1["Aufklärung: 3 Schlüssel, 2 genügen<br/>Was NICHT geschützt ist (T4, T5, T12, T17)<br/>— nicht überspringbar, Verweildauer erzwungen"]
-    A1 --> A2["Schlüssel A erzeugen<br/>CSPRNG + optionale Würfel<br/>Roh-Entropie anzeigbar"]
+    A1 --> A1b{"Wortlänge wählen<br/>24 (Default) oder 12<br/>gilt für alle drei Schlüssel, unveränderlich"}
+    A1b --> A1c{"Herkunft von C wählen"}
+    A1c -->|"Hardware-Signer ⭐"| HW1
+    A1c -->|"in dieser App"| A2
+
+    A2["Schlüssel A erzeugen<br/>CSPRNG + optionale Zusatzentropie<br/>Roh-Entropie anzeigbar"]
     A2 --> A3["Biometrie einrichten<br/>SE/StrongBox provisionieren<br/>blob_A schreiben, zeroize"]
     A3 --> A4["Passphrase für B<br/>Diceware-Generator, min. 6 Wörter<br/>ODER Eigenwahl mit harter Entropieprüfung"]
-    A4 --> A5["Schlüssel B erzeugen<br/>CSPRNG + optionale Würfel"]
-    A5 --> A6["B: 24 Wörter + Descriptor anzeigen<br/>NATIV gerendert, Screenshot gesperrt<br/>Druck/Stahl-Anleitung"]
-    A6 --> A7{"Backup-Nachweis B<br/>4 zufällige Wortpositionen"}
+    A4 --> A5["Schlüssel B erzeugen<br/>CSPRNG + optionale Zusatzentropie"]
+    A5 --> A6["B: Wörter + Descriptor anzeigen<br/>NATIV gerendert, Screenshot gesperrt<br/>Druck/Stahl-Anleitung"]
+    A6 --> A7{"Backup-Nachweis B<br/>4 von 24 bzw. 3 von 12 Positionen"}
     A7 -->|falsch| A6
     A7 -->|richtig| A8["blob_B schreiben, zeroize"]
     A8 --> A9["⚠️ PROZESS-NEUSTART<br/>A und B sind aus dem Speicher"]
-    A9 --> A10["Schlüssel C: 99 Würfe PFLICHT<br/>Flugmodus empfohlen"]
-    A10 --> A11["C: 24 Wörter + Descriptor anzeigen<br/>nativ, Screenshot gesperrt"]
-    A11 --> A12{"Backup-Nachweis C<br/>4 zufällige Wortpositionen"}
+    A9 --> A10["Schlüssel C in-App<br/>Zusatzentropie OPTIONAL<br/>beim Überspringen: ein Satz zu T10<br/>Flugmodus empfohlen"]
+    A10 --> A11["C: Wörter + Descriptor anzeigen<br/>nativ, Screenshot gesperrt"]
+    A11 --> A12{"Backup-Nachweis C"}
     A12 -->|falsch| A11
-    A12 -->|richtig| A13["⚠️ ORTSTRENNUNG<br/>Backup-B und C NIE am selben Ort<br/>Zwei Orte benennen lassen (Freitext)"]
+    A12 -->|richtig| A13
+
+    HW1["Gerät verbinden<br/>QR · NFC · BLE · USB"] --> HW2["C auf dem Gerät erzeugen<br/>eigener RNG, fremde Codebasis"]
+    HW2 --> HW3["xpub_C importieren<br/>⚠️ auf dem GERÄTEDISPLAY bestätigen"]
+    HW3 --> A2b["A und B wie links erzeugen<br/>kein Prozess-Neustart nötig —<br/>C war nie in diesem Prozess"]
+    A2b --> HW4["BIP-388 Wallet Policy<br/>auf dem Gerät registrieren<br/>alle 3 xpubs auf Gerätedisplay prüfen"]
+    HW4 --> HW5["PolicyId speichern<br/>→ descriptor.json + Ausdruck"]
+    HW5 --> A13
+
+    A13["⚠️ ORTSTRENNUNG<br/>Backup-B und C NIE am selben Ort<br/>Zwei Orte benennen lassen (Freitext)"]
     A13 --> A14{"Bestätigung: getrennte Orte?"}
     A14 -->|nein| A13
     A14 -->|ja| A15["Descriptor exportieren:<br/>Druck, BSMS, Sparrow, Core<br/>Ausdruck bestätigen"]
@@ -1083,21 +1304,29 @@ flowchart TD
     style A12 fill:#3a1010,stroke:#c0392b,color:#fff
     style A13 fill:#3a1010,stroke:#c0392b,color:#fff
     style A9 fill:#3a3010,stroke:#d4a017,color:#fff
-    style A10 fill:#3a3010,stroke:#d4a017,color:#fff
+    style HW3 fill:#3a3010,stroke:#d4a017,color:#fff
+    style HW4 fill:#3a3010,stroke:#d4a017,color:#fff
+    style HW1 fill:#102a18,stroke:#27ae60,color:#fff
 ```
+
+**Zwei Wahlpunkte ganz vorn, und beide sind unveränderlich:** Wortlänge (E3b) und Herkunft von C (E6). Beide bestimmen das Backup-Format und das Datenmodell; sie nachträglich zu ändern heißt, ein neues Setup zu erzeugen und zu sweepen. Deshalb stehen sie vor der ersten Schlüsselerzeugung und nicht in einem Einstellungsmenü.
+
+**Der Hardware-Zweig spart den Prozess-Neustart.** Wird C auf einem externen Gerät erzeugt, war sein Schlüsselmaterial nie im Speicher dieser App — die Session-Trennung, die Weg (b) mühsam herstellt, ist hier strukturell gegeben.
 
 **Der Backup-Nachweis — ohne dass die App die Seeds sieht:**
 
 Die App **kennt** die Wörter zu diesem Zeitpunkt ohnehin (sie hat sie erzeugt). Die Anforderung „ohne dass die App die Seeds sieht" ist deshalb präzise so zu lesen: **die JS-Schicht** sieht sie nicht, und **nach** dem Onboarding sieht sie niemand mehr.
 
 Umsetzung:
-- `quiz_challenge(slot)` gibt vier zufällige **Wortpositionen** zurück (z.B. `[3, 9, 17, 22]`) — nur `u32`, keine Wörter, über FFI.
+- `quiz_challenge(slot)` gibt zufällige **Wortpositionen** zurück (z.B. `[3, 9, 17, 22]`) — nur `u32`, keine Wörter, über FFI. Anzahl abhängig von `word_count`: **4 bei 24 Wörtern, 3 bei 12**.
 - Der Nutzer tippt vier Wörter in ein natives Eingabefeld (nicht React Native — die Wörter dürfen den JS-Heap nicht berühren).
 - `quiz_answer(slot, answers)` vergleicht in Rust **in konstanter Zeit** gegen die Wortindizes und gibt nur `QuizResult{passed: bool, wrong_positions: Vec<u32>}` zurück.
 - Bei Fehlschlag: neue, **andere** Positionen. Kein Erraten durch Wiederholung.
 - **Blockierend:** ohne bestandenen Nachweis für B **und** C gibt `reveal_next_address()` einen Fehler zurück. Es gibt keine Empfangsadresse und damit keine Möglichkeit, Geld in eine ungesicherte Wallet zu schicken. Das ist die technische Durchsetzung von Randbedingung 2 — nicht ein Hinweistext.
 
-**Warum vier Wörter und nicht alle 24:** 24 abzutippen führt zu Abbruch oder zum Abfotografieren des Bildschirms. Vier zufällige Positionen aus 24 belegen mit hinreichender Wahrscheinlichkeit, dass eine vollständige Abschrift existiert, und sind zumutbar. Bei Fehlschlag wird mit anderen Positionen wiederholt.
+**Warum eine Stichprobe und nicht alle Wörter:** Alle 24 abzutippen führt zu Abbruch oder zum Abfotografieren des Bildschirms. Vier zufällige Positionen aus 24 (bzw. drei aus 12) belegen mit hinreichender Wahrscheinlichkeit, dass eine vollständige Abschrift existiert, und sind zumutbar. Bei Fehlschlag wird mit anderen Positionen wiederholt.
+
+**Beim Hardware-Zweig entfällt der Nachweis für C.** Das Gerät hat den Seed erzeugt und führt seinen eigenen Backup-Ablauf (Wortliste bzw. microSD); unsere App sieht die Wörter nie und kann folglich nichts abfragen. An diese Stelle tritt der Hinweis, das Geräte-Backup nach dessen Anleitung anzulegen — **plus dieselbe Ortstrennungs-Abfrage**, denn Backup-B und das Geräte-Backup von C dürfen ebenso wenig zusammenliegen (T12).
 
 **Descriptor-Ausdruck:** Der Backup-Ausdruck enthält immer beides — die 24 Wörter **und** den vollständigen Descriptor mit allen drei xpubs und Origin-Informationen — plus einen QR-Code des Descriptors und die Kurzanleitung „Wiederherstellung in Sparrow". Randbedingung 5 wird damit zu einem Layout, nicht zu einer Empfehlung.
 
@@ -1210,7 +1439,7 @@ pub struct LocalSigner   { slot: KeySlot, keystore: Arc<Keystore> }
 pub struct ExternalSigner{ transport: Box<dyn PsbtTransport> }  // NFC, QR (BBQr/UR), USB
 ```
 
-Weil `sign_b` intern nur `Signer::sign(psbt) -> psbt` aufruft, ist der Austausch ein Konfigurationswechsel, keine Architekturänderung. **Der `ExternalSigner`-Pfad muss in v1 real durchgetestet sein** (Testfall S8), auch wenn zunächst kein Gerät empfohlen wird — ein ungetesteter Pfad ist kein Pfad.
+Weil `sign_b` intern nur `Signer::sign(psbt) -> psbt` aufruft, ist der Austausch ein Konfigurationswechsel, keine Architekturänderung. **Der `ExternalSigner`-Pfad ist in v1 real durchgetestet** (Testfälle S8, S16–S18) — über den QR-Transport, der ohnehin für Hardware-C gebaut wird (Abschnitt 2.7). Transporte, Gerätematrix und die BIP-388-Registrierung sind dort spezifiziert und gelten hier unverändert.
 
 **Der Wechselvorgang:**
 
@@ -1238,15 +1467,17 @@ flowchart TD
 
 | ID | Frage | Optionen | Trade-off | **Empfehlung** |
 |---|---|---|---|---|
-| **O1** | Wo wird C erzeugt? | (a) In der App, nach Prozess-Neustart, 99 Würfel · (b) Auf Fremd-Hardware, nur xpub importiert · (c) Nutzer wählt | (a) keine Zusatzkosten, aber **gleiche Codebasis** — bei einem Implementierungsfehler ist C mitbetroffen (R2). (b) echte Diversität, aber Hardwarekauf und höhere Onboarding-Hürde. | **(c) mit (b) als hervorgehobenem Default.** Die App bietet beides an, empfiehlt Fremd-Hardware sichtbar, und benennt bei Wahl von (a) explizit, was dadurch nicht abgedeckt ist. |
-| **O2** | Würfel für B verpflichtend? | (a) optional (Vorgabe) · (b) verpflichtend, 50 Würfe · (c) verpflichtend, 99 Würfe | Würfel für B schließen T10 auch für den zweiten Gerätschlüssel. Kosten: ~10 Minuten Onboarding. Der Coldcard-Fall zeigt, dass genau diese 10 Minuten den Unterschied machten. | **(b) — 50 Würfe für B verpflichtend.** Abweichung von der Vorgabe, deshalb explizit als Entscheidung markiert. Begründung: B ist der Schlüssel, der beim Geräteverlust trägt; ein schwaches B entwertet die gesamte Recovery-Strategie. A darf optional bleiben, weil ein schwaches A durch B+C aufgefangen wird. |
+| ~~**O1**~~ | ~~Wo wird C erzeugt?~~ | — | — | ✅ **Entschieden (E6):** Nutzer wählt bei der Erstellung; Hardware-Signer ist hervorgehobener Default, in-App bleibt möglich. Umgesetzt in 2.2.5 und 2.7. |
+| ~~**O2**~~ | ~~Zusatzentropie verpflichtend?~~ | — | — | ✅ **Entschieden (E3): durchgehend optional**, auch für C — abweichend von meiner Empfehlung. Konsequenz ist in T10 und 4.2 Punkt 8 dokumentiert: Wer für alle drei Schlüssel überspringt und C in der App erzeugt, ist gegen den Coldcard-Fehlertyp ungeschützt. Die App macht das an der Übersprungstelle sichtbar und blockiert nicht. |
+| **O13** | Umfang der Zusatzentropie-Quellen in v1 | (a) nur Würfel · (b) Würfel + Münzen + Karten · (c) zusätzlich Klasse-B-Sensorquellen | Jede Quelle ist eigener Code, eigene kanonische Kodierung und eigene Testvektoren. Klasse B bringt keine anrechenbaren Bit und verleitet zu falscher Sicherheit (2.2.1). | **(b).** Würfel, Münzen und Karten sind alle drei zählbar, teilen dieselbe ASCII-Kodierungslogik und decken die realistischen Fälle ab („ich habe keine Würfel, aber ein Kartendeck"). Klasse B **nicht in v1** — der Nutzen ist null anrechenbare Bit, das Risiko ist ein Fortschrittsbalken, der lügt. |
+| **O14** | BLE-Transport: Reihenfolge BitBox02 Nova vs. Ledger | (a) BitBox zuerst · (b) Ledger zuerst · (c) parallel | `bitbox-api 0.13.0` ist aktuell gepflegt; für Ledger existiert **kein** Rust-Crate auf App-Ebene, BIP-388-Registrierung und Signatur wären selbstgeschriebene APDU-Sequenzen ohne gepflegte Referenz (2.7.6). | **(a) BitBox02 Nova zuerst.** Erst klären, ob `bitbox-api` den Whisper-BLE-Transport abdeckt (Anhang B, Punkt 8). Ledger danach, mit eigenem Review-Budget für den APDU-Code. |
 | **O3** | Default-Chain-Backend | (a) CBF (Kyoto) · (b) Nutzer muss wählen, kein Default · (c) Electrum mit eingetragenem Server | (a) bester Kompromiss aus Privacy und Bequemlichkeit, aber der Privacy-Anspruch ist noch unbelegt (0.2, Lücke 3). (b) höchste Ehrlichkeit, höchste Abbruchrate. | **(a) CBF als Default**, mit ehrlichem Label („privater als ein fremder Server, nicht anonym") — **aber erst, nachdem Lücke 3 geschlossen ist.** Bis dahin (b). |
 | **O4** | Argon2id-Profilwahl | (a) automatisch nach RAM · (b) Nutzer wählt · (c) fest `LOW` für alle | (a) beste Sicherheit auf gutem Gerät, aber unterschiedliche Sicherheitsniveaus zwischen Nutzern. (c) einheitlich und vorhersagbar, aber verschenkt Sicherheit auf modernen Geräten. | **(a) automatisch**, Profil sichtbar in den Einstellungen, `kdf_profile` im Blob-Header. Ein Wechsel des Profils ist eine Re-Encryption des Blobs und wird als solche angeboten. |
 | **O5** | KEK-Kombinierer für B | (a) `HW ⊕ Argon2id` (Vorgabe) · (b) `HKDF-Extract(salt=argon, ikm=hw)` | Beide sind bei unabhängigen, gleichverteilten Eingaben sicher. (b) liefert zusätzlich Domain-Separation und Kontextbindung zu identischen Kosten. Sicherheitsrelevant ist der Unterschied hier **nicht**. | **(a), wie vorgegeben.** Kein Grund, vom festgelegten Konzept abzuweichen. Aufgeführt zur Transparenz, nicht als Änderungsvorschlag. |
 | **O6** | Crash-Reporting | (a) keins · (b) nur Metadaten, kein Speicherinhalt, opt-in · (c) Standard-SDK | (c) ist ausgeschlossen — Speicherzugriff über dem Rust-Kern widerspricht Anforderung 1 direkt. (a) macht Fehlerdiagnose in Produktion praktisch unmöglich. | **(b), opt-in, ohne Fremd-SDK.** Eigenbau, nur Crash-Typ, Stack-Symbol und Build-Hash; niemals Speicherinhalte, niemals Registerdumps. `panic = "abort"` bleibt. |
 | **O7** | Konsensvalidierung vor Broadcast | (a) `bitcoinconsensus`-Dependency · (b) nur Skript-Prüfung in Rust · (c) keine | (a) eine Dependency mehr im kritischen Pfad, aber libbitcoinconsensus ist Core-Code und schließt eine ganze Fehlerklasse (fehlerhafte Finalisierung) aus. | **(a).** Der Zugewinn — eine finalisierte, aber ungültige Transaktion wird nie gesendet — überwiegt die eine zusätzliche, sehr gut geprüfte Dependency. |
 | **O8** | Receive-/Change-Descriptor: getrennt oder Multipath (BIP-389) | (a) zwei getrennte Descriptoren · (b) ein Multipath-Descriptor (`bdk_wallet` ≥ 2.1.0 unterstützt es) | (b) ist kompakter und ein Backup-Eintrag weniger. (a) hat die deutlich breitere Interop-Unterstützung — und Interop ist hier die eigentliche Versicherung (S5/S6). | **(a).** Zwei Zeilen mehr auf dem Ausdruck sind billiger als ein Descriptor, den Sparrow oder Core in fünf Jahren nicht mehr importieren. |
-| **O9** | Wortlänge der Mnemonics | (a) 24 Wörter · (b) 12 Wörter | (b) ist deutlich angenehmer beim Abschreiben und beim Stahl-Backup. (a) passt bruchfrei zur `HMAC-SHA512[0..32]`-Konstruktion und liefert 256 bit. | **(a) 24 Wörter.** Bei einem 2-von-3, dessen Backups jahrzehntelang liegen, ist Konsistenz mit der Entropiekonstruktion mehr wert als Bequemlichkeit beim einmaligen Abschreiben. |
+| ~~**O9**~~ | ~~Wortlänge der Mnemonics~~ | — | — | ✅ **Entschieden (E3b): pro Wallet wählbar** bei der Erstellung, Default 24, danach unveränderlich. Umgesetzt in 2.2.3; `word_count` liegt im Blob-Header und in `descriptor.json`. |
 | **O10** | Gap-Limit | (a) 20 (Standard) · (b) 100 · (c) konfigurierbar | Ein höheres Limit erlaubt mehr unbenutzte Adressen, kostet aber Scan-Zeit und bricht Recovery in Fremdsoftware, die bei 20 stehenbleibt. | **(a) 20**, mit Warnung bei Annäherung. Kompatibilität mit Sparrow und Core schlägt Flexibilität. |
 | **O11** | Zeitpunkt des externen Security-Audits | (a) vor v1.0 · (b) nach v1.0 mit begrenztem Beta-Kreis · (c) keins | Ein Audit vor v1.0 verzögert; eines danach setzt echtes Geld einem ungeprüften Signaturpfad aus. | **(a) vor v1.0**, Scope: `trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi` und beide Plattform-Keystore-Implementierungen. Kritische und hohe Findings sind Release-Blocker (5.5, Punkt 13). |
 | **O12** | Umgang mit den ⟨API-VERIFY⟩-Stellen | (a) Spike-Woche vor Implementierungsbeginn · (b) im Verlauf klären | Die betroffenen Stellen (BDK-3.1-Signaturen, uniffi-`RustBuffer`-Nullung, Kyoto-Peer-Verhalten) berühren Architekturentscheidungen, nicht nur Details. | **(a) Spike-Woche.** Ergebnis ist ein Update dieses Dokuments, das alle ⟨API-VERIFY⟩-Marken auflöst, bevor Produktionscode entsteht. |
@@ -1279,6 +1510,9 @@ flowchart TD
 **Wallet-Interoperabilität:**
 [Sparrow Features](https://sparrowwallet.com/features/) · [Sparrow v1.7.3 (BSMS)](https://www.nobsbitcoin.com/sparrow-wallet-v1-7-3/) · [Coldcard BSMS-Doku](https://coldcard.com/docs/bsms/)
 
+**Hardware-Signer-Anbindung:**
+[BIP-388 Wallet Policies](https://bips.dev/388/) · [BIP-388 PR #1389](https://github.com/bitcoin/bips/pull/1389) · [Bitcoin Core PR #33008 — BIP-388 mit External Signer](https://github.com/bitcoin/bitcoin/pull/33008) · [BBQr-Spezifikation](https://bbqr.org/) · [BBQr auf GitHub](https://github.com/coinkite/BBQr) · [Blockchain Commons — Animated QRs / UR](https://developer.blockchaincommons.com/animated-qrs/) · [Coldcard Air-Gap-Signing](https://coldcard.com/learn/advanced-concepts/air-gap-signing-methods) · [Whisper — BitBox02 Nova BLE](https://blog.bitbox.swiss/en/whisper-how-the-secure-bluetooth-integration-of-the-bitbox02-nova-works/) · [BitBox Support: Nova auf iOS](https://support.bitbox.swiss/en_US/use-bitboxapp-ios-bitbox02-nova) · [Apple Developer Forums: USB-C ohne MFi](https://developer.apple.com/forums/thread/756763) · [Apple Developer Forums: Custom HID über USB](https://developer.apple.com/forums/thread/756692) · [Apple MFi-Programm FAQ](https://mfi.apple.com/en/faqs.html)
+
 **Passphrase:**
 [OWASP Password Storage Cheat Sheet](https://github.com/OWASP/CheatSheetSeries) · EFF Long Wordlist (7776 Wörter)
 
@@ -1297,6 +1531,10 @@ Vor Implementierungsbeginn in der Spike-Woche (O12) zu klären. Bewusst **nicht*
 | 5 | Sind für `secp256k1 0.29.1` (2024-09-06) Advisories offen? | 0.2 | `cargo-audit` in der Spike-Woche |
 | 6 | Coldcard-Advisory-Details gegen die Primärquelle | 0.2, 2.1 | Bevor Versionsnummern in nutzersichtbaren Texten erscheinen |
 | 7 | Verhalten von `bdk_wallet` bei `sortedmulti` mit permutierter Descriptor-Reihenfolge — identische Adressen garantiert? | D6 | Sollte gelten, ist aber zu belegen statt anzunehmen |
+| 8 | Deckt `bitbox-api 0.13.0` den **Whisper-BLE-Transport** ab oder nur USB? | 2.7.6, O14 | Falls nur USB: BLE-Protokoll selbst nachbauen — und ohne BLE gibt es **keine** BitBox-Unterstützung auf iOS |
+| 9 | Existiert eine gepflegte Rust- oder Swift/Kotlin-Referenz für die **Ledger-Bitcoin-App auf App-Ebene** (BIP-388-Registrierung, PSBT-Signatur), oder sind die APDU-Sequenzen selbst zu schreiben? | 2.7.6, O14 | Bestimmt Aufwand und Review-Budget des teuersten Postens der Transportliste |
+| 10 | Genügt Apples **CoreNFC** für die ISO-7816-Kommunikation mit Coldcard Mk4/Q und Tapsigner, und welches Entitlement ist nötig? | 2.7.4 | Entscheidet, ob NFC wirklich in v1 passt oder ob v1 rein QR wird |
+| 11 | Verhalten der Hardware-Signer bei **12-Wort-Setups** in einer BIP-388-Policy — akzeptieren alle Geräte gemischte und kurze Seeds ohne Sonderfall? | 2.2.3, D18 | Wortlänge ist jetzt wählbar; eine nur mit 24 getestete Gerätekette wäre eine Lücke |
 
 ---
 
