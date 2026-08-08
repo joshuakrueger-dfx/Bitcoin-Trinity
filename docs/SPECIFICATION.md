@@ -43,13 +43,56 @@ Diese sechs sind nachträglich nicht oder nur unter Neuaufbau korrigierbar. Deta
 | **E5** | B ist ab v1 ein austauschbarer Signer hinter derselben PSBT-Schnittstelle | Wenn `sign_with_b` intern an den lokalen Keystore gekoppelt wird, ist der Wechsel auf Fremd-Hardware eine Architekturänderung statt eines Drop-in. | ✅ **Entschieden.** `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` mit `LocalSigner` und `ExternalSigner` ab Tag 1; der `ExternalSigner`-Pfad muss in v1 real getestet sein (Abschnitt 2.7, 6.6). |
 | **E6** | Hardware-Signer als optionale Quelle für C bei der Wallet-Erstellung | Die Transport-Abstraktion und die BIP-388-Registrierung müssen im Datenmodell stehen, bevor der erste Descriptor erzeugt wird — sonst ist ein Hardware-C nachträglich ein neues Setup. | ✅ **Entschieden.** C wahlweise in-App oder auf einem angebundenen Hardware-Signer erzeugt (nur xpub importiert) — **optional, aber empfohlen**. Vier Transporte hinter einem Trait; **QR und NFC in v1, BLE für BitBox02 Nova und Ledger in v1.1**. **Coldcard ist implementiert und getestet, in der UI aber zunächst ausgegraut** — freigeschaltet durch eine Firmware-Prüfung am Gerät (Abschnitt 2.7.9). |
 
+> **Ein vierter Punkt, der keine Sicherheitslücke ist und trotzdem hierher gehört:** Der Maßstab dieses Produkts ist die Aufstellung, aus der der Nutzer kommt — Börse oder Single-Sig — **nicht** ein Multisig aus drei Hardware-Wallets an drei Orten. Damit wird Reibung zu einer Kostenposition im Bedrohungsmodell (T20): Wer das Onboarding abbricht, bleibt dort, wo ein einziger Fehler Totalverlust bedeutet. Abschnitt 0.1 führt das aus und begründet daraus vier Entscheidungen, die sonst wie Nachlässigkeit aussähen.
+
 > **Zwei Annahmen, die dieses Dokument durchzieht und die vor Implementierungsbeginn bestätigt werden müssen:**
 > **(A1)** Zielplattformen sind iOS ≥ 16 und Android ≥ 10 (API 29). Darunter fehlen `kSecAccessControlBiometryCurrentSet`-Semantiken bzw. `setUnlockedDeviceRequired` in verlässlicher Form.
 > **(A2)** Die UI-Schicht ist React Native. Wäre sie nativ (SwiftUI/Compose), entfiele Anforderung 1 nicht — sie würde nur billiger.
 
 ---
 
-## 0.1 Geltungsbereich, Nicht-Ziele, ehrliche Grenzen
+## 0.1 Positionierung — der Maßstab
+
+**Das Ziel ist, deutlich sicherer zu sein als das, was der Nutzer vorher hatte. Nicht, mit einem Multisig aus drei Hardware-Wallets an drei Orten gleichzuziehen.** Diese Festlegung steht hier, weil sie jede Abwägung im Rest des Dokuments bestimmt.
+
+### Woran gemessen wird
+
+| Ausgangslage | Was dort schiefgeht | BTC Trinity dagegen |
+|---|---|---|
+| **Börse / Custodial** | Insolvenz, Hack, Einfrieren, Beschlagnahme. Der Nutzer besitzt nichts, er hat eine Forderung. | ✅ Eigenverwahrung, drei Schlüssel, kein Dritter im Signaturpfad |
+| **Single-Sig auf dem Handy** | Ein Seed-Leak = alles weg. Geräteverlust ohne Backup = alles weg. Ein Schlüssel, ein Fehler, Totalverlust. | ✅ Zwei von drei nötig; Geräteverlust, Backup-Verlust und Einzelschlüssel-Leak sind abgedeckt |
+| **Single-Sig Hardware-Wallet** | Ein Seed, ein Backup, **eine Implementierung**. Der Coldcard-Vorfall traf genau diese Aufstellung: ≈594 BTC aus ≈500 Single-Sig-Wallets. Diebstahl von Gerät und Backup = Totalverlust. | ✅ Kein einzelner Schlüssel und kein einzelnes Backup reicht dem Angreifer |
+| **3× Hardware-Wallet, 3 Orte, 3 Hersteller** | Der Referenzstandard. Deckt zusätzlich das kompromittierte Telefon ab. | ❌ **Da halten wir nicht mit** — und wollen es nicht. Siehe unten. |
+
+### Was das konkret heißt
+
+**Wir gewinnen nicht durch mehr Sicherheit pro Transaktion, sondern durch mehr Nutzer, die überhaupt aus der schlechteren Aufstellung herauskommen.** Das 3×-Hardware-Multisig ist auf dem Papier überlegen, aber es kostet ~500 €, einen Nachmittag Einrichtung, drei Aufbewahrungsorte und die Bereitschaft, mit Descriptoren umzugehen. Wer das nicht macht, bleibt auf Single-Sig — und ist damit schlechter dran als mit allem, was hier spezifiziert ist.
+
+Der praktische Abstand ist außerdem kleiner, als die Tabelle suggeriert: **Der häufigste Totalverlust bei Multisig ist nicht der kompromittierte Schlüssel, sondern der verlorene Descriptor oder ein Backup, das nie korrekt angelegt wurde.** Ein Setup mit erzwungenem Backup-Nachweis, gedrucktem Descriptor und getestetem Recovery-Pfad (Abschnitt 5, S4/S5) kann in der Praxis besser abschneiden als ein theoretisch stärkeres Setup, das der Nutzer falsch aufsetzt.
+
+### Das Designprinzip, das daraus folgt
+
+> **Reibung ist eine Sicherheitskosten-Position, keine Sicherheitsmaßnahme.** Jede zusätzliche Hürde, die die Abbruchwahrscheinlichkeit erhöht, muss mehr Risiko beseitigen, als sie durch Nichtnutzung erzeugt. Denn der Nutzer, der abbricht, landet nicht bei einer etwas unsichereren Wallet — er bleibt bei der Börse oder bei Single-Sig.
+
+Das ist die Begründung für vier Entscheidungen, die sonst wie Nachlässigkeit aussähen:
+
+| Entscheidung | Warum sie unter diesem Maßstab richtig ist |
+|---|---|
+| **Zusatzentropie optional** (E3) | 99 Würfelwürfe als Pflicht kosten mehr Nutzer, als der abgedeckte RNG-Fehlerfall wert ist. Vorausgewählt mit „Überspringen" holt den Großteil des Nutzens zum Bruchteil der Reibung (2.2.1). |
+| **Wortlänge wählbar** (E3b) | 3 × 24 Wörter abzuschreiben ist die häufigste Abbruchstelle im Onboarding jeder Multisig-Wallet. 12 Wörter sind bei 128 bit **kein** realer Sicherheitsverlust gegen Brute-Force (2.2.3). |
+| **Hardware optional** (E6) | Ein Pflicht-Gerätekauf im Onboarding halbiert die Abschlussquote. Empfohlen und vorbereitet, aber nicht Voraussetzung. |
+| **Passphrase-Bedienbarkeit** (6.2.1) | ~45 Sekunden pro Sendevorgang treiben Nutzer zurück zur Börse. 10–15 Sekunden nicht. Deshalb Autovervollständigung und vorgezogene KDF statt einer schwächeren Passphrase. |
+
+### Wo das Prinzip endet
+
+Reibung reduzieren heißt **nicht**, Sicherheitseigenschaften aufzugeben, die den Abstand zur Ausgangslage überhaupt herstellen. Zwei Dinge bleiben deshalb hart, obwohl sie Reibung kosten:
+
+1. **Der Backup-Nachweis für B und C ist blockierend** (6.1). Ohne ihn ist ein verlorenes Telefon Totalverlust — dann wären wir nicht besser als Single-Sig, sondern nur komplizierter. Das ist der eine Punkt, an dem Abbruch besser ist als Durchwinken.
+2. **Kein Biometrie-Pfad für B** (6.2.1). Ein entrissenes, entsperrtes Telefon ist der häufigste reale Angriff auf Handy-Wallets überhaupt — kein exotisches Szenario. Die Passphrase ist dort der Unterschied zwischen „Handy weg" und „Coins weg". Und seit sie 10–15 Sekunden statt 45 kostet, ist sie kein Abbruchgrund mehr.
+
+---
+
+## 0.2 Geltungsbereich, Nicht-Ziele, ehrliche Grenzen
 
 ### In Scope
 Erzeugung und Verwahrung dreier Schlüssel; Watch-only-Betrieb; PSBT-Bau, -Verifikation, -Signatur, -Finalisierung, -Broadcast; Backup und Recovery; Schlüsseltausch; Teststrategie; UX-Flows.
@@ -70,7 +113,7 @@ Timelocks, Zeitschlösser, Erbschaftsregelungen, Watchtower, Serverdienste, Geb�
 
 ---
 
-## 0.2 Recherchestand: verifizierte Versionen und Belege
+## 0.3 Recherchestand: verifizierte Versionen und Belege
 
 Alle Versionsstände unten wurden am **2026-08-08** direkt gegen `crates.io/api/v1` abgefragt, nicht aus dem Gedächtnis geschrieben. Auflösung der Abhängigkeitsbäume ebenfalls über die Registry-API.
 
@@ -456,7 +499,7 @@ pub trait ChainBackend: Send + Sync {
 **Zwei daraus folgende Anforderungen:**
 
 1. **Broadcast über einen anderen Weg als Sync.** Wer über Electrum synct und über denselben Server broadcastet, liefert die stärkste mögliche Verknüpfung. Der `broadcast`-Aufruf muss ein eigenes, unabhängig konfigurierbares Backend nutzen dürfen (Default: CBF-Peers oder Tor).
-2. **Der CBF-Privacy-Anspruch ist zu belegen, bevor er behauptet wird.** Ob `bip157 0.6.3` Match-Blöcke von einem *anderen* Peer lädt als demjenigen, der die Filter lieferte, ist offen (Abschnitt 0.2, Lücke 3). Ohne diesen Nachweis darf die UI CBF nicht als „privat" labeln, sondern nur als „privater als ein fremder Electrum-Server".
+2. **Der CBF-Privacy-Anspruch ist zu belegen, bevor er behauptet wird.** Ob `bip157 0.6.3` Match-Blöcke von einem *anderen* Peer lädt als demjenigen, der die Filter lieferte, ist offen (Abschnitt 0.3, Lücke 3). Ohne diesen Nachweis darf die UI CBF nicht als „privat" labeln, sondern nur als „privater als ein fremder Electrum-Server".
 
 ### 1.7 Abhängigkeitsminimierung und Supply Chain (Anforderung 10)
 
@@ -1173,6 +1216,7 @@ Zusätzlich prüft `sign_b`, dass die bereits vorhandene Signatur von A zum erwa
 | **T9** | **Supply-Chain-Angriff auf die App** — kompromittierte Dependency, Build-Server oder Update | **A und B gleichzeitig** | ⚠️ **Teilweise, und das ist die unangenehmste Zeile der Tabelle.** Maßnahmen: `cargo vendor`, exakte Pins, reproducible builds mit ≥ 2 unabhängigen Verifizierern, `cargo-deny`/`-audit`/`-vet`, keine dynamischen Nachladewege, Dependency-Budget für den Signaturpfad. **Aber:** A und B teilen die Codebasis — ein erfolgreicher Angriff trifft beide. Der Coldcard-Fall war genau das: ein Build-Fehler, keine Kryptografie-Schwäche. | 🟡 **Reduzierbar ab v1.** Die einzige strukturelle Antwort ist Implementierungsdiversität. **C auf einem Hardware-Signer erzeugen (2.2.5 Weg a) ist ab der Wallet-Erstellung möglich** und macht aus 1-von-1 ein 2-von-1. Vollständig gelöst erst mit Hardware-**B** (6.6). Wer C in der App erzeugt, bleibt bei 1-von-1 — **muss so im Onboarding stehen.** |
 | **T10** | **RNG-Fehler** — OS-CSPRNG schwach, virtualisiert, oder Build-Fehler wie bei Coldcard | alle drei bei Erzeugung | ⚠️ **Nur bei genutzter Zusatzquelle oder Hardware-C.** Die Kette bricht am OR-Kombinierer (2.2): mit einer zählbaren Klasse-A-Quelle (≥ 50 Würfe / 128 Münzen / 1 Kartendeck) bleiben ≥ 128 bit, selbst wenn der CSPRNG vollständig vorhersagbar ist. Ein auf Hardware erzeugtes C hat ohnehin einen unabhängigen RNG. Zusätzlich: Roh-Entropie anzeigbar, Ableitung extern nachrechenbar. | 🔴 **Zusatzentropie ist durchgehend optional (E3).** Wer sie für alle drei Schlüssel überspringt **und** C in der App erzeugt, ist gegen genau den Fehlertyp ungeschützt, der bei Coldcard ≈594 BTC gekostet hat. Die App muss das an der Stelle sagen, an der übersprungen wird — einmal, sachlich, ohne Blockade. Klasse-B-Quellen (Sensorrauschen) ändern daran **nichts**, weil ihnen 0 bit angerechnet werden (2.2.1). |
 | **T19** | **Manipulierter Transportkanal zum Hardware-Signer** — BLE-MITM beim Pairing, gefälschter QR, NFC-Relay | keine (über den Kanal geht nur Öffentliches) | ✅ **Teilweise.** Es wandern nur PSBTs und xpubs über den Kanal, nie privates Material. Ein untergeschobenes PSBT wird auf dem **Display des Signers** geprüft — einem Bildschirm außerhalb der Kontrolle unserer App — und die Rückgabe erneut von `trinity-verify` gegen den gespeicherten Descriptor. Die Kette bricht an einem der beiden Displays. | MITM beim **xpub-Import** kann einen fremden Schlüssel in den Descriptor bringen. **Gegenmaßnahme: importierter xpub und BIP-388-Policy werden auf dem Gerätedisplay bestätigt, nicht nur auf dem Telefon** (2.7.3). Ohne diesen Schritt ist der Import der schwächste Punkt der Hardware-Anbindung. |
+| **T20** | **Abbruch und Nichtnutzung** — der Nutzer bricht das Onboarding ab, legt ein Backup nur halb an, oder migriert gar nicht erst von Börse bzw. Single-Sig | alle drei, indirekt | ⚠️ **Der einzige Eintrag, bei dem zusätzliche Sicherheitsmaßnahmen die Lage *verschlechtern*.** Wer abbricht, landet nicht bei einer etwas unsichereren Wallet — er bleibt bei der Aufstellung aus der Tabelle in 0.1, wo ein einziger Fehler Totalverlust bedeutet. Gegenmaßnahmen sind hier Weglassungen: Zusatzentropie optional (E3), Wortlänge wählbar (E3b), Hardware optional (E6), Passphrase in 10–15 s statt 45 (6.2.1). | **Nicht durch Technik lösbar, nur durch Messung.** Abbruchquote je Onboarding-Schritt gehört instrumentiert (lokal, ohne Telemetrie nach außen) und in Nutzertests erhoben — siehe 5.5, Punkt 15. **Zwei Hürden bleiben trotzdem hart**, weil ohne sie der Abstand zur Ausgangslage verschwindet: der blockierende Backup-Nachweis (6.1) und das Fehlen eines Biometrie-Pfads für B (6.2.1). |
 | **T11** | **Descriptor-Verlust** — Backups vorhanden, aber die Wallet-Konfiguration fehlt | keine, aber Mittel unzugänglich | ✅ **Ja, wenn die UX-Maßnahmen greifen.** Descriptor ist Pflichtbestandteil jedes Backup-Ausdrucks, wird beim Backup-Nachweis mit abgefragt, ist als BSMS-Record (BIP-129) exportierbar und liegt zusätzlich unverschlüsselt in `descriptor.json` (Cloud-Backup ausdrücklich **erlaubt** — er ist nicht geheim). | Mit allen drei xpubs, aber ohne Descriptor, ist die Rekonstruktion trivial (`wsh(sortedmulti(2,…))`, Reihenfolge egal dank BIP-67). Mit nur zwei Seeds und **ohne** dritten xpub ist die Wallet **unwiederbringlich verloren** — kein Brute-Force möglich. 🔴 Deshalb ist der Descriptor auf Papier nicht optional. |
 | **T12** | **Backup-B und C am selben Ort** — Einbruch, Hausdurchsuchung, Feuer | **B und C** | ❌ **Nein — und diese Regel trägt das gesamte Modell.** Wer beide Papier-Backups findet, hat das Quorum. Die Passphrase hilft **nicht**: sie schützt nur die Gerätekopie von B, nicht das Papier. | 🔴 **Vollständiger Verlust.** Nur durch UX adressierbar: Ortstrennung ist Pflichtabfrage im Onboarding, wird beim Backup-Ausdruck wiederholt, und die App fragt periodisch nach Bestätigung. Die App kann es nicht prüfen. **Feuer/Wasser sind der Gegenfall:** dieselbe Trennung, die vor Einbruch schützt, schützt auch vor dem Verlust beider Backups in einem Brand. |
 | **T13** | **Nonce-Fehler / Nonce-Wiederverwendung** | der signierende Schlüssel | ✅ **Ja.** RFC 6979 über libsecp256k1, kein RNG im Signaturpfad, plus Determinismus-Test in CI und Eigenverifikation nach jeder Signatur (3.4). | Seitenkanal in libsecp256k1 selbst. Nicht durch uns adressierbar; libsecp256k1 ist die am intensivsten geprüfte Implementierung. |
@@ -1195,6 +1239,8 @@ Diese Liste gehört in die App, nicht nur in dieses Dokument.
 7. **Nutzer, der die Empfängeradresse nicht liest** (T7, T8).
 8. **RNG-Fehler bei vollständig übersprungener Zusatzentropie und in-App erzeugtem C** (T10) — die Entscheidung, Zusatzentropie optional zu halten (E3), verschiebt diesen Fall bewusst in die Verantwortung des Nutzers. Die App macht das an der Übersprungstelle sichtbar; sie blockiert nicht.
 
+**Und eine Einordnung, die genauso wichtig ist wie die Liste selbst:** Sieben der acht Punkte oben gelten für ein Single-Sig-Setup ebenso — meist in schärferer Form, weil dort schon ein einzelner kompromittierter oder verlorener Schlüssel den Totalverlust bedeutet. Die Liste ist keine Aufzählung von Schwächen gegenüber der Ausgangslage des Nutzers, sondern gegenüber dem theoretischen Optimum aus drei Hardware-Wallets an drei Orten (0.1). Dieser Unterschied gehört in die Nutzerkommunikation, sonst liest sich ehrliche Offenlegung wie eine Warnung vor dem eigenen Produkt.
+
 ---
 
 ## 5. Teststrategie
@@ -1203,7 +1249,7 @@ Diese Liste gehört in die App, nicht nur in dieses Dokument.
 
 Der Grundgedanke: Eigene Assertions belegen, dass der Code tut, was der Autor dachte. Differential Testing belegt, dass er dasselbe tut wie eine unabhängige Referenzimplementierung. Nur das zweite ist hier eine Aussage über Korrektheit.
 
-**Referenz: Bitcoin Core 30.2** (nicht 30.0/30.1 — Wallet-Migrations-Bug, Binaries zurückgezogen; siehe 0.2).
+**Referenz: Bitcoin Core 30.2** (nicht 30.0/30.1 — Wallet-Migrations-Bug, Binaries zurückgezogen; siehe 0.3).
 
 | ID | Was | Unser Pfad | Referenz | Vergleichskriterium | Umfang |
 |---|---|---|---|---|---|
@@ -1318,7 +1364,9 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 | 11 | D14/D15/S6 manuell gegen die **aktuelle** Sparrow-Version durchgeführt und protokolliert. |
 | 12 | `docs/RECOVERY.md` gegen diesen Build verifiziert — jemand, der die App nicht kennt, führt S5 nur anhand des Dokuments durch. |
 | 13 | Externes Security-Audit des Signaturpfads (`trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi`) für v1.0. Findings der Schweregrade kritisch und hoch geschlossen. |
-| 14 | Alle Coldcard-bezogenen Angaben gegen die Primärquelle verifiziert (0.2, Lücke 2), bevor sie in nutzersichtbaren Texten erscheinen. |
+| 14 | Alle Coldcard-bezogenen Angaben gegen die Primärquelle verifiziert (0.3, Lücke 2), bevor sie in nutzersichtbaren Texten erscheinen. |
+| 15 | **Onboarding-Abbruchquote in einem moderierten Nutzertest mit ≥ 10 Teilnehmern erhoben** (T20), Instrumentierung rein lokal ohne Telemetrie nach außen. Kein Zielwert als Gate — aber die Zahl muss vorliegen und die drei häufigsten Abbruchstellen benannt sein. Ein Setup, das niemand zu Ende bringt, schützt niemanden. |
+| 16 | **S25 und S26 grün** — die Bedienbarkeitszusagen aus 6.2.1 sind gemessen, nicht behauptet. |
 
 ---
 
@@ -1577,7 +1625,7 @@ Der naheliegende Einwand gegen Hardware-B lautet: dann kann eben das Gerät gest
 | ~~**O2**~~ | ~~Zusatzentropie verpflichtend?~~ | — | — | ✅ **Entschieden (E3): durchgehend optional**, auch für C — abweichend von meiner Empfehlung. Konsequenz ist in T10 und 4.2 Punkt 8 dokumentiert: Wer für alle drei Schlüssel überspringt und C in der App erzeugt, ist gegen den Coldcard-Fehlertyp ungeschützt. Die App macht das an der Übersprungstelle sichtbar und blockiert nicht. |
 | **O13** | Umfang der Zusatzentropie-Quellen in v1 | (a) nur Würfel · (b) Würfel + Münzen + Karten · (c) zusätzlich Klasse-B-Sensorquellen | Jede Quelle ist eigener Code, eigene kanonische Kodierung und eigene Testvektoren. Klasse B bringt keine anrechenbaren Bit und verleitet zu falscher Sicherheit (2.2.1). | **(b).** Würfel, Münzen und Karten sind alle drei zählbar, teilen dieselbe ASCII-Kodierungslogik und decken die realistischen Fälle ab („ich habe keine Würfel, aber ein Kartendeck"). Klasse B **nicht in v1** — der Nutzen ist null anrechenbare Bit, das Risiko ist ein Fortschrittsbalken, der lügt. |
 | **O14** | BLE-Transport: Reihenfolge BitBox02 Nova vs. Ledger | (a) BitBox zuerst · (b) Ledger zuerst · (c) parallel | `bitbox-api 0.13.0` ist aktuell gepflegt; für Ledger existiert **kein** Rust-Crate auf App-Ebene, BIP-388-Registrierung und Signatur wären selbstgeschriebene APDU-Sequenzen ohne gepflegte Referenz (2.7.6). | **(a) BitBox02 Nova zuerst.** Erst klären, ob `bitbox-api` den Whisper-BLE-Transport abdeckt (Anhang B, Punkt 8). Ledger danach, mit eigenem Review-Budget für den APDU-Code. |
-| **O3** | Default-Chain-Backend | (a) CBF (Kyoto) · (b) Nutzer muss wählen, kein Default · (c) Electrum mit eingetragenem Server | (a) bester Kompromiss aus Privacy und Bequemlichkeit, aber der Privacy-Anspruch ist noch unbelegt (0.2, Lücke 3). (b) höchste Ehrlichkeit, höchste Abbruchrate. | **(a) CBF als Default**, mit ehrlichem Label („privater als ein fremder Server, nicht anonym") — **aber erst, nachdem Lücke 3 geschlossen ist.** Bis dahin (b). |
+| **O3** | Default-Chain-Backend | (a) CBF (Kyoto) · (b) Nutzer muss wählen, kein Default · (c) Electrum mit eingetragenem Server | (a) bester Kompromiss aus Privacy und Bequemlichkeit, aber der Privacy-Anspruch ist noch unbelegt (0.3, Lücke 3). (b) höchste Ehrlichkeit, höchste Abbruchrate. | **(a) CBF als Default**, mit ehrlichem Label („privater als ein fremder Server, nicht anonym") — **aber erst, nachdem Lücke 3 geschlossen ist.** Bis dahin (b). |
 | **O4** | Argon2id-Profilwahl | (a) automatisch nach RAM · (b) Nutzer wählt · (c) fest `LOW` für alle | (a) beste Sicherheit auf gutem Gerät, aber unterschiedliche Sicherheitsniveaus zwischen Nutzern. (c) einheitlich und vorhersagbar, aber verschenkt Sicherheit auf modernen Geräten. | **(a) automatisch**, Profil sichtbar in den Einstellungen, `kdf_profile` im Blob-Header. Ein Wechsel des Profils ist eine Re-Encryption des Blobs und wird als solche angeboten. |
 | **O5** | KEK-Kombinierer für B | (a) `HW ⊕ Argon2id` (Vorgabe) · (b) `HKDF-Extract(salt=argon, ikm=hw)` | Beide sind bei unabhängigen, gleichverteilten Eingaben sicher. (b) liefert zusätzlich Domain-Separation und Kontextbindung zu identischen Kosten. Sicherheitsrelevant ist der Unterschied hier **nicht**. | **(a), wie vorgegeben.** Kein Grund, vom festgelegten Konzept abzuweichen. Aufgeführt zur Transparenz, nicht als Änderungsvorschlag. |
 | **O6** | Crash-Reporting | (a) keins · (b) nur Metadaten, kein Speicherinhalt, opt-in · (c) Standard-SDK | (c) ist ausgeschlossen — Speicherzugriff über dem Rust-Kern widerspricht Anforderung 1 direkt. (a) macht Fehlerdiagnose in Produktion praktisch unmöglich. | **(b), opt-in, ohne Fremd-SDK.** Eigenbau, nur Crash-Typ, Stack-Symbol und Build-Hash; niemals Speicherinhalte, niemals Registerdumps. `panic = "abort"` bleibt. |
@@ -1634,17 +1682,17 @@ Vor Implementierungsbeginn in der Spike-Woche (O12) zu klären. Bewusst **nicht*
 | 2 | Bietet `uniffi 0.32.0` einen Hook zur Nullung des `RustBuffer` beim `Vec<u8>`-Transfer, oder ist manuelles `destroy` nötig? | 1.3 | Entscheidet, ob die Passphrase eine nicht-nullbare Zwischenkopie hat |
 | 3 | Lädt `bip157 0.6.3` Match-Blöcke von einem anderen Peer als den Filter-Peer? | 1.6, O3 | Entscheidet, ob CBF als Default beworben werden darf |
 | 4 | Überleben Keychain-Items mit `…ThisDeviceOnly` eine App-Deinstallation unter iOS 17/18/19? | 2.6 | Bestimmt, ob ein zusätzlicher Löschpfad nötig ist |
-| 5 | Sind für `secp256k1 0.29.1` (2024-09-06) Advisories offen? | 0.2 | `cargo-audit` in der Spike-Woche |
-| 6 | Coldcard-Advisory-Details gegen die Primärquelle | 0.2, 2.1 | Bevor Versionsnummern in nutzersichtbaren Texten erscheinen |
+| 5 | Sind für `secp256k1 0.29.1` (2024-09-06) Advisories offen? | 0.3 | `cargo-audit` in der Spike-Woche |
+| 6 | Coldcard-Advisory-Details gegen die Primärquelle | 0.3, 2.1 | Bevor Versionsnummern in nutzersichtbaren Texten erscheinen |
 | 7 | Verhalten von `bdk_wallet` bei `sortedmulti` mit permutierter Descriptor-Reihenfolge — identische Adressen garantiert? | D6 | Sollte gelten, ist aber zu belegen statt anzunehmen |
 | 8 | Deckt `bitbox-api 0.13.0` den **Whisper-BLE-Transport** ab oder nur USB? | 2.7.6, O14 | Falls nur USB: BLE-Protokoll selbst nachbauen — und ohne BLE gibt es **keine** BitBox-Unterstützung auf iOS |
 | 9 | Existiert eine gepflegte Rust- oder Swift/Kotlin-Referenz für die **Ledger-Bitcoin-App auf App-Ebene** (BIP-388-Registrierung, PSBT-Signatur), oder sind die APDU-Sequenzen selbst zu schreiben? | 2.7.6, O14 | Bestimmt Aufwand und Review-Budget des teuersten Postens der Transportliste |
 | 10 | Genügt Apples **CoreNFC** für die ISO-7816-Kommunikation mit Coldcard Mk4/Q und Tapsigner, und welches Entitlement ist nötig? | 2.7.4 | Entscheidet, ob NFC wirklich in v1 passt oder ob v1 rein QR wird |
 | 11 | Verhalten der Hardware-Signer bei **12-Wort-Setups** in einer BIP-388-Policy — akzeptieren alle Geräte gemischte und kurze Seeds ohne Sonderfall? | 2.2.3, D18 | Wortlänge ist jetzt pro Schlüssel wählbar; eine nur mit 24 getestete Gerätekette wäre eine Lücke |
 | 12 | **Melden Coldcard Q/Mk4 ihre Firmware-Version** über QR bzw. NFC in einer Form, die vor dem xpub-Import auswertbar ist? | 2.7.9 | Ohne auswertbare Versionsmeldung ist das Freigabe-Gate nicht automatisierbar und fällt auf `Manual` zurück |
-| 13 | **Whisper-Kryptografie im Detail:** welcher Schlüsselaustausch, welches AEAD, wie ist der Pairing-Code an den Kanal gebunden? | 0.2, 2.7.4 | Bestimmt, ob wir dem BLE-Kanal für BitBox in v1.1 ohne eigene Zusatzschicht vertrauen |
+| 13 | **Whisper-Kryptografie im Detail:** welcher Schlüsselaustausch, welches AEAD, wie ist der Pairing-Code an den Kanal gebunden? | 0.3, 2.7.4 | Bestimmt, ob wir dem BLE-Kanal für BitBox in v1.1 ohne eigene Zusatzschicht vertrauen |
 | 14 | Kann die App bei **Slot B auf Fremd-Hardware** die Firmware-Version ebenfalls auslesen, oder bleibt es bei der Nutzerabfrage? | 2.7.9 | Bestimmt, ob der Hardware-B-Wechsel geprüft oder nur protokolliert werden kann |
 
 ---
 
-*Ende der Spezifikation. Alle Sicherheitsaussagen sind mit Angriffskette und Bruchstelle belegt; wo die Kette nicht bricht, ist das ausdrücklich vermerkt. Alle Lücken der Recherche sind in 0.2 und Anhang B benannt statt gefüllt.*
+*Ende der Spezifikation. Alle Sicherheitsaussagen sind mit Angriffskette und Bruchstelle belegt; wo die Kette nicht bricht, ist das ausdrücklich vermerkt. Alle Lücken der Recherche sind in 0.3 und Anhang B benannt statt gefüllt.*

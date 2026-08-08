@@ -12,6 +12,16 @@ Zustand, keine Serverdienste, keine laufende Wartung.
 Script: `wsh(sortedmulti(2, ...))` auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), drei unabhängige
 Master-Seeds.
 
+## Maßstab
+
+Ziel ist, deutlich sicherer zu sein als das, was der Nutzer vorher hatte — Börse oder
+Single-Sig auf dem Handy. **Nicht**, mit einem Multisig aus drei Hardware-Wallets an drei
+Orten gleichzuziehen. Daraus folgt: Reibung ist eine Kostenposition, keine
+Sicherheitsmaßnahme. Wer das Onboarding abbricht, landet nicht bei einer etwas
+unsichereren Wallet, sondern bleibt dort, wo ein einziger Fehler Totalverlust bedeutet.
+
+Abschnitt 0.1 der Spezifikation führt das aus.
+
 ## Status
 
 Spezifikationsphase. Es existiert noch kein Code.
