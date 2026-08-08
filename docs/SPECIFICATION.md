@@ -516,7 +516,11 @@ Zeile 3 der Tabelle ist der Coldcard-Fall. Ohne Zusatzquelle ist er nicht abgede
 
 #### 2.2.1 Zusatzentropie — was zählt und was nicht
 
-Zusatzentropie ist durchgehend **optional** (Entscheidung E3, abweichend von meiner ursprünglichen Empfehlung). Die App bietet mehrere Quellen an; sie zerfallen in zwei Klassen, und die Unterscheidung ist die eigentliche Sicherheitsaussage.
+Zusatzentropie ist durchgehend **optional** (Entscheidung E3), aber **vorausgewählt**: Der Würfel-Schritt ist im Onboarding standardmäßig aktiv und wird mit einem sichtbaren „Überspringen" verlassen, nicht mit einem „Aktivieren" betreten. Kein Zwang, keine Blockade, keine Warnschwelle — nur die Reihenfolge der Voreinstellung.
+
+> **Warum diese Voreinstellung und nicht die umgekehrte:** Der Coldcard-Vorfall traf ausschließlich Nutzer *ohne* eigene Würfel; wer ≥ 50 Würfe eingegeben hatte, war unberührt. Die Zusatzquelle ist damit die einzige bekannte Maßnahme, die gegen genau diesen Fehlertyp gewirkt hat — und sie kostet zehn Minuten einmalig. Eine Voreinstellung ist kein Zwang: wer sie nicht will, tippt einmal auf „Überspringen". Sie sorgt nur dafür, dass der sichere Weg auch der bequeme ist. **Hardware allein ersetzt das nicht** — Coldcard *war* Hardware.
+
+Die App bietet mehrere Quellen an; sie zerfallen in zwei Klassen, und die Unterscheidung ist die eigentliche Sicherheitsaussage.
 
 **Klasse A — zählbare Entropie.** Die Bit lassen sich aus der Kombinatorik exakt berechnen, deshalb darf der Fortschrittsbalken sie gutschreiben.
 
@@ -732,6 +736,7 @@ Slot B:   KEK_B = unwrap_kek(B, wrapped_B)              // Plattform, passcodege
 | **Nicht der Gerätepasscode** | Vergleich gegen den Gerätepasscode ist technisch unmöglich; stattdessen explizite Bestätigungsabfrage und Warnung im Onboarding | UX-Maßnahme, nicht erzwingbar — **ehrlich zu benennen** |
 | **Nicht im Keychain** | Die Passphrase wird zu **keinem** Zeitpunkt persistiert. Kein „Merken"-Schalter, keine Autofill-Integration, `isSecureTextEntry`/`IMPORTANT_FOR_AUTOFILL_NO`, Screenshot-Sperre auf dem Eingabescreen | hart |
 | **Kein Biometrie-Shortcut** | Es gibt keinen Codepfad, in dem Biometrie die Passphrase ersetzt. `POLICY_B.unlock` ist ein Enum ohne `Biometry`-Variante für Slot B | hart, typsystem-erzwungen |
+| **Eingabe zumutbar machen** | Diceware-Autovervollständigung, vorgezogenes Argon2id, wortweises Feedback — senkt einen Sendevorgang von ~45 auf 10–15 s **ohne** Entropieverlust (6.2.1) | Pflicht |
 
 > **Warum Randbedingung 4 typsystem-erzwungen wird:** „Es gibt keinen Biometrie-Shortcut" als Kommentar überlebt keine sechs Monate Produktentwicklung. Als Enum-Variante, die für Slot B schlicht nicht existiert, überlebt es.
 
@@ -1161,7 +1166,7 @@ Zusätzlich prüft `sign_b`, dass die bereits vorhandene Signatur von A zum erwa
 | **T2** | **Geräteverlust** (Diebstahl ohne Entsperrung, Verlust, Defekt, Wasserschaden) | A und B (Gerätekopien) | ✅ **Ja.** Backup-B + C rekonstruieren das Quorum sofort, ohne Wartezeit, ohne Dienst. Die Kette bricht, weil die Gerätekopien nie die einzige Instanz von B waren (Randbedingung 2, erzwungen). | **Nur wenn das B-Backup existiert.** Ohne es ist Geräteverlust Totalverlust — deshalb ist der Backup-Nachweis blockierend und nicht empfehlend. |
 | **T3** | **Malware ohne Root/Jailbreak**, andere App auf demselben Gerät | keine | ✅ **Ja.** iOS/Android-Sandbox trennt Prozessspeicher und Dateisystem; `…ThisDeviceOnly` + SE/StrongBox verhindern KEK-Export; `blob_*` liegt in der App-Sandbox. Die Kette bricht an der OS-Prozessisolation. | Eine Kernel-Lücke oder ein Sandbox-Escape hebt das auf. Dann gilt T4. |
 | **T4** | **Kompromittiertes Telefon** — Codeausführung im App-Kontext, Jailbreak/Root, Zero-Day | **A und B** | ❌ **Nein.** Der Angreifer kann die Biometrie-Freigabe abwarten, die Passphrase-Eingabe abgreifen und beide Schlüssel im Moment der Signatur lesen. Rust-Kern, `zeroize` und Hardware-Bindung **verkleinern das Zeitfenster**, schließen es aber nicht. | 🔴 **Vollständiger Verlust. Explizit nicht abgedeckt.** Einzige echte Gegenmaßnahme: B auf externe Hardware (6.6) — dann braucht der Angreifer zusätzlich das physische Gerät. |
-| **T5** | **Diebstahl mit beobachteter Passphrase** (Shoulder-Surfing, Kamera, Nötigung) + entsperrbares Gerät | **A und B** | ❌ **Nein.** Wer das entsperrte Gerät und die Passphrase hat, hat A (Biometrie) und B (Passphrase) — das Quorum. | 🔴 **Vollständiger Verlust.** Teilminderungen: Screenshot-Sperre auf dem Eingabescreen, keine Zeichenvorschau, kein Autofill. Ein Duress-Wallet ist **nicht** vorgesehen (Zustand, gestrichen). **Ehrlich zu kommunizieren:** dieses Modell schützt nicht gegen einen Angreifer, der Gerät *und* Passphrase hat. |
+| **T5** | **Diebstahl mit beobachteter Passphrase** (Shoulder-Surfing, Kamera, Nötigung) + entsperrbares Gerät | **A und B** | ❌ **Nein bei Software-B.** Wer das entsperrte Gerät und die Passphrase hat, hat A (Biometrie) und B (Passphrase) — das Quorum. ✅ **Ja bei Hardware-B:** B liegt dann gar nicht auf dem Telefon; der Angreifer braucht zusätzlich das physische Gerät **und** dessen PIN, die von einem Secure Element mit Wipe nach N Fehlversuchen durchgesetzt wird (6.6.1). | 🔴 **Vollständiger Verlust bei Software-B.** Teilminderungen: Screenshot-Sperre auf dem Eingabescreen, keine Zeichenvorschau, kein Autofill, Sitzungsfenster per Default aus (6.2.1). Ein Duress-Wallet ist **nicht** vorgesehen (Zustand, gestrichen). **Ein Biometrie-Pfad für B würde diese Zeile von „teilweise" auf „sofort offen" verschlechtern** — deshalb gibt es ihn nicht (Randbedingung 4). |
 | **T6** | **Manipulierte Change-Adresse** — kompromittierter Builder oder JS-Schicht leitet Change an den Angreifer | keine (Schlüssel bleiben sicher) | ✅ **Ja, das ist der Kernzweck von `trinity-verify`.** Die Kette bricht bei V3/V4: Jeder Output, der weder ein erklärter Empfänger noch eine **unabhängig aus dem gespeicherten Descriptor abgeleitete** Change-Adresse ist, führt zur Ablehnung **vor** jedem Schlüsselzugriff. Da der Verifier weder `miniscript` noch den Builder-Code nutzt, kann sich ein Builder-Bug nicht selbst bestätigen. | Ein Angreifer, der zusätzlich `descriptor.json` **und** `trinity-verify` ersetzt, gewinnt — das ist aber bereits T4 oder T9. Restrisiko: ein Bug im eigenen Parser. Gegenmaßnahme: Differential Testing gegen Core (5.1). |
 | **T7** | **Manipulierte Empfängeradresse** — JS-Schicht zeigt X, PSBT enthält Y | keine | ✅ **Weitgehend.** Die Kette bricht an der **nativen** Bestätigungsanzeige: der Dialog wird aus dem `PsbtVerdict` des Rust-Verifiers gerendert, nicht aus JS-State. Der Nutzer sieht, was tatsächlich im PSBT steht. | Der Nutzer muss die Adresse **lesen**. Gegenmaßnahme: Anzeige in Vierergruppen, erste und letzte 8 Zeichen hervorgehoben, plus ein Adressbuch mit Wiedererkennung bekannter Empfänger. |
 | **T8** | **Address Poisoning** — Lookalike-Adresse mit identischen Anfangs-/Endzeichen wird per Dust in die Historie gesetzt; 2026 industrialisiert (≈ 3 Mio Dust-Transfers durch einen einzelnen Contract) | keine | ⚠️ **Teilweise.** Maßnahmen: (a) **Kein Copy-Paste aus der Transaktionshistorie** — Adressen aus eingehenden Transaktionen sind in der UI nicht als Sendeziel wählbar; (b) eingehender Dust unterhalb einer Schwelle wird markiert und aus der Coin Selection ausgeschlossen; (c) Adressbucheinträge nur explizit mit Label anlegbar; (d) Warnung, wenn eine neue Zieladresse mit einer bekannten in den ersten/letzten 6 Zeichen übereinstimmt, aber nicht identisch ist. | Ein Nutzer, der außerhalb der App kopiert (Messenger, E-Mail), ist ungeschützt. Die Warnung nach (d) ist der letzte Schutz und hängt davon ab, dass die echte Adresse bereits bekannt ist. |
@@ -1274,6 +1279,10 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **S20** | **Entropie-Nachrechnung** aus dem Verifikationsblatt für alle Quellkombinationen | Ein externes Shell-Skript reproduziert `entropy` aus `raw_csprng` und `extra_bytes` für Würfel, Münzen, Karten und Mischformen |
 | **S21** | **Gerätefreigabe:** Coldcard mit gemeldeter Firmware unterhalb und oberhalb der Schwelle (2.7.9) | Unterhalb: bleibt ausgegraut, Grund wird angezeigt, **kein** xpub-Import möglich. Oberhalb: freigeschaltet, Import läuft durch. Mk2/Mk3 bleiben in **jeder** Version gesperrt. |
 | **S22** | **Import eines bestehenden Geräte-Seeds für Slot C** versuchen | Wird abgelehnt — für C ist ausschließlich ein frisch auf dem Gerät erzeugter Seed zulässig (2.7.9), herstellerunabhängig |
+| **S23** | **Kein Biometrie-Pfad zu B:** alle exportierten Funktionen und alle `SlotPolicy`-Werte prüfen | Es existiert kein Aufruf, der `blob_B` ohne `SecretBytes` entschlüsselt. Das ist ein Typ- und Signatur-Check, kein Laufzeittest — er muss den **Build brechen**, nicht eine Assertion auslösen. |
+| **S24** | **Sitzungsfenster:** aktivieren, dann App in den Hintergrund · Gerät sperren · Zeit ablaufen lassen · Verifikation fehlschlagen lassen | KEK_B ist in **allen vier** Fällen sofort genullt; die nächste Signatur verlangt die Passphrase erneut. Zusätzlich Heap-Dump-Prüfung nach Fensterende. |
+| **S25** | **Eingabe-Performance:** 6-Wort-Passphrase mit Autovervollständigung, Zeit bis zur signierbaren Transaktion | ≤ 15 s auf einem Referenzgerät der unteren Leistungsklasse, inklusive Argon2id. Reißt der Wert, ist die Vorziehung der KDF nicht wirksam und die Maßnahme aus 6.2.1 nicht umgesetzt. |
+| **S26** | **NFC-Tap-Performance** mit Hardware-B: Zeit vom Bestätigen bis zum fertig signierten PSBT | ≤ 5 s. Belegt die Kernaussage aus 6.2.1, dass Hardware-B schneller ist als jede Passphrase. |
 
 ### 5.4 Weitere Testebenen
 
@@ -1295,11 +1304,12 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 |---|---|
 | 1 | D1–D19 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
 | 2 | P1–P16 grün mit ≥ 100.000 Fällen je Property. |
-| 3 | S1–S22 grün auf Signet **und** Regtest. |
+| 3 | S1–S26 grün auf Signet **und** Regtest. |
 | 3b | **Beide Wortlängen** (24 und 12) sowie **gemischte Kombinationen** durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
 | 3c | **Mindestens ein realer Hardware-Signer** über QR in der Testbank: S16, S17, S18 grün. Emulator allein genügt nicht, weil BIP-388-Displayverhalten nur am Gerät prüfbar ist. |
 | 4 | **S4 und S5 grün** — Recovery mit und ohne diese App. Diese beiden allein sind ein Veto. |
 | 5 | S9 grün **inklusive** der Assertion, dass kein Schlüsselzugriff stattfand. |
+| 5b | **S23 grün** — kein Biometrie-Pfad zu B. Bricht dieser Check, ist Randbedingung 4 verletzt und das Release blockiert, unabhängig von allem anderen. |
 | 6 | Fuzzing ≥ 24 h ohne Crash oder Timeout auf allen drei Zielen. |
 | 7 | Speicher-Hygiene-Test grün auf Linux und Android; iOS-Lücke dokumentiert. |
 | 8 | Reproducible Build durch ≥ 2 unabhängige Verifizierer bestätigt, Hashes veröffentlicht. |
@@ -1420,7 +1430,28 @@ flowchart TD
 
 **Der native Bestätigungsdialog ist keine Kosmetik.** Er ist die Stelle, an der T7 bricht. Würde er in React Native gerendert, könnte eine kompromittierte JS-Schicht eine andere Adresse anzeigen als die, die im PSBT steht. Der Dialog wird deshalb aus dem `PsbtVerdict` gebaut, das der Rust-Verifier aus dem PSBT selbst gelesen hat — nicht aus dem, was die UI zu wissen glaubt.
 
-Während der ~2 Sekunden Argon2id zeigt die App einen Fortschrittsindikator mit Erklärung („Passphrase wird geprüft — das dauert absichtlich"). Ohne Erklärung wird die Verzögerung als Bug wahrgenommen und führt zu Support-Druck, den Parameter zu senken.
+#### 6.2.1 Die Passphrase-Eingabe schnell machen, ohne sie zu schwächen
+
+Sechs Diceware-Wörter zu tippen und dann zwei Sekunden zu warten ist der mit Abstand unangenehmste Moment der ganzen App. Das ist ein reales Problem und der Grund, aus dem Nutzer nach einem Biometrie-Shortcut fragen. Die Antwort darauf ist **nicht**, die Anforderung zu senken — die Entropie der Passphrase ist das, was B überhaupt zu einem zweiten Faktor macht. Die Antwort ist, den Weg dorthin zu verkürzen.
+
+| Maßnahme | Wirkung | Sicherheitskosten |
+|---|---|---|
+| **Diceware-Autovervollständigung** | Die EFF-Long-Wordlist (7776 Wörter) liegt im Rust-Kern. Nach 3–4 Zeichen ist ein Wort eindeutig. Tippaufwand sinkt um grob 60 %. | **Keine.** Die Entropie liegt in der *Wahl* der Wörter, nicht im Tippen. Wer den Präfix mitliest, liest ohnehin die ganze Eingabe mit. Jede BIP-39-Eingabe funktioniert seit Jahren genauso. |
+| **Argon2id vorziehen** | Die KDF startet, sobald das letzte Wort eindeutig ist — parallel zur Bestätigungsanzeige, nicht danach. Die 2 Sekunden verschwinden hinter einer Interaktion, die ohnehin stattfindet. | **Keine.** Reine Nebenläufigkeit. Bei Abbruch wird das Ergebnis verworfen und genullt. |
+| **Wortweises Feedback** | Ein Häkchen je erkanntem Wort statt einer Fehlermeldung am Ende. Tippfehler fallen sofort auf statt nach zwei Sekunden KDF. | **Keine.** Die Wortliste ist öffentlich. |
+| **Optionales Sitzungsfenster** | Nach erfolgreicher Eingabe bleibt B für eine konfigurierbare Zeit entsperrt. Für Folge-Transaktionen. | ⚠️ **Real.** Siehe unten. |
+
+**Zusammen bringt das einen Sendevorgang von grob 45 auf 10–15 Sekunden** — ohne ein einziges Bit Sicherheit aufzugeben. Die ersten drei Maßnahmen sind deshalb Pflicht, nicht Kür.
+
+**Zum Sitzungsfenster, weil es das einzige mit echten Kosten ist:**
+
+- **Default: aus.** Wer es einschaltet, wählt eine Dauer (Vorschlag: 1, 5 oder 15 Minuten).
+- Während des Fensters liegt der abgeleitete KEK_B im Speicher des Rust-Kerns — nicht die Passphrase selbst, aber funktional gleichwertig.
+- **Was das kostet:** Wird das Telefon in diesem Fenster im entsperrten Zustand gestohlen oder ist es kompromittiert, hat der Angreifer A und B. Das Fenster ist damit exakt so lang, wie du bereit bist, T4 und T5 offenzuhalten.
+- Das Fenster endet **hart** bei: App im Hintergrund, Gerätesperre, Ablauf der Zeit, jedem Fehlschlag einer Verifikation. Kein Verlängern durch Aktivität.
+- Es gilt **nicht** für die erste Transaktion nach App-Start und nicht oberhalb eines konfigurierbaren Betrags.
+
+> **Was ich bewusst nicht anbiete: einen Biometrie-Pfad für B.** A geht mit Biometrie auf. Ginge B auch damit auf, wären zwei Schlüssel auf einem Gerät durch dasselbe Geheimnis geschützt — aus „2 von 3" würde faktisch „1 von 1: dein Gesicht". Ein Dieb mit entsperrtem Telefon hätte beides; ein Gesicht ist einem schlafenden oder genötigten Menschen abnehmbar, eine Passphrase im Kopf nicht; und Malware müsste keine Tastatureingabe mehr abgreifen, sondern nur zwei Biometrie-Prompts auslösen, die normal aussehen. Ein *optionaler* Biometrie-Pfad ändert daran nichts — ein Angreifer nimmt immer den schwächsten aktivierten Weg. Das ist auch der Inhalt von Randbedingung 4 des Auftrags. **Wer die Geschwindigkeit wirklich braucht, bekommt sie über Hardware-B (6.6) — ein NFC-Tap dauert etwa zwei Sekunden und ist damit schneller als jede Passphrase, bei gleichzeitig zwei unabhängigen Faktoren.**
 
 ### 6.3 Empfangen
 
@@ -1518,7 +1549,23 @@ flowchart TD
 
 **Warum auch hier ein komplett neues Setup:** Nur `xpub_B` zu tauschen hieße, die alten A und C weiterzuverwenden — beide aus derselben Codebasis. Der Gewinn an Implementierungsdiversität wäre dann auf einen von drei Schlüsseln beschränkt, und der alte Software-B bliebe als Papier-Backup gültig, das den alten Descriptor weiterhin bedienen kann. Ein sauberer Schnitt ist teurer und richtig.
 
-**Nach dem Wechsel gilt:** A ist Software (Telefon, Biometrie), B ist Hardware (separates Gerät, eigene Firmware, eigener RNG), C ist Papier aus 99 Würfen. Damit ist T9 (Supply-Chain) erstmals nicht mehr „trifft beide gleichzeitig", und T4 (kompromittiertes Telefon) verliert den zweiten Schlüssel. **Das ist die eigentliche Zielkonfiguration dieses Produkts** — die reine Software-Variante ist der Einstieg, nicht das Ziel. Diese Einordnung sollte auch die Produktkommunikation tragen.
+**Nach dem Wechsel gilt:** A ist Software (Telefon, Biometrie), B ist Hardware (separates Gerät, eigene Firmware, eigener RNG, eigene PIN), C ist Papier oder ein zweites Gerät. Damit ist T9 (Supply-Chain) erstmals nicht mehr „trifft beide gleichzeitig", und T4 (kompromittiertes Telefon) verliert den zweiten Schlüssel. **Das ist die eigentliche Zielkonfiguration dieses Produkts** — die reine Software-Variante ist der Einstieg, nicht das Ziel. Diese Einordnung sollte auch die Produktkommunikation tragen.
+
+#### 6.6.1 Diebstahl des Hardware-Signers — die Gegenrechnung
+
+Der naheliegende Einwand gegen Hardware-B lautet: dann kann eben das Gerät gestohlen werden. Stimmt — aber die Rechnung fällt deutlich zugunsten der Hardware aus, und zwar in jedem der drei Fälle.
+
+| Szenario | Software-B (Passphrase) | Software-B mit Biometrie-Pfad | **Hardware-B** |
+|---|---|---|---|
+| **Nur Telefon gestohlen**, entsperrt | Angreifer hat **A**. B braucht die Passphrase aus deinem Kopf. | 🔴 Angreifer hat **A und B** → Quorum | ✅ Angreifer hat **A**. B liegt gar nicht auf dem Gerät. |
+| **Nur Signer gestohlen** | — | — | ✅ Angreifer hat **B**, geschützt durch die Geräte-PIN mit Secure Element und Wipe nach N Fehlversuchen. Das ist T1, vom Modell abgedeckt. |
+| **Telefon und Signer zusammen** (gleiche Tasche) | Angreifer hat **A**, braucht die Passphrase | 🔴 **Quorum** | ⚠️ Angreifer hat **A**, braucht zusätzlich die **Geräte-PIN**. Zwei unabhängige Geheimnisse, eines davon auf Hardware mit echter Brute-Force-Bremse. |
+
+**Der entscheidende Unterschied zur Passphrase:** Eine Passphrase kann offline und beliebig schnell durchprobiert werden, sobald der Angreifer an den Blob und den hardware-gebundenen KEK kommt — Argon2id verlangsamt das nur um einen konstanten Faktor. Eine Geräte-PIN wird von einem Secure Element durchgesetzt, das nach einer festen Zahl von Fehlversuchen den Seed löscht. **Gegen Brute-Force ist die Hardware-PIN strukturell stärker als jede Passphrase**, obwohl sie kürzer ist.
+
+**Was Hardware-B nicht löst:** Verlust *beider* Geräte. Dann greift derselbe Weg wie bei Geräteverlust heute — Backup-B (die Wortliste des Signers) plus C, an getrennten Orten. Randbedingung 3 gilt unverändert, nur heißt „Backup-B" jetzt „das Backup, das der Signer nach seiner eigenen Anleitung anlegt".
+
+**Und die ehrliche Unbequemlichkeit:** Wer Telefon und Signer immer zusammen trägt, gibt einen Teil des Vorteils der letzten Zeile wieder her. Die Empfehlung „getrennt aufbewahren" kollidiert mit „schnell unterwegs senden". Das ist ein echter Zielkonflikt, den die App benennen und nicht wegmoderieren sollte — sie kann ihn nicht auflösen.
 
 ---
 
