@@ -415,7 +415,9 @@ pub trait PlatformKeyStore: Send + Sync {
 | Seed B (32 B Entropie) | `blob_B` im App-Sandbox-Dateisystem | ✔ XChaCha20-Poly1305 | Papier (Pflicht) | nein |
 | Seed C | ausschließlich Papier/Stahl | — | Papier (Pflicht) | nein |
 | KEK A | iOS: SE-gewrappt · Android: Keystore-gewrappt | ✔ hardwaregebunden | nein | nein |
-| KEK B | HW-Anteil gewrappt + Argon2id-Anteil (nicht gespeichert) | ✔ | nein | nein |
+| KEK B | Keystore-/SE-gewrappt, `.userPresence` | ✔ hardwaregebunden | nein | nein |
+| Passphrase-Verifier `H` | Policy-Record, `SHA-256(Argon2id(pass))` | nein — Hash, kein Schlüssel | nein | nein |
+| `SpendPolicy` + Fensterzähler | verschlüsselter Kernzustand | ✔ | nein | nur Anzeigewerte |
 | xpubs A/B/C + Origin | `descriptor.json`, Klartext | nein | Papier + Cloud erlaubt | **ja** |
 | Descriptor | `descriptor.json`, Klartext | nein | **Papier, Pflicht** | **ja** |
 | UTXO-Set, Adressindex, Tx-Historie | SQLite (`bdk_chain` rusqlite) | nein | optional | ja |
@@ -729,12 +731,11 @@ pub const POLICY_A: SlotPolicy = SlotPolicy {
 
 pub const POLICY_B: SlotPolicy = SlotPolicy {
     slot: KeySlot::B,
-    // Zwei Wege, und welcher gilt, entscheidet die SpendPolicy — nicht der Aufrufer.
-    // Unterhalb der Grenze: dieselbe biometrische Auswertung wie A (3.6.2).
-    // Oberhalb, bei Ersteinrichtung, bei Policy-Änderung und beim Export: Passphrase.
-    unlock: UnlockFactor::BiometryOrPassphrase,
-    argon: Some(ArgonProfile::HIGH),
-    invalidate_on_biometric_change: true,    // gilt jetzt auch für B
+    // blob_B geht mit Benutzerpräsenz auf — Biometrie ODER Gerätepasscode.
+    // Die Passphrase autorisiert (SpendPolicy, Export, Tausch), sie entschlüsselt nicht.
+    unlock: UnlockFactor::UserPresence,
+    argon: None,                             // Argon2id sitzt im Policy-Record, nicht hier
+    invalidate_on_biometric_change: false,   // B überlebt ein neues Biometrie-Enrollment
     require_device_unlocked: true,
     /* … */
 };
@@ -749,9 +750,8 @@ pub const POLICY_B: SlotPolicy = SlotPolicy {
 │ magic       "TRIN"                        4 B                     │
 │ version     u8 = 1                        1 B                     │
 │ slot        u8 (0=A, 1=B)                 1 B                     │
-│ kdf_profile u8 (0=none, 1=HIGH, 2=LOW)    1 B    ← Entscheidung E4 │
+│ reserved    u8 = 0                        1 B                     │
 │ word_count  u8 (24 oder 12)               1 B    ← Entscheidung E3b│
-│ argon_salt  16 B (nur wenn kdf_profile≠0)                         │
 │ nonce       24 B (XChaCha20 random)                               │
 │ birthday    u32 LE (Blockhöhe)            4 B                     │
 ├─ Ciphertext ──────────────────────────────────────────────────────┤
@@ -763,21 +763,63 @@ pub const POLICY_B: SlotPolicy = SlotPolicy {
 ```
 
 - **AEAD:** XChaCha20-Poly1305. Gewählt gegen AES-256-GCM wegen des 192-bit-Nonce (zufällige Nonces ohne Kollisionsrisiko, kein Zählerzustand) und weil die Software-Implementierung auf Mobilgeräten ohne AES-NI nicht seitenkanalanfällig über Tabellen-Lookups ist.
-- **Header als AAD:** Ein Angreifer kann weder `kdf_profile` auf ein schwächeres Profil herunterdrehen noch `word_count` manipulieren — der Tag würde nicht verifizieren. Letzteres ist wichtiger, als es aussieht: ohne AAD-Schutz könnte ein Angreifer `word_count` von 24 auf 12 setzen und den Entschlüsseler dazu bringen, nur die halbe Entropie zu lesen.
-- **`kdf_profile` im Header:** Entscheidung E4. Ohne das Feld ist ein Parameterwechsel eine Migration mit Re-Encryption; mit ihm ist er ein neuer Enum-Wert.
+- **Header als AAD:** `word_count` ist manipulationsgeschützt — das ist wichtiger, als es aussieht: ohne AAD-Schutz könnte ein Angreifer `word_count` von 24 auf 12 setzen und den Entschlüsseler dazu bringen, nur die halbe Entropie zu lesen.
+- **Kein KDF-Feld mehr im Blob.** Argon2id schützt seit der Korrektur in 2.4 nicht mehr den Blob, sondern den Passphrase-Verifier. `kdf_profile` und `pp_salt` liegen deshalb im Policy-Record (3.6.3), nicht hier — dort, wo sie gebraucht werden. Der Blob wird dadurch für A und B **bitgleich im Format**, was die Symmetrie aus Randbedingung 2 sauberer macht als vorher.
 - **`word_count` im Header:** Entscheidung E3b. Bestimmt `L` und damit die Ciphertext-Länge; die Recovery-UI und der Quiz-Generator lesen es hier.
 - **Gespeichert wird `entropy` (L Byte), nicht der Mnemonic-String.** Der Mnemonic wird bei Bedarf deterministisch neu erzeugt. Ein String weniger im Speicher.
 
 #### KEK-Ableitung
 
 ```
-Slot A:   KEK_A = unwrap_kek(A, wrapped_A)              // Plattform, biometriegeschützt
-Slot B:   KEK_B = unwrap_kek(B, wrapped_B)              // Plattform, passcodegeschützt
-                  XOR
-                  Argon2id(pass, argon_salt, profile)   // 32 B Output
+Slot A:   KEK_A = unwrap_kek(A, wrapped_A)   // Plattform, .biometryCurrentSet
+Slot B:   KEK_B = unwrap_kek(B, wrapped_B)   // Plattform, .userPresence
 ```
 
-**Zur XOR-Kombination:** Zwei unabhängige 256-bit-Werte per XOR zu kombinieren ist als Schlüsselkombinierer korrekt — der Angreifer braucht **beide**. Das Konzept schreibt `⊕` vor, und so wird es implementiert. Der Vollständigkeit halber der benannte Trade-off: `HKDF-Extract(salt = argon_out, ikm = hw_key)` wäre bei gleichen Kosten geringfügig besser, weil es zusätzlich Domain-Separation und Bindung an einen Kontext-String liefert und gegen verwandte-Schlüssel-Effekte robuster ist. Sicherheitsrelevant ist der Unterschied hier **nicht**, weil beide Eingaben gleichverteilt und unabhängig sind. Aufgeführt in Abschnitt 7 (O5), nicht als Blocker.
+Beide Blobs werden also **ausschließlich** durch hardware-gebundene Schlüssel geschützt. Die Passphrase geht **nicht** in KEK_B ein.
+
+> ### ⚠️ Korrektur gegenüber dem ursprünglichen Konzept — und der Preis von E7
+>
+> Das Konzept sah `KEK_B = hardware-gebunden ⊕ Argon2id(Passphrase)` vor. Das ist mit der Ein-Gesten-Signatur (E7) **nicht vereinbar**, und zwar grundsätzlich, nicht nur umsetzungstechnisch:
+>
+> Jede Ausgabe braucht die Signatur von B. Soll eine Geste einen Sendevorgang abschließen, muss `blob_B` mit dieser Geste aufgehen. Geht er mit der Geste auf, kann die Passphrase nicht Teil seines Schlüssels sein. **Derselbe Schlüssel B signiert kleine wie große Beträge — der Betrag ist eine Eigenschaft der Transaktion, nicht des Schlüssels.** Es gibt daher keine Konstruktion, die B für kleine Beträge biometrisch und für große per Passphrase öffnet. Betragsabhängige Verschlüsselung existiert nicht.
+>
+> **Was dadurch verloren geht, exakt benannt:** Bisher hätte ein Angreifer, der `blob_B` **und** den hardware-gebundenen Schlüssel extrahiert, zusätzlich die Passphrase per Offline-Brute-Force gegen Argon2id brechen müssen. Diese zweite Hürde entfällt. Sie greift ohnehin nur, wenn Secure Enclave bzw. StrongBox überwunden werden — dann aber wäre B jetzt sofort offen.
+>
+> **Was an ihre Stelle tritt:** die Ausgabegrenze (3.6.3) gegen Diebstahl und gegen die JS-Schicht, und die Passphrase als Autorisierungsgeheimnis (unten). Beides ist App-Politik, keine Kryptografie — gegen einen nativen Angreifer wirkungslos. Das ist der ehrliche Preis von E7.
+>
+> **Wer die Eigenschaft zurück will, bekommt sie über Hardware-B** (6.6): Dort liegt B's Schlüssel im Secure Element eines separaten Geräts hinter dessen PIN, mit Wipe nach N Fehlversuchen — ein echter zweiter Faktor, und gegen Brute-Force strukturell stärker als die ursprüngliche Passphrase-Konstruktion (6.6.1).
+
+#### Die Passphrase als Autorisierungsgeheimnis
+
+Sie verschlüsselt nichts mehr, sie autorisiert. Gespeichert wird ein Argon2id-Verifier, kein Schlüssel:
+
+```
+verifier = Argon2id(pass, pp_salt, profile)          // 32 B
+// im Kernzustand liegt NUR H = SHA-256(verifier), nie `verifier` selbst
+```
+
+Der Vergleich läuft in konstanter Zeit im Rust-Kern. Verlangt wird die Passphrase bei:
+
+1. Ausgaben oberhalb der `SpendPolicy`-Grenze (3.6.3)
+2. Jeder Lockerung der Policy — Sockel oder Deckel anheben, Quote erhöhen, Fenster verkürzen (3.6.6)
+3. Export, Wallet-Löschung, Schlüsseltausch
+4. Der ersten Signatur nach einer Neuinstallation
+
+Die Argon2id-Kosten (2.4, Profile) bleiben unverändert. Sie erschweren jetzt nicht mehr das Brechen von `blob_B`, sondern das Durchprobieren des Verifiers durch jemanden, der `H` gelesen hat — dieselbe Rechnung, anderer Angriffspunkt.
+
+#### Getrennte Zugriffsklassen für A und B
+
+A und B werden weiterhin symmetrisch implementiert (Randbedingung 2 — ein Codepfad, zwei Konfigurationen), bekommen aber **unterschiedliche Zugriffsklassen**, und das ist eine bewusste Verbesserung:
+
+| | Slot A | Slot B |
+|---|---|---|
+| iOS | `.biometryCurrentSet` | `.userPresence` (Biometrie **oder** Gerätepasscode) |
+| Android | `AUTH_BIOMETRIC_STRONG`, `setInvalidatedByBiometricEnrollment(true)` | `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL`, `setInvalidatedByBiometricEnrollment(false)` |
+| Neue Biometrie registriert | 🔴 **A ist unwiederbringlich weg** | ✅ **B überlebt** |
+
+**Eine Face-ID-Auswertung erfüllt beide Klassen** — der Ein-Gesten-Ablauf bleibt unberührt. Der Gewinn zeigt sich im Störfall: Registriert jemand ein neues Gesicht (der Nutzer selbst oder ein Angreifer mit dem Gerätepasscode), stirbt nur A. Der Nutzer hat dann **B auf dem Gerät und C auf Papier** — also das Quorum — und kann ohne das Papier-Backup von B in ein frisches Setup migrieren. Würden beide Slots an `biometryCurrentSet` hängen, wäre ein zusätzlicher Fingerabdruck ein voller Recovery-Fall aus Papier.
+
+**Und die Gegenprobe:** Ein Angreifer, der nur den Gerätepasscode kennt, öffnet damit B — aber nicht A, denn A verlangt die aktuelle Biometrie, und ein Neu-Enrollment zerstört A. Er hält also **einen** von drei Schlüsseln. Das ist T1, vom Modell abgedeckt.
 
 #### Argon2id-Profile (Entscheidung E4)
 
@@ -833,8 +875,9 @@ let attrs: [String: Any] = [
         kSecAttrAccessControl as String:  access,
     ],
 ]
-// Slot B: [.privateKeyUsage, .devicePasscode] statt .biometryCurrentSet
-// → Randbedingung 4: kein Biometrie-Pfad zu B.
+// Slot B: [.privateKeyUsage, .userPresence] statt .biometryCurrentSet
+// → eine Face-ID-Auswertung erfüllt beides (E7), aber B überlebt ein
+//   neues Biometrie-Enrollment, weil auch der Gerätepasscode genügt.
 // Unwrap: SecKeyCreateDecryptedData(privKey, .eciesEncryptionCofactorX963SHA256AESGCM, wrapped)
 ```
 
@@ -842,7 +885,7 @@ let attrs: [String: Any] = [
 |---|---|---|
 | `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` | Nicht in iCloud- **und nicht in lokalen** Backups; verlangt gesetzten Passcode; **wird gelöscht, wenn der Nutzer den Passcode entfernt** | Blob-Schlüssel wandert nie in ein Backup. Nebeneffekt: Passcode-Entfernung ⇒ A ist weg ⇒ Gerät ist ein „Verlustfall". Das ist gewollt und **muss im Onboarding stehen**. |
 | `.biometryCurrentSet` (Slot A) | Bindet an den aktuellen Enrollment-Satz; Hinzufügen/Ändern eines Fingerabdrucks oder Gesichts invalidiert den Schlüssel | Ein Angreifer, der das entsperrte Gerät hat und sein eigenes Gesicht hinzufügt, bekommt **kein** A. |
-| `.devicePasscode` (Slot B) | Nur Passcode, keine Biometrie | Randbedingung 4 auf Plattformebene. |
+| `.userPresence` (Slot B) | Biometrie **oder** Gerätepasscode | Erfüllt die Ein-Gesten-Auswertung mit und überlebt ein Biometrie-Enrollment. Ein Angreifer mit nur dem Passcode bekommt damit B — aber nicht A, also einen von drei Schlüsseln (T1). |
 
 **Android (≥ 10 / API 29):**
 
@@ -860,8 +903,10 @@ val spec = KeyGenParameterSpec.Builder(alias(slot),
             setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
             setInvalidatedByBiometricEnrollment(true)     // Pendant zu .biometryCurrentSet
         } else {
-            setUserAuthenticationParameters(0,
-                KeyProperties.AUTH_DEVICE_CREDENTIAL)     // kein Biometrie-Pfad zu B
+            setUserAuthenticationParameters(5,           // 5 s, deckt beide Slots (3.6.2)
+                KeyProperties.AUTH_BIOMETRIC_STRONG
+                    or KeyProperties.AUTH_DEVICE_CREDENTIAL)
+            setInvalidatedByBiometricEnrollment(false)    // B überlebt neues Enrollment
         }
         if (hasStrongBox()) setIsStrongBoxBacked(true)    // Titan M2 o.ä.
     }
@@ -873,7 +918,7 @@ val spec = KeyGenParameterSpec.Builder(alias(slot),
 | `setIsStrongBoxBacked(true)` | Schlüssel liegt in einem dedizierten Sicherheitschip statt nur im TEE. **Feature-Detection nötig** (`FEATURE_STRONGBOX_KEYSTORE`); StrongBox ist langsamer und hat Größenbeschränkungen — deshalb wrappt es nur den 32-Byte-KEK, nicht die Nutzdaten. |
 | `setInvalidatedByBiometricEnrollment(true)` | Schlüssel wird bei Änderung der Biometrie-Registrierung permanent ungültig. |
 | `setUnlockedDeviceRequired(true)` | Keine Nutzung bei gesperrtem Gerät — verhindert Hintergrundnutzung. |
-| `AUTH_DEVICE_CREDENTIAL` für B | Kein Biometrie-Shortcut. |
+| `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` für B | Eine Auswertung deckt A und B; B bleibt zusätzlich per Gerätepasscode erreichbar und überlebt ein neues Biometrie-Enrollment. |
 
 > **Beobachtbare Konsequenz beider Plattformen:** Ein neuer Fingerabdruck oder ein entfernter Passcode **zerstört A**. Das ist die gewollte Sicherheitseigenschaft und gleichzeitig ein Supportfall. Die App muss (a) diesen Zustand beim Start erkennen, (b) ihn klar benennen („Schlüssel A ist nicht mehr verfügbar — Ihre Wallet ist weiterhin sicher, aber Sie brauchen jetzt B + C"), (c) einen geführten Weg zu einem frischen Setup anbieten. Ein stiller Fehler an dieser Stelle ist ein Vertrauensverlust und potenziell ein Fundverlust.
 
@@ -916,7 +961,7 @@ stateDiagram-v2
 
 #### B — Lebenszyklus
 
-Identisch zu A bis auf: `POLICY_B`, zusätzlichen Argon2id-Anteil im KEK, **und ein erzwungenes externes Backup** (Randbedingung 2). Ohne bestandenen Backup-Nachweis für B wird das Setup nicht abgeschlossen — die Wallet erhält keine Empfangsadresse. Details in Abschnitt 6.1.
+Identisch zu A bis auf: `POLICY_B` (Zugriffsklasse `.userPresence` statt `.biometryCurrentSet`) **und ein erzwungenes externes Backup** (Randbedingung 2). Ohne bestandenen Backup-Nachweis für B wird das Setup nicht abgeschlossen — die Wallet erhält keine Empfangsadresse. Details in Abschnitt 6.1.
 
 #### C — Lebenszyklus
 
@@ -1145,8 +1190,8 @@ sequenceDiagram
         U->>NAT: Passphrase
         NAT->>FFI: sign_ab(psbt_b64, SecretBytes)
         PKS-->>U: Biometrie für KEK_A
-        KS->>KS: Argon2id(pass, salt, profil) — vorgezogen, ≈ 2 s
-        KS->>KS: KEK_B = HW_B XOR argon_out
+        KS->>KS: Argon2id(pass, pp_salt) — vorgezogen, ≈ 2 s
+        S->>S: Verifier in konstanter Zeit prüfen
     end
 
     Note over S,V: Signatur A, dann B — jeweils mit eigener Verifikation
@@ -1390,6 +1435,38 @@ Diese Asymmetrie ist der Kern: Ein Dieb kann die Grenze weder durch Warten auf e
 
 **Plausibilitätsprüfung bei jeder Verankerung**, auch wenn der Kurs nur zum Setzen dient: Ein Kurs außerhalb eines fest einkompilierten Plausibilitätsbereichs oder mit einem Sprung von mehr als einer Größenordnung gegenüber dem zuletzt bekannten Wert wird abgelehnt, nicht verrechnet. Kostet nichts und schließt den gröbsten Manipulationsversuch aus.
 
+#### 3.6.7 Was auf die Grenze angerechnet wird — exakt
+
+Unpräzise Definitionen sind hier eine Fehlerquelle mit direkter Sicherheitswirkung. Deshalb ausbuchstabiert:
+
+| Frage | Festlegung | Begründung |
+|---|---|---|
+| **Was zählt?** | Summe der Outputs, die **nicht** zum eigenen Descriptor gehören, **plus die Gebühr** | Das ist der tatsächliche Abfluss. Die Gebühr mitzuzählen verhindert, dass ein Angreifer über eine absurde Gebühr an einen Miner abfließen lässt, was die Grenze sonst nicht sähe. |
+| Change | zählt **nicht** | Bleibt in der Wallet. Die Zugehörigkeit stellt `trinity-verify` (V3/V4) unabhängig fest — nicht der Builder. |
+| **Bezugsgröße Guthaben** | bestätigte UTXOs **plus** unbestätigter eigener Change | Fremdes unbestätigtes Geld zählt nicht: sonst könnte ein Angreifer die Bezugsgröße durch eine unbestätigte Zahlung an die Wallet künstlich anheben und damit die 20-%-Quote weiten. |
+| Zeitpunkt der Messung | Guthaben **vor** der Transaktion, ermittelt im Rust-Kern | Nicht aus der JS-Schicht übernehmen. |
+| **RBF-Gebührenerhöhung** | nur die **Differenz** der Gebühr zählt | Sonst würde ein Fee-Bump den vollen Betrag ein zweites Mal anrechnen und das Fenster grundlos schließen. |
+| Ersetzte Transaktion | ihr Beitrag bleibt gebucht, wird aber nicht verdoppelt | Der Zähler führt Transaktionen anhand ihres Input-Sets, nicht anhand der Txid. |
+| **Verworfene / nie bestätigte Transaktion** | bleibt angerechnet bis zum Fensterende | Die sichere Richtung. Andernfalls könnte ein Angreifer den Zähler durch absichtlich scheiternde Transaktionen zurücksetzen. |
+| Selbstüberweisung an den eigenen Descriptor | zählt **nicht** (außer Gebühr) | Kein Abfluss. |
+| Fenster | gleitend, nicht Kalendertag | Ein Kalendertag erlaubt „23:59 plus 00:01" und verdoppelt die Grenze an einer vorhersagbaren Stelle. |
+
+Der Zähler liegt im verschlüsselten Kernzustand, nicht in einer JS-lesbaren Datei, und überlebt App-Neustart wie Gerätereboot (S29).
+
+#### 3.6.8 Die vergessene Passphrase — ein neues Risiko, das E7 selbst erzeugt
+
+Vor E7 wurde die Passphrase bei jedem Sendevorgang eingegeben und war dadurch eingeübt. Jetzt kann ein Nutzer sie monatelang nicht brauchen. **Selten benutzte Geheimnisse werden vergessen** — das ist kein Randfall, sondern der Normalfall.
+
+**Die gute Nachricht zuerst, und sie gehört genau so ins UI:** Eine vergessene Passphrase ist **kein Geldverlust**. Sie verschlüsselt seit der Korrektur in 2.4 nichts mehr. Wer sie vergisst, verliert die Fähigkeit, oberhalb der Tagesgrenze zu senden und die Policy zu ändern — nicht den Zugriff auf die Mittel. Der Ausweg ist der ohnehin dokumentierte und getestete Weg: Backup-B plus C in ein frisches Setup sweepen (S4, 6.4).
+
+**Drei Maßnahmen:**
+
+1. **Erinnerungsübung.** Wurde die Passphrase 60 Tage nicht gebraucht, bittet die App beim nächsten Öffnen einmalig um Eingabe — reine Prüfung, keine Transaktion, jederzeit verschiebbar. Kostet 15 Sekunden alle zwei Monate und ist der Unterschied zwischen „eingeübt" und „vergessen".
+2. **Der Hinweis an der richtigen Stelle.** Beim Einrichten und bei jeder Erinnerungsübung ein Satz: *„Vergisst du sie, verlierst du kein Geld — du brauchst dann dein Backup von B und C."* Ohne diesen Satz erzeugt eine vergessene Passphrase Panik und übereilte Handlungen.
+3. **Wenn sie aufgeschrieben wird, dann an einem dritten Ort.** Nicht auf das Backup-Blatt von B und nicht auf das von C.
+
+> **Warum ein dritter Ort — die Angriffskette, nicht die Faustregel.** Naheliegend wäre, die Passphrase neben B's Wortliste zu schreiben: Wer dieses Blatt findet, hat B ohnehin, die Passphrase scheint nichts hinzuzufügen. Für den Finder allein stimmt das. Es gibt aber eine Kombination, in der es doch schadet: **entsperrtes Telefon plus gefundenes B-Blatt.** Dort hält der Angreifer A und B über die App, wird aber von der Ausgabegrenze gebremst — und die Passphrase auf dem Blatt hebt genau diese Bremse auf. Dasselbe gilt für C's Blatt. Ein dritter Ort kostet nichts und schließt beide Kombinationen.
+
 > **Der Sockel unterliegt derselben Verankerung wie der Deckel.** Beide sind Fiat-Eingaben, die einmalig in Sat umgerechnet und danach ausschließlich als Sat-Werte durchgesetzt werden. Für den Sockel ist die Asymmetrie besonders wichtig: Ihn anzuheben weitet die Grenze für **jedes** Guthaben und ist damit die wirksamste denkbare Lockerung — sie verlangt die Passphrase.
 
 **„Immer fragen"** stellt den Zustand vor dieser Entscheidung her — Passphrase bei jedem Send, zwei echte Faktoren. Das bleibt für alle verfügbar, die es wollen, und ist mit der Bedienbarkeitsarbeit aus 6.2.1 auf 10–15 Sekunden gebracht. Es ist nicht der Default, weil es dem Maßstab aus 0.1 widerspricht.
@@ -1538,6 +1615,13 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **S29b** | **`clamp(Quote, Sockel, Deckel)`:** Guthaben über alle drei Bereiche variieren — unter 1.000 €, zwischen 1.000 und 2.500 €, über 2.500 € | In jedem Bereich greift die richtige Größe. Grenzfälle bei exakt 1.000 € und 2.500 € getestet, ebenso Guthaben **kleiner als der Sockel** (dann begrenzt das Guthaben selbst) und `Sockel == Deckel`. |
 | **S29f** | **Invariante `Sockel ≤ Deckel`:** Sockel über den Deckel setzen, Deckel unter den Sockel senken | Beides wird abgelehnt, nicht zurechtgebogen. Auch direkt über die FFI-Fassade geprüft. |
 | **S29g** | **Sockel anheben ohne Passphrase** versuchen | Wird abgelehnt. Der Sockel ist die wirksamste Lockerung überhaupt, weil er für jedes Guthaben gilt — er unterliegt derselben Asymmetrie wie der Deckel. |
+| **S29h** | **Anrechnung (3.6.7):** Transaktion mit Change, mit absurd hoher Gebühr, Selbstüberweisung, RBF-Bump, und eine nie bestätigte Transaktion | Angerechnet wird jeweils Fremd-Outputs + Gebühr; Change und Selbstüberweisung zählen nicht; der Bump nur mit der Gebührendifferenz; die verworfene Transaktion bleibt bis Fensterende gebucht. |
+| **S29i** | **Bezugsgröße manipulieren:** unbestätigte Fremdzahlung an die Wallet senden, dann sofort ausgeben | Die Quote steigt dadurch **nicht**. Nur bestätigte UTXOs und eigener unbestätigter Change zählen zum Guthaben. |
+| **S29j** | **Fenstergrenze über Kalendergrenze:** Ausgaben um 23:59 und 00:01 | Das gleitende Fenster verhindert die Verdopplung. |
+| **S33** | **Biometrie-Enrollment geändert** (neuer Fingerabdruck) | **A ist weg, B lebt.** Die App erkennt den Zustand, benennt ihn korrekt und bietet die Migration mit B (Gerät) + C (Papier) an — **ohne** das Papier-Backup von B zu verlangen. Descriptor-Daten bleiben vollständig. |
+| **S34** | **Angreifer kennt nur den Gerätepasscode**, nicht die Biometrie | Er öffnet B, aber nicht A. Ein Neu-Enrollment zerstört A endgültig. Ergebnis: **ein** Schlüssel, kein Quorum. |
+| **S35** | **Passphrase-Erinnerungsübung:** Uhr 60 Tage vorstellen | Prompt erscheint einmalig beim Öffnen, ist verschiebbar, blockiert keine Transaktion unterhalb der Grenze, und der Hinweistext „kein Geldverlust" ist vorhanden. |
+| **S36** | **Vergessene Passphrase, vollständig:** Verifier absichtlich nicht treffen, dann Recovery über Backup-B + C | Ausgaben unterhalb der Grenze laufen weiter. Oberhalb wird abgelehnt. Der Sweep in ein frisches Setup gelingt. **Belegt die Aussage aus 3.6.8, dass eine vergessene Passphrase kein Geldverlust ist.** |
 | **S29c** | **Kursmanipulation:** Kursquelle liefert „1 BTC = 1 €", „1 BTC = 10⁹ €", einen Sprung um mehrere Größenordnungen, gar nichts, oder eine Zeitüberschreitung | In **allen** Fällen bleibt die durchgesetzte Sat-Grenze unverändert. Der Plausibilitätsfilter lehnt ab statt zu verrechnen. Es findet zur Signaturzeit **nachweislich kein** Netzwerkabruf statt (Assertion auf dem Netzwerk-Mock). |
 | **S29d** | **Neuverankerung asymmetrisch:** Deckel in Sat senken und anheben | Senken gelingt ohne Passphrase, Anheben wird ohne Passphrase abgelehnt. Auch direkt über die FFI-Fassade geprüft, nicht nur über die UI. |
 | **S29e** | **Signatur im Flugmodus** unterhalb der Grenze | Läuft vollständig durch. Die Ausgabegrenze hat keine Netzwerkabhängigkeit. |
@@ -1565,7 +1649,7 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 |---|---|
 | 1 | D1–D19 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
 | 2 | P1–P16 grün mit ≥ 100.000 Fällen je Property. |
-| 3 | S1–S32 grün auf Signet **und** Regtest (inkl. S29b–S29e). |
+| 3 | S1–S36 grün auf Signet **und** Regtest (inkl. S29b–S29j). |
 | 3b | **Beide Wortlängen** (24 und 12) sowie **gemischte Kombinationen** durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
 | 3c | **Mindestens ein realer Hardware-Signer** über QR in der Testbank: S16, S17, S18 grün. Emulator allein genügt nicht, weil BIP-388-Displayverhalten nur am Gerät prüfbar ist. |
 | 4 | **S4 und S5 grün** — Recovery mit und ohne diese App. Diese beiden allein sind ein Veto. |
@@ -1850,8 +1934,8 @@ Der naheliegende Einwand gegen Hardware-B lautet: dann kann eben das Gerät gest
 | **O13** | Umfang der Zusatzentropie-Quellen in v1 | (a) nur Würfel · (b) Würfel + Münzen + Karten · (c) zusätzlich Klasse-B-Sensorquellen | Jede Quelle ist eigener Code, eigene kanonische Kodierung und eigene Testvektoren. Klasse B bringt keine anrechenbaren Bit und verleitet zu falscher Sicherheit (2.2.1). | **(b).** Würfel, Münzen und Karten sind alle drei zählbar, teilen dieselbe ASCII-Kodierungslogik und decken die realistischen Fälle ab („ich habe keine Würfel, aber ein Kartendeck"). Klasse B **nicht in v1** — der Nutzen ist null anrechenbare Bit, das Risiko ist ein Fortschrittsbalken, der lügt. |
 | **O14** | BLE-Transport: Reihenfolge BitBox02 Nova vs. Ledger | (a) BitBox zuerst · (b) Ledger zuerst · (c) parallel | `bitbox-api 0.13.0` ist aktuell gepflegt; für Ledger existiert **kein** Rust-Crate auf App-Ebene, BIP-388-Registrierung und Signatur wären selbstgeschriebene APDU-Sequenzen ohne gepflegte Referenz (2.7.6). | **(a) BitBox02 Nova zuerst.** Erst klären, ob `bitbox-api` den Whisper-BLE-Transport abdeckt (Anhang B, Punkt 8). Ledger danach, mit eigenem Review-Budget für den APDU-Code. |
 | **O3** | Default-Chain-Backend | (a) CBF (Kyoto) · (b) Nutzer muss wählen, kein Default · (c) Electrum mit eingetragenem Server | (a) bester Kompromiss aus Privacy und Bequemlichkeit, aber der Privacy-Anspruch ist noch unbelegt (0.3, Lücke 3). (b) höchste Ehrlichkeit, höchste Abbruchrate. | **(a) CBF als Default**, mit ehrlichem Label („privater als ein fremder Server, nicht anonym") — **aber erst, nachdem Lücke 3 geschlossen ist.** Bis dahin (b). |
-| **O4** | Argon2id-Profilwahl | (a) automatisch nach RAM · (b) Nutzer wählt · (c) fest `LOW` für alle | (a) beste Sicherheit auf gutem Gerät, aber unterschiedliche Sicherheitsniveaus zwischen Nutzern. (c) einheitlich und vorhersagbar, aber verschenkt Sicherheit auf modernen Geräten. | **(a) automatisch**, Profil sichtbar in den Einstellungen, `kdf_profile` im Blob-Header. Ein Wechsel des Profils ist eine Re-Encryption des Blobs und wird als solche angeboten. |
-| **O5** | KEK-Kombinierer für B | (a) `HW ⊕ Argon2id` (Vorgabe) · (b) `HKDF-Extract(salt=argon, ikm=hw)` | Beide sind bei unabhängigen, gleichverteilten Eingaben sicher. (b) liefert zusätzlich Domain-Separation und Kontextbindung zu identischen Kosten. Sicherheitsrelevant ist der Unterschied hier **nicht**. | **(a), wie vorgegeben.** Kein Grund, vom festgelegten Konzept abzuweichen. Aufgeführt zur Transparenz, nicht als Änderungsvorschlag. |
+| **O4** | Argon2id-Profilwahl | (a) automatisch nach RAM · (b) Nutzer wählt · (c) fest `LOW` für alle | (a) beste Sicherheit auf gutem Gerät, aber unterschiedliche Niveaus zwischen Nutzern. (c) einheitlich, verschenkt aber Sicherheit auf modernen Geräten. | **(a) automatisch**, Profil sichtbar in den Einstellungen, `kdf_profile` im Policy-Record. Ein Profilwechsel ist seit der Korrektur in 2.4 **keine** Blob-Migration mehr, sondern nur eine Neuberechnung des Verifiers bei der nächsten Passphrase-Eingabe — deutlich billiger als vorher. |
+| ~~**O5**~~ | ~~KEK-Kombinierer für B~~ | — | — | ⛔ **Hinfällig durch E7.** Die Passphrase geht nicht mehr in KEK_B ein; es gibt nichts zu kombinieren. Korrektur und ihr Preis in 2.4. |
 | **O6** | Crash-Reporting | (a) keins · (b) nur Metadaten, kein Speicherinhalt, opt-in · (c) Standard-SDK | (c) ist ausgeschlossen — Speicherzugriff über dem Rust-Kern widerspricht Anforderung 1 direkt. (a) macht Fehlerdiagnose in Produktion praktisch unmöglich. | **(b), opt-in, ohne Fremd-SDK.** Eigenbau, nur Crash-Typ, Stack-Symbol und Build-Hash; niemals Speicherinhalte, niemals Registerdumps. `panic = "abort"` bleibt. |
 | **O7** | Konsensvalidierung vor Broadcast | (a) `bitcoinconsensus`-Dependency · (b) nur Skript-Prüfung in Rust · (c) keine | (a) eine Dependency mehr im kritischen Pfad, aber libbitcoinconsensus ist Core-Code und schließt eine ganze Fehlerklasse (fehlerhafte Finalisierung) aus. | **(a).** Der Zugewinn — eine finalisierte, aber ungültige Transaktion wird nie gesendet — überwiegt die eine zusätzliche, sehr gut geprüfte Dependency. |
 | **O8** | Receive-/Change-Descriptor: getrennt oder Multipath (BIP-389) | (a) zwei getrennte Descriptoren · (b) ein Multipath-Descriptor (`bdk_wallet` ≥ 2.1.0 unterstützt es) | (b) ist kompakter und ein Backup-Eintrag weniger. (a) hat die deutlich breitere Interop-Unterstützung — und Interop ist hier die eigentliche Versicherung (S5/S6). | **(a).** Zwei Zeilen mehr auf dem Ausdruck sind billiger als ein Descriptor, den Sparrow oder Core in fünf Jahren nicht mehr importieren. |

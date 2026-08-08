@@ -61,6 +61,11 @@ Spezifikationsphase. Es existiert noch kein Code.
 Modulschnitt, Schlüssel-Lebenszyklus, Signaturfluss, Bedrohungsmodell, Teststrategie,
 UX-Flows, offene Entscheidungen.
 
+**→ [`docs/RECOVERY.md`](docs/RECOVERY.md)** — Wiederherstellung **ohne** diese App, mit
+Sparrow und Bitcoin Core. Das ist die eigentliche Versicherung: Sie funktioniert auch dann,
+wenn es dieses Projekt nicht mehr gibt. Die Abläufe darin sind Testfälle S5 und S6 und laufen
+bei jedem Merge in CI.
+
 Vor Implementierungsbeginn zu klären: die sechs Entscheidungen in der Executive Summary
 und die ⟨API-VERIFY⟩-Punkte in Anhang B der Spezifikation.
 
