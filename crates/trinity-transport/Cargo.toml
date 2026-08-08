@@ -7,7 +7,7 @@ license.workspace      = true
 repository.workspace   = true
 
 [dependencies]
-trinity-types = { path = "../trinity-types" }
+trinity-types = { path = "../trinity-types", version = "0.1.0" }
 bitcoin = { workspace = true }
 bbqr = { workspace = true }
 ur = { workspace = true }

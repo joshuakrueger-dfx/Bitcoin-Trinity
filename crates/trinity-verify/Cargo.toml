@@ -9,7 +9,7 @@ repository.workspace   = true
 [dependencies]
 # BEWUSST OHNE miniscript — der Verifier leitet unabhängig ab (SPECIFICATION.md §1.5).
 # Erzwungen durch deny.toml [bans]. Ein Verstoß bricht den Build, nicht das Review.
-trinity-types = { path = "../trinity-types" }
+trinity-types = { path = "../trinity-types", version = "0.1.0" }
 bitcoin = { workspace = true }
 thiserror = { workspace = true }
 

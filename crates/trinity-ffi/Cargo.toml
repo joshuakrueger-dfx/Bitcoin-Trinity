@@ -7,11 +7,11 @@ license.workspace      = true
 repository.workspace   = true
 
 [dependencies]
-trinity-types = { path = "../trinity-types" }
-trinity-watch = { path = "../trinity-watch" }
-trinity-verify = { path = "../trinity-verify" }
-trinity-signer = { path = "../trinity-signer" }
-trinity-chain = { path = "../trinity-chain" }
-trinity-export = { path = "../trinity-export" }
+trinity-types = { path = "../trinity-types", version = "0.1.0" }
+trinity-watch = { path = "../trinity-watch", version = "0.1.0" }
+trinity-verify = { path = "../trinity-verify", version = "0.1.0" }
+trinity-signer = { path = "../trinity-signer", version = "0.1.0" }
+trinity-chain = { path = "../trinity-chain", version = "0.1.0" }
+trinity-export = { path = "../trinity-export", version = "0.1.0" }
 uniffi = { workspace = true }
 thiserror = { workspace = true }

@@ -531,7 +531,19 @@ pub trait ChainBackend: Send + Sync {
 | Toolchain-Pin | `rust-toolchain.toml` mit exakter Version + Komponenten-Hashes. Kein `stable`. |
 | Reproducible Builds | Deterministische `--remap-path-prefix`, `SOURCE_DATE_EPOCH`, Build im Container mit gepinntem Digest. Verifikation durch mindestens zwei unabhängige Builder vor jedem Release. |
 | Audit-Gates | `cargo-deny` (Advisories, Lizenzen, **Duplikat-Crates**, `[bans]` für `miniscript` in `trinity-verify`), `cargo-audit` gegen den gesamten Lockfile, `cargo-vet` für Review-Status der Deps. |
-| **Lizenzen ohne Gebühren** | Allowlist statt Denylist in `cargo-deny [licenses]`: MIT, Apache-2.0, BSD-2/3, ISC. Eine unbekannte Lizenz bricht den Build. Der gesamte Kern-Stack (BDK, rust-bitcoin, miniscript, secp256k1, argon2, zeroize, uniffi, bbqr, ur) ist MIT bzw. Apache-2.0 — es gibt **keine** Komponente mit Nutzungsgebühr, kein kommerzielles SDK und keinen Dienst mit laufenden Kosten im Signatur- oder Chain-Pfad. Das ist eine Produktanforderung, kein Nebenaspekt: laufende Kosten würden ein Serverabhängigkeit erzwingen, die der Auftrag ausschließt. |
+| **Lizenzen ohne Gebühren** | Allowlist statt Denylist in `cargo-deny [licenses]`; eine unbekannte Lizenz bricht den Build. **Am 2026-08-08 gegen den realen Baum ausgeführt und grün.** Es gibt **keine** Komponente mit Nutzungsgebühr, kein kommerzielles SDK, keinen Dienst mit laufenden Kosten — laufende Kosten erzwängen eine Serverabhängigkeit, die der Auftrag ausschließt. Die Unterscheidung, auf die es dabei ankommt, steht unten. |
+
+> **Copyleft ist nicht gleich Copyleft — die Prüfung hat das erzwungen.** Der erste Lauf von `cargo deny` scheiterte an **uniffi, das unter MPL-2.0 steht** — und uniffi trägt Entscheidung E1, die FFI-Vertrauensgrenze. Ein pauschales „kein Copyleft" hätte damit die Architektur unmöglich gemacht. Die belastbare Regel:
+>
+> | Klasse | Beispiele | Wirkung | Zulassung |
+> |---|---|---|---|
+> | **Datei-Copyleft** | MPL-2.0 (`uniffi`) | Wer eine abgedeckte **Datei** ändert, veröffentlicht diese Datei. Greift **nicht** auf die übrige Anwendung durch. Keine Gebühr. | ✅ **zugelassen** |
+> | **Projekt-Copyleft** | GPL-*, AGPL-*, SSPL, BUSL | Erfasst die gesamte Anwendung bzw. verlangt Quelloffenlegung beim Betrieb. | ❌ **ausgeschlossen**, ohne Einzelfallprüfung |
+> | Kommerziell / gebührenpflichtig | jedes SDK mit Lizenzkosten | laufende Kosten | ❌ **ausgeschlossen** |
+>
+> **Konsequenz für die Umsetzung:** Solange uniffi *verwendet* und nicht *geändert* wird, entsteht keine Verpflichtung. Wird je eine uniffi-Datei gepatcht, ist genau diese Datei zu veröffentlichen — das ist im PR zu vermerken, und ein Fork von uniffi braucht eine ausdrückliche Entscheidung. Im `deny.toml` steht diese Begründung an der Allowlist selbst, damit sie nicht verloren geht.
+>
+> Weitere durch die Prüfung aufgedeckte, unproblematische Lizenzen im Baum: `CC0-1.0` (rust-bitcoin, secp256k1, miniscript — Public-Domain-Widmung), `MITNFA`, `BlueOak-1.0.0`, `BSL-1.0`, `Unlicense`, `0BSD`, `Unicode-3.0`, `Zlib`.
 | Keine dynamischen Nachladewege | Keine OTA-Bundles, kein CodePush, kein Remote-Config, kein Feature-Flag-Dienst. Der JS-Bundle ist Teil des signierten App-Binaries. **Diese Regel ist bei React Native aktiv durchzusetzen — sie ist nicht der Default.** |
 | Signaturpfad-Budget | Harte Obergrenze für die transitive, externe Dependency-Zahl von `trinity-types`, `-entropy`, `-keystore`, `-signer` und `-verify` (nur `-e normal`, ohne Dev- und Build-Deps). **Gemessen am 2026-08-08: 41 externe Crates. Gate bei 45.** Die Zahl stammt aus `scripts/dep_budget.py`, nicht aus einer Schätzung; Anheben nur mit Begründung im PR. Zum Vergleich: `trinity-verify` allein kommt mit **22** aus. |
 

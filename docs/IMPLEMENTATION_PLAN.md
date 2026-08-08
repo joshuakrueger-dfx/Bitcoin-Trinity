@@ -33,13 +33,17 @@ Spezifikationsverweis, Abnahmekriterien und den Tests, die grün sein müssen.
 
 ### Stand (2026-08-08)
 
-| WP | Zustand | Was belegt ist |
-|---|---|---|
-| **WP-00** | **FERTIG** | Workspace baut (`cargo build --workspace` grün). Pinning **gegen die echte Registry verifiziert**: `secp256k1 0.29.1`, `miniscript 12.3.7`, `bitcoin 0.32.11` je genau einmal im Baum. Signaturpfad gemessen: **41 externe Crates**, `trinity-verify` allein **22**. |
-| WP-01 | IN ARBEIT | Workflow geschrieben, YAML valide. **Noch nicht auf einem Runner ausgeführt.** |
-| WP-02 | IN ARBEIT | `test-env.sh` und `docker/compose.yml` geschrieben, Syntax geprüft, Core-Versionssperre implementiert. **Noch nicht gestartet** — Container-Digests fehlen. |
-| WP-03 | IN ARBEIT | `coverage_gate.py` und `check_plan.py` geschrieben und **gegen synthetische Fälle selbstgetestet**: das Gate schlägt bei `trinity-verify` unter 100 % an, der Plan-Checker fordert bei einem WP auf FERTIG genau dessen Tests. `cargo-llvm-cov` und `cargo-mutants` sind hier nicht installiert. |
-| WP-04 | OFFEN | Vendoring und Reproducible-Build-Nachweis stehen aus. |
+| WP | Zustand | Belegt | Was fehlt |
+|---|---|---|---|
+| **WP-00** | **FERTIG** | `cargo build --workspace --locked` **und** `--offline` grün · `cargo deny check` **ausgeführt und grün** (advisories, bans, licenses, sources) · Pinning gegen die echte Registry verifiziert: `secp256k1 0.29.1`, `miniscript 12.3.7`, `bitcoin 0.32.11` je genau einmal · Signaturpfad gemessen: **41 externe Crates**, `trinity-verify` allein **22** · `fmt` und `clippy -D warnings` sauber | — |
+| WP-01 | IN ARBEIT | Workflow geschrieben, YAML valide. Alle darin aufgerufenen Skripte existieren und laufen lokal grün. | **Nie auf einem Runner ausgeführt.** `cargo-audit` nicht installiert. |
+| WP-02 | IN ARBEIT | `test-env.sh` (Syntax geprüft, Core-Versionssperre implementiert) und `docker/compose.yml` (valide) | **Nie gestartet.** Image-**Digests fehlen** — die Datei nennt bisher nur Tags, und Tags sind veränderlich. Kein `bitcoind`, kein `electrs` gezogen. |
+| WP-03 | IN ARBEIT | `coverage_gate.py`, `check_plan.py`, `dep_budget.py` geschrieben und **selbstgetestet**: Gate schlägt bei `trinity-verify` unter 100 % an; Plan-Checker fordert bei einem WP auf FERTIG genau dessen Tests (an WP-11 verifiziert); Ausnahme ohne Begründung wird abgelehnt | `cargo-llvm-cov` und `cargo-mutants` nicht installiert — **noch kein realer Coverage- oder Mutationslauf**. |
+| WP-04 | **OFFEN** | — | `vendor/`, `.cargo/config.toml`, Build ohne Netz im Container, Reproducible-Build-Nachweis durch zwei Runner. |
+
+**Also: nein, M0 ist nicht fertig.** Fertig ist WP-00. Die drei Pakete in Arbeit hängen
+sämtlich daran, dass Werkzeuge und Container in dieser Umgebung fehlen — nicht an
+ungeschriebenem Code.
 
 **Nächster Schritt: WP-05.** Es ist das einzige Paket, das jetzt inhaltlich weiterführt, und es
 gibt M1 bis M5 frei.
