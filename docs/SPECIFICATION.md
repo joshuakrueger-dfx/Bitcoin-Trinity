@@ -38,10 +38,10 @@ Diese sechs sind nachträglich nicht oder nur unter Neuaufbau korrigierbar. Deta
 | **E1** | Lage der FFI-Vertrauensgrenze: nur `PSBT ⟶ PSBT` + Callback-Interface für KEK-Unwrapping | Wird die Grenze später gezogen, sind Seeds längst durch JS-Heaps gewandert. Praktisch nicht nachrüstbar. | **Verbindlich festschreiben** (Abschnitt 1.3), CI-Lint gegen verbotene FFI-Typen. |
 | **E2** | Verifier baut auf eigenem, minimalem Descriptor-Parser statt auf `miniscript` | Wenn der Verifier dieselbe Bibliothek nutzt wie der Builder, bestätigt sich ein Bug selbst. Später umzubauen heißt: den Verifier neu schreiben. | Eigener ~250-Zeilen-Parser für genau die Grammatik `wsh(sortedmulti(2,…))`, eigene BIP-32-Ableitung; geteilt bleiben nur secp256k1 und Hashes (Abschnitt 1.5). |
 | **E3** | Entropie-Konstruktion und Anzeigbarkeit der Roh-Entropie | Ein Seed, der unter falscher Konstruktion entstanden ist, wird durch kein Update repariert (Coldcard 2026). Das Format muss ab dem allerersten erzeugten Seed stehen. | ✅ **Entschieden.** `entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = zusatz_bytes)[0..L]`, Roh-Entropie anzeigbar, BIP-39-Ableitung extern nachrechenbar. **Zusatzentropie ist durchgehend optional** — auch für C (Abschnitt 2.2). |
-| **E3b** | Wortlänge: 24 Wörter (256 bit) vs. 12 (128 bit) | Bestimmt Backup-Format, Stahlplatten-Kauf, Onboarding-UX und Stichproben-Design. | ✅ **Entschieden: pro Wallet wählbar** bei der Erstellung, einmalig und danach unveränderlich; Default 24. Gilt einheitlich für alle drei Schlüssel einer Wallet (Abschnitt 2.2.3). |
+| **E3b** | Wortlänge: 24 Wörter (256 bit) vs. 12 (128 bit) | Bestimmt Backup-Format, Stahlplatten-Kauf, Onboarding-UX und Stichproben-Design. | ✅ **Entschieden: pro Schlüssel.** **C fest 24**; **A und B wählbar** 12 oder 24, Default 24. B ist wählbar, weil eine Fixierung Randbedingung 2 (A/B-Symmetrie) verletzen würde — Begründung in 2.2.3. Nach dem Onboarding unveränderlich. |
 | **E4** | Argon2id-Parameter und deren Speicherung im Blob-Header | Ein späterer Parameterwechsel erzwingt Re-Encryption aller Blobs und einen Migrationspfad. | ✅ **Entschieden.** `m = 262144 KiB (256 MiB), t = 3, p = 4`, Fallback-Profil `m = 65536 KiB, t = 6, p = 4` auf Geräten < 4 GB RAM, automatische Wahl; Profil-ID **im Blob-Header** (Abschnitt 2.4). |
 | **E5** | B ist ab v1 ein austauschbarer Signer hinter derselben PSBT-Schnittstelle | Wenn `sign_with_b` intern an den lokalen Keystore gekoppelt wird, ist der Wechsel auf Fremd-Hardware eine Architekturänderung statt eines Drop-in. | ✅ **Entschieden.** `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` mit `LocalSigner` und `ExternalSigner` ab Tag 1; der `ExternalSigner`-Pfad muss in v1 real getestet sein (Abschnitt 2.7, 6.6). |
-| **E6** | Hardware-Signer als optionale Quelle für C bei der Wallet-Erstellung | Die Transport-Abstraktion und die BIP-388-Registrierung müssen im Datenmodell stehen, bevor der erste Descriptor erzeugt wird — sonst ist ein Hardware-C nachträglich ein neues Setup. | ✅ **Entschieden.** C wahlweise in-App oder auf einem angebundenen Hardware-Signer erzeugt (nur xpub importiert). Vier Transporte hinter einem Trait; **QR und NFC in v1, BLE für BitBox02 Nova und Ledger in v1.1** — Begründung der Staffelung in Abschnitt 2.7. |
+| **E6** | Hardware-Signer als optionale Quelle für C bei der Wallet-Erstellung | Die Transport-Abstraktion und die BIP-388-Registrierung müssen im Datenmodell stehen, bevor der erste Descriptor erzeugt wird — sonst ist ein Hardware-C nachträglich ein neues Setup. | ✅ **Entschieden.** C wahlweise in-App oder auf einem angebundenen Hardware-Signer erzeugt (nur xpub importiert) — **optional, aber empfohlen**. Vier Transporte hinter einem Trait; **QR und NFC in v1, BLE für BitBox02 Nova und Ledger in v1.1**. **Coldcard ist implementiert und getestet, in der UI aber zunächst ausgegraut** — freigeschaltet durch eine Firmware-Prüfung am Gerät (Abschnitt 2.7.9). |
 
 > **Zwei Annahmen, die dieses Dokument durchzieht und die vor Implementierungsbeginn bestätigt werden müssen:**
 > **(A1)** Zielplattformen sind iOS ≥ 16 und Android ≥ 10 (API 29). Darunter fehlen `kSecAccessControlBiometryCurrentSet`-Semantiken bzw. `setUnlockedDeviceRequired` in verlässlicher Form.
@@ -114,7 +114,7 @@ Alle Versionsstände unten wurden am **2026-08-08** direkt gegen `crates.io/api/
 | **Descriptor-Interop** | Sparrow übersetzt `wsh(multi(...))` beim Import nach `wsh(sortedmulti(...))`; BIP-48-Unterstützung impliziert BIP-67-Sortierung. BSMS (BIP-129) seit Sparrow v1.7.3; Coldcard als Signer und Coordinator. | bips.dev/129, Sparrow-Release-Notes, Coldcard-Doku |
 | **BIP-388 Wallet Policies** | Externe Signer — **Ledger, BitBox02 und Jade** — nutzen für Multisig BIP-388, um Descriptor-Policies auf dem Gerät anzuzeigen und zu beschränken. Im Ledger-Bitcoin-App implementiert **seit Version 2.1.0**. Nach registrierter und auf dem Gerät bestätigter Policy verhält sich die Multisig-Signatur für den Nutzer wie eine Single-Sig-Signatur. | bips.dev/388, Ledger-Doku |
 | **iOS-USB-Beschränkung** | Zugriff auf beliebige USB-HID-Geräte ist Apps auf iOS/iPadOS **nicht möglich**; HIDDriverKit und die IOKit-HID-APIs stehen dort nicht zur Verfügung, und Kommunikation mit USB-C-Zubehör ohne MFi-Zertifizierung ist ausgeschlossen. Gleiches gilt für serielles Bluetooth außerhalb der von iOS unterstützten Profile. | Apple Developer Forums (mehrere Threads), Apple MFi-Programm-FAQ |
-| **BitBox02 Nova / Whisper** | Nutzt BLE für iOS, weil USB-Kommunikation dort stark eingeschränkt ist. Dedizierter Bluetooth-Chip **DA14531** mit eigener Firmware, **ohne** Zugriff auf den Flash des Haupt-MCU und ohne Kenntnis von Wallet-Geheimnissen; Ende-zu-Ende-verschlüsselte Übertragung, Pairing-Code-Bestätigung auf dem Gerät, Bluetooth per BitBoxApp über USB abschaltbar. | BitBox-Blog „Whisper", BitBox Support Hub |
+| **BitBox02 Nova / Whisper** | Nutzt BLE für iOS, weil USB-Kommunikation dort stark eingeschränkt ist. Dedizierter Bluetooth-Chip **DA14531** mit eigener, quelloffener Firmware (reproduzierbar bei Bezug einer SDK-Datei des Herstellers), **ohne** Zugriff auf den Flash des Haupt-MCU und ohne Kenntnis von Wallet-Geheimnissen. **Zwei Verschlüsselungsschichten:** die höchsten Sicherheitsstufen des BLE-Standards (authentifiziert und verschlüsselt nach dem Pairing) **plus** die native Ende-zu-Ende-Verschlüsselung der BitBox-Firmware vom Haupt-MCU bis zur App darüber. Pairing-Code-Bestätigung auf dem Gerät; Bluetooth per BitBoxApp über USB abschaltbar, dann Funk vollständig aus. | ⚠️ **Sekundärquellen** — `blog.bitbox.swiss` war aus der Recherche-Umgebung nicht abrufbar. Details des Schlüsselaustauschs (Noise? welches AEAD?) **nicht verifiziert**, siehe Anhang B.13. |
 | **BBQr** | Animiertes QR-Protokoll von Coinkite, offene Spezifikation. Zieldateitypen PSBT (BIP-174) und fertige Transaktionen; jedes Frame trägt Dateityp, Gesamtzahl und Index. Multisig-PSBTs liegen typisch bei **5–20 KB** und brauchen daher mehrere Frames. Coldcard unterstützt PSBT v0 (BIP-174) und v2 (BIP-370). | bbqr.org, Coldcard-Doku |
 | **bdk-ffi** | 3.0.0 (Juni 2026): produktionsreife Bindings für Kotlin/JVM, Swift, Python. React-Native- und Dart-Bindings 2026 in Integrationstests. | ⚠️ Sekundärquelle (Blogaggregation); `github.com/bitcoindevkit/bdk-ffi` war in dieser Session nicht abrufbar. |
 | **Address Poisoning 2026** | Industrialisiert: Bots erzeugen Lookalike-Adressen mit identischen Anfangs- und Endzeichen und platzieren Dust in der Historie des Opfers. Ein einzelner Angreifer-Contract erreichte ≈ 3 Mio Dust-Transfers an > 1 Mio Adressen für ≈ 5.175 USD. Fortgeschrittene Varianten beobachten den Mempool auf Test-Transaktionen und vergiften unmittelbar danach. | Chainalysis, Blockaid, Branchenberichte 2026 |
@@ -552,21 +552,30 @@ Nicht aktivierte Quellen liefern eine leere Bytefolge; ihr Separator entfällt. 
 
 Das Verifikationsblatt (2.2.4) druckt `extra_bytes` als Hex mit, sonst ist die Ableitung nicht nachrechenbar.
 
-#### 2.2.3 Wortlänge — pro Wallet wählbar (Entscheidung E3b)
+#### 2.2.3 Wortlänge — pro Schlüssel (Entscheidung E3b)
 
-Bei der Wallet-Erstellung wählt der Nutzer **24 Wörter (256 bit, Default)** oder **12 Wörter (128 bit)**. Die Wahl gilt einheitlich für A, B und C derselben Wallet und ist nach Abschluss des Onboardings **unveränderlich** — eine spätere Änderung wäre ein neues Setup mit Sweep.
+Die Wortlänge wird **je Schlüssel** festgelegt, nicht einheitlich pro Wallet. Das ist technisch unproblematisch, weil A, B und C ohnehin aus unabhängiger Entropie stammen (Randbedingung 1) und der Descriptor nur die xpubs sieht — die Seed-Länge ist ihm gleichgültig.
+
+| Schlüssel | Wortlänge | Begründung |
+|---|---|---|
+| **A** | **12 oder 24, wählbar** (Default 24) | Von A existiert bewusst kein Backup (1.4). A ist der Schlüssel, dessen Verlust das System aushalten *muss*. Hier hat der Nutzer die Wahl. |
+| **B** | **12 oder 24, wählbar** (Default 24) | Siehe Kasten unten — folgt zwingend aus Randbedingung 2 (A/B-Symmetrie). |
+| **C** | **fest 24** | C ist reiner Papier-/Stahl-Schlüssel, wird einmal geschrieben und liegt Jahrzehnte. Keine Bequemlichkeitsersparnis rechtfertigt hier eine Option, die niemand mehr korrigieren kann. |
+
+> **Warum B wählbar ist und nicht wie C fixiert:** Randbedingung 2 des Auftrags ist nicht verhandelbar — A und B werden symmetrisch implementiert, „ein Codepfad, zwei Konfigurationen, sie unterscheiden sich **nur im Entsperrfaktor**". Würde ich B auf 24 festnageln, während A wählbar ist, entstünde ein zweiter Unterschied zwischen A und B. Das wäre ein Verstoß gegen eine gesetzte Randbedingung, nicht eine Ermessensentscheidung. **Empfehlung im UI:** B auf dieselbe Länge wie C setzen (also 24), damit die beiden Papier-Backups, die zusammen die Recovery tragen, dasselbe Format haben — aber als Empfehlung, nicht als Zwang.
 
 | | 24 Wörter | 12 Wörter |
 |---|---|---|
 | `L` | 32 Byte | 16 Byte |
 | Entropie | 256 bit | 128 bit |
 | Zählbare Zusatzquelle für volle Deckung | 99 Würfel / 256 Münzen / 2 Kartenmischungen | 50 Würfel / 128 Münzen / 1 Kartendeck |
-| Backup-Aufwand | 3 × 24 Wörter abschreiben, größere Stahlplatte | 3 × 12 Wörter, kleinere Platte |
-| Quiz-Stichprobe | 4 aus 24 | **3 aus 12** (s.u.) |
+| Quiz-Stichprobe | 4 aus 24 | **3 aus 12** |
 
-**Zur Sicherheitsfrage:** 128 bit sind gegen Brute-Force nach heutigem Stand ausreichend — der Aufwand liegt jenseits dessen, was physikalisch erreichbar ist, und Bitcoins eigenes Sicherheitsniveau liegt für einen einzelnen Schlüssel bei ~128 bit (secp256k1). 12 Wörter sind hier also **kein Sicherheitskompromiss gegen einen Rechenangriff.** Der reale Unterschied ist ein anderer: bei 12 Wörtern trägt die Zusatzquelle nur halb so viel Reserve, falls der CSPRNG teilweise versagt, und die Wahl ist nicht rückholbar. Empfehlung im UI-Text: 24 als Default, 12 sichtbar als bewusste Option mit dieser Begründung — **ohne** Angstsprache, weil 12 Wörter kein Fehler sind.
+**Zur Sicherheitsfrage:** 128 bit sind gegen Brute-Force nach heutigem Stand ausreichend — der Aufwand liegt jenseits des physikalisch Erreichbaren, und Bitcoins eigenes Sicherheitsniveau liegt für einen einzelnen Schlüssel bei ~128 bit (secp256k1). 12 Wörter sind also **kein Sicherheitskompromiss gegen einen Rechenangriff.** Der reale Unterschied ist ein anderer: bei 12 Wörtern trägt die Zusatzquelle nur halb so viel Reserve, falls der CSPRNG teilweise versagt. UI-Text entsprechend sachlich — **ohne** Angstsprache, weil 12 Wörter kein Fehler sind.
 
-**Wichtig für das Datenmodell:** Die Wortlänge geht als `word_count`-Feld in den Blob-Header (2.4) und in `descriptor.json`. Ohne dieses Feld kann die Recovery-UI nicht wissen, wie viele Eingabefelder sie zeigen muss, und der Quiz-Generator nicht, aus welchem Bereich er Positionen zieht.
+**Unveränderlich nach dem Onboarding.** Eine spätere Änderung wäre ein neues Setup mit Sweep.
+
+**Wichtig für das Datenmodell:** `word_count` liegt **pro Blob** im Header (2.4) und **pro Schlüssel** in `descriptor.json`. Ein einzelnes Wallet-weites Feld genügt nicht mehr — die Recovery-UI muss für B und C unterschiedlich viele Eingabefelder zeigen können, und der Quiz-Generator zieht je Slot aus einem anderen Bereich.
 
 #### 2.2.4 Nachweisbarkeit
 
@@ -623,9 +632,9 @@ Descriptor (Change):  identisch, /1/* statt /0/*
 | Drei getrennte Master-Seeds | Randbedingung 1. Ein Seed mit drei Ableitungspfaden macht das Quorum wertlos: wer den Seed hat, hat alle drei Schlüssel. **CI-Test:** Setup wird abgelehnt, wenn zwei der drei Master-Fingerprints identisch sind (Abschnitt 5.2, P7). |
 | Netzwerk-Trennung | Signet/Testnet nutzen Coin-Type `1'` und einen separaten Descriptor-Store. Kein gemeinsamer Zustand mit Mainnet. |
 
-**Descriptor-Persistenz:** `descriptor.json` mit Klartext-Descriptor, allen drei xpubs mit Origin, `birthday_height` je Schlüssel, Netzwerk, Erstellungszeitstempel, Format-Version, **`word_count`** (24 oder 12, E3b) sowie — bei Hardware-C — **`policy_id` je registriertem Gerät** (BIP-388, Abschnitt 2.7.3). Zusätzlich als **BSMS-Record (BIP-129)** exportierbar — der Standard, den Sparrow seit v1.7.3 und Coldcard als Signer und Coordinator unterstützen.
+**Descriptor-Persistenz:** `descriptor.json` mit Klartext-Descriptor, allen drei xpubs mit Origin, `birthday_height` je Schlüssel, Netzwerk, Erstellungszeitstempel, Format-Version, **`word_count` je Schlüssel** (`{"A":24,"B":24,"C":24}`, E3b), **`source` je Schlüssel** (`InApp` | `Hardware{model}`) sowie — bei Hardware-Schlüsseln — **`policy_id` je registriertem Gerät** (BIP-388, Abschnitt 2.7.3). Zusätzlich als **BSMS-Record (BIP-129)** exportierbar — der Standard, den Sparrow seit v1.7.3 und Coldcard als Signer und Coordinator unterstützen.
 
-> **Beide Zusatzfelder gehören auf den Backup-Ausdruck.** `word_count` sagt der Recovery-UI, wie viele Eingabefelder sie zeigen muss; `policy_id` erspart bei einem Gerätewechsel die erneute Bestätigung aller drei xpubs auf dem Gerätedisplay. Keines der beiden ist geheim.
+> **Diese Zusatzfelder gehören auf den Backup-Ausdruck.** `word_count` sagt der Recovery-UI, wie viele Eingabefelder sie **pro Schlüssel** zeigen muss — bei gemischten Längen (z.B. B mit 12, C mit 24) ist das nicht mehr erratbar. `policy_id` erspart bei einem Gerätewechsel die erneute Bestätigung aller drei xpubs auf dem Gerätedisplay. Keines der Felder ist geheim.
 
 ### 2.4 Schlüssel A und B: symmetrische Implementierung (Anforderung 2)
 
@@ -924,8 +933,9 @@ Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), d
 
 | Gerät | Transport zum Telefon | BIP-388 | Als C-Quelle | Als Hardware-B |
 |---|---|---|---|---|
-| **Coldcard Q** | QR (BBQr, eigene Kamera + Display), NFC, microSD | ✅ | ✅ | ✅ |
-| **Coldcard Mk4** | NFC, microSD | ✅ | ✅ | ✅ |
+| **Coldcard Q** | QR (BBQr, eigene Kamera + Display), NFC, microSD | ✅ | 🔒 **ausgegraut**, Freigabe ab FW 1.5.0Q (2.7.9) | 🔒 dito |
+| **Coldcard Mk4/Mk5** | NFC, microSD | ✅ | 🔒 **ausgegraut**, Freigabe ab FW 5.6.0 | 🔒 dito |
+| **Coldcard Mk2/Mk3** | microSD | ✅ | ❌ **nicht freigegeben** — betroffene Gerätegeneration | ❌ |
 | **Keystone** | QR (UR, animiert) | ✅ | ✅ | ✅ |
 | **SeedSigner** | QR (UR) | ✅ | ✅ | ⚠️ speichert selbst keine Seeds |
 | **Blockstream Jade Plus** | QR, USB, BLE | ✅ | ✅ | ✅ |
@@ -966,6 +976,46 @@ Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), d
 | ID | Angriff | Greift die Architektur | Restrisiko |
 |---|---|---|---|
 | **T19** | **Manipulierter Transportkanal** — BLE-MITM beim Pairing, gefälschter QR-Code, NFC-Relay | ✅ **Teilweise.** Was über den Kanal geht, sind PSBTs und xpubs — kein privates Material. Ein Angreifer kann ein manipuliertes PSBT einschleusen, aber der Signer prüft es auf seinem **eigenen Display** (2.7.3), und unser Verifier prüft die Rückgabe erneut gegen den gespeicherten Descriptor. Die Kette bricht an einem der beiden Displays. | Ein Angreifer, der beim **xpub-Import** MITM spielt, kann einen eigenen xpub unterschieben — dann steht sein Schlüssel im Descriptor. **Gegenmaßnahme: der importierte xpub wird auf dem Gerätedisplay bestätigt, nicht nur auf dem Telefon.** Ohne diesen Schritt ist der Import der schwächste Punkt der Hardware-Anbindung. |
+
+#### 2.7.9 Gerätefreigabe — Coldcard zunächst ausgegraut
+
+Nicht jedes technisch angebundene Gerät soll ab Tag 1 empfohlen werden. Die Gerätematrix trägt deshalb einen Freigabezustand, der **unabhängig vom Codepfad** ist:
+
+```rust
+pub enum DeviceGate {
+    Enabled,
+    /// Sichtbar, ausgegraut, mit Begründung. Codepfad existiert und ist getestet.
+    Greyed { reason: GateReason, unlock: UnlockCondition },
+    Hidden,
+}
+
+pub enum UnlockCondition {
+    /// Gerät meldet seine Firmware-Version; Freigabe ab Mindestversion je Modell.
+    MinFirmware(BTreeMap<ModelId, Version>),
+    Manual,                 // nur durch bewusste Nutzeraktion in den Einstellungen
+    None,
+}
+```
+
+**Coldcard startet als `Greyed`** — Grund: der Entropie-Vorfall vom Juli/August 2026 (Abschnitt 2.1). Der Codepfad ist trotzdem vollständig implementiert und getestet; Coldcard Q ist ohnehin das Referenzgerät für den BBQr-Transport (D19, S16–S18). Es geht nur um die Voreinstellung in der Auswahl, nicht um fehlende Funktionalität.
+
+**Die Freigabebedingung, und warum sie in unserem Fall sauber greift:**
+
+| Modell | Mindestversion für Freigabe |
+|---|---|
+| Mk4, Mk5 | ≥ 5.6.0 |
+| Q | ≥ 1.5.0Q |
+| Edge-Track Mk4/Mk5 | ≥ 6.6.0X |
+| Edge-Track Q | ≥ 6.6.0QX |
+| Mk2, Mk3 | **keine Freigabe** — Seeds mit ≈40 bit effektiver Entropie, Gerätegeneration nicht mehr empfohlen |
+
+> **Warum eine reine Firmware-Prüfung hier ausreicht — und wo sie es nicht täte.** Ein Firmware-Update repariert keinen bereits erzeugten Seed. Bei einem *bestehenden* Gerät könnte die App also nie wissen, ob der darauf liegende Seed auf betroffener Version entstanden ist. **In unserem Ablauf entsteht C aber genau jetzt**, während der Wallet-Erstellung, auf der gerade geprüften Firmware. Damit ist der Vorfall für unseren Anwendungsfall abgedeckt, und zwar nachweisbar — nicht durch Vertrauen, sondern durch die Reihenfolge der Schritte.
+>
+> **Daraus folgt eine harte Regel:** Für Slot C wird **ausschließlich ein frisch auf dem Gerät erzeugter Seed** akzeptiert. Der Import eines xpub aus einem *vorhandenen* Wallet auf dem Gerät ist für C gesperrt — bei diesem Weg kann die App die Entstehungsgeschichte des Seeds nicht prüfen, und dann hilft auch aktuelle Firmware nichts. Diese Regel gilt **modellunabhängig für alle Hersteller**, nicht nur für Coldcard; Coldcard ist nur der Anlass, aus dem sie formuliert wurde.
+
+**Für Slot B (Hardware-B, Abschnitt 6.6) gilt sie nicht** — dort ersetzt der Nutzer bewusst einen bestehenden Schlüssel und bringt möglicherweise ein eingerichtetes Gerät mit. Dort zeigt die App stattdessen einen Hinweis mit den betroffenen Versionsbereichen und der Frage, ob der Seed mit ≥ 50 privaten Würfelwürfen erzeugt wurde — die einzige bekannte Bedingung, unter der ein Seed aus betroffener Firmware unbedenklich blieb. Beantworten kann das nur der Nutzer; die App kann es nur fragen und die Antwort protokollieren.
+
+⚠️ **Vor Umsetzung zu verifizieren** (Anhang B, Punkt 6 und 12): Die Versionsangaben oben stammen aus Sekundärquellen. Sie müssen gegen die Coinkite-Primäradvisory geprüft werden, **bevor** sie als Freigabeschwelle Code werden — eine zu niedrig angesetzte Schwelle gäbe ein betroffenes Gerät frei.
 
 ---
 
@@ -1215,12 +1265,15 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **S12** | RBF-Fee-Bump | Neue Transaktion durchläuft die volle Verifikation und konfirmiert |
 | **S13** | Backend-Ausfall: Electrum-Server während des Syncs abschalten | Sauberer Fehler, kein Datenverlust, kein Absturz, kein stiller Fallback auf ein anderes Backend |
 | **S14** | Biometrie-Invalidierung: Enrollment-Änderung simulieren | App erkennt den Zustand, meldet ihn korrekt, bietet Neu-Setup an, verliert **keine** Descriptor-Daten |
-| **S15** | **Onboarding mit 12 Wörtern**, vollständig durch bis zur ersten Adresse, danach S4-Recovery | Quiz zieht 3 aus 12; `word_count=12` im Header und in `descriptor.json`; Recovery-UI zeigt 12 Felder; Sweep erfolgreich |
+| **S15** | **Gemischte Wortlängen:** A=12, B=12, C=24, vollständig bis zur ersten Adresse, danach S4-Recovery | Quiz zieht 3 aus 12 für B und 4 aus 24 für C; `word_count` je Slot korrekt im Header und in `descriptor.json`; Recovery-UI zeigt **pro Schlüssel** die richtige Feldanzahl; Sweep erfolgreich |
+| **S15b** | **C-Wortlänge ist nicht überschreibbar:** `SetupConfig` mit `word_count.C = 12` ansetzen | Wird abgelehnt (`SetupError::InvalidWordCountForSlotC`); es gibt keinen Codepfad, der ein 12-Wort-C erzeugt |
 | **S16** | **Onboarding mit Hardware-C über QR** (Coldcard-Q-Emulator oder Gerät in der Testbank): xpub importieren, BIP-388-Policy registrieren, Wallet abschließen | Descriptor enthält den Geräte-xpub mit korrekter Origin; `PolicyId` persistiert; erste Adresse identisch zur Core-Referenz |
 | **S17** | **Signatur mit Hardware-C** im Recovery-Fall: PSBT per BBQr raus, signiert zurück | Signatur valide, Transaktion konfirmiert |
 | **S18** | **BIP-388-Change-Erkennung:** Sweep-PSBT mit Change an den Hardware-Signer geben | Gerät zeigt den Change-Output **als eigenen** an, nicht als fremden Empfänger. Schlägt das fehl, ist die Policy-Registrierung fehlerhaft. |
 | **S19** | **Zusatzentropie vollständig übersprungen** für A, B und C | Setup läuft durch (keine Blockade, E3), der T10-Hinweis erscheint genau einmal je Schlüssel, und die Roh-Entropie-Anzeige ist trotzdem vollständig |
 | **S20** | **Entropie-Nachrechnung** aus dem Verifikationsblatt für alle Quellkombinationen | Ein externes Shell-Skript reproduziert `entropy` aus `raw_csprng` und `extra_bytes` für Würfel, Münzen, Karten und Mischformen |
+| **S21** | **Gerätefreigabe:** Coldcard mit gemeldeter Firmware unterhalb und oberhalb der Schwelle (2.7.9) | Unterhalb: bleibt ausgegraut, Grund wird angezeigt, **kein** xpub-Import möglich. Oberhalb: freigeschaltet, Import läuft durch. Mk2/Mk3 bleiben in **jeder** Version gesperrt. |
+| **S22** | **Import eines bestehenden Geräte-Seeds für Slot C** versuchen | Wird abgelehnt — für C ist ausschließlich ein frisch auf dem Gerät erzeugter Seed zulässig (2.7.9), herstellerunabhängig |
 
 ### 5.4 Weitere Testebenen
 
@@ -1242,8 +1295,8 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 |---|---|
 | 1 | D1–D19 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
 | 2 | P1–P16 grün mit ≥ 100.000 Fällen je Property. |
-| 3 | S1–S20 grün auf Signet **und** Regtest. |
-| 3b | **Beide Wortlängen** (24 und 12) durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
+| 3 | S1–S22 grün auf Signet **und** Regtest. |
+| 3b | **Beide Wortlängen** (24 und 12) sowie **gemischte Kombinationen** durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
 | 3c | **Mindestens ein realer Hardware-Signer** über QR in der Testbank: S16, S17, S18 grün. Emulator allein genügt nicht, weil BIP-388-Displayverhalten nur am Gerät prüfbar ist. |
 | 4 | **S4 und S5 grün** — Recovery mit und ohne diese App. Diese beiden allein sind ein Veto. |
 | 5 | S9 grün **inklusive** der Assertion, dass kein Schlüsselzugriff stattfand. |
@@ -1266,8 +1319,8 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 ```mermaid
 flowchart TD
     A0["Start"] --> A1["Aufklärung: 3 Schlüssel, 2 genügen<br/>Was NICHT geschützt ist (T4, T5, T12, T17)<br/>— nicht überspringbar, Verweildauer erzwungen"]
-    A1 --> A1b{"Wortlänge wählen<br/>24 (Default) oder 12<br/>gilt für alle drei Schlüssel, unveränderlich"}
-    A1b --> A1c{"Herkunft von C wählen"}
+    A1 --> A1b{"Wortlänge für A und B wählen<br/>je 24 (Default) oder 12<br/>C ist immer 24 — unveränderlich"}
+    A1b --> A1c{"Herkunft von C wählen<br/>optional, Hardware empfohlen"}
     A1c -->|"Hardware-Signer ⭐"| HW1
     A1c -->|"in dieser App"| A2
 
@@ -1280,13 +1333,16 @@ flowchart TD
     A7 -->|falsch| A6
     A7 -->|richtig| A8["blob_B schreiben, zeroize"]
     A8 --> A9["⚠️ PROZESS-NEUSTART<br/>A und B sind aus dem Speicher"]
-    A9 --> A10["Schlüssel C in-App<br/>Zusatzentropie OPTIONAL<br/>beim Überspringen: ein Satz zu T10<br/>Flugmodus empfohlen"]
-    A10 --> A11["C: Wörter + Descriptor anzeigen<br/>nativ, Screenshot gesperrt"]
-    A11 --> A12{"Backup-Nachweis C"}
+    A9 --> A10["Schlüssel C in-App — immer 24 Wörter<br/>Zusatzentropie OPTIONAL<br/>beim Überspringen: ein Satz zu T10<br/>Flugmodus empfohlen"]
+    A10 --> A11["C: 24 Wörter + Descriptor anzeigen<br/>nativ, Screenshot gesperrt"]
+    A11 --> A12{"Backup-Nachweis C<br/>4 von 24 Positionen"}
     A12 -->|falsch| A11
     A12 -->|richtig| A13
 
-    HW1["Gerät verbinden<br/>QR · NFC · BLE · USB"] --> HW2["C auf dem Gerät erzeugen<br/>eigener RNG, fremde Codebasis"]
+    HW1["Gerät verbinden<br/>QR · NFC · BLE · USB<br/>Freigabezustand prüfen (2.7.9)"] --> HW1b{"Gerät freigegeben?"}
+    HW1b -->|"ausgegraut / gesperrt"| HW1c["Grund anzeigen<br/>ggf. Firmware-Prüfung am Gerät"]
+    HW1c --> HW1b
+    HW1b -->|"ja"| HW2["C auf dem Gerät NEU erzeugen<br/>eigener RNG, fremde Codebasis<br/>⚠️ kein Import bestehender Seeds"]
     HW2 --> HW3["xpub_C importieren<br/>⚠️ auf dem GERÄTEDISPLAY bestätigen"]
     HW3 --> A2b["A und B wie links erzeugen<br/>kein Prozess-Neustart nötig —<br/>C war nie in diesem Prozess"]
     A2b --> HW4["BIP-388 Wallet Policy<br/>auf dem Gerät registrieren<br/>alle 3 xpubs auf Gerätedisplay prüfen"]
@@ -1307,9 +1363,12 @@ flowchart TD
     style HW3 fill:#3a3010,stroke:#d4a017,color:#fff
     style HW4 fill:#3a3010,stroke:#d4a017,color:#fff
     style HW1 fill:#102a18,stroke:#27ae60,color:#fff
+    style HW1c fill:#3a1010,stroke:#c0392b,color:#fff
 ```
 
-**Zwei Wahlpunkte ganz vorn, und beide sind unveränderlich:** Wortlänge (E3b) und Herkunft von C (E6). Beide bestimmen das Backup-Format und das Datenmodell; sie nachträglich zu ändern heißt, ein neues Setup zu erzeugen und zu sweepen. Deshalb stehen sie vor der ersten Schlüsselerzeugung und nicht in einem Einstellungsmenü.
+**Zwei Wahlpunkte ganz vorn, und beide sind unveränderlich:** Wortlänge für A und B (E3b) und Herkunft von C (E6). Beide bestimmen das Backup-Format und das Datenmodell; sie nachträglich zu ändern heißt, ein neues Setup zu erzeugen und zu sweepen. Deshalb stehen sie vor der ersten Schlüsselerzeugung und nicht in einem Einstellungsmenü.
+
+**Beide Wahlpunkte sind echte Optionen, keine Hürden.** Die Wortlänge ist mit 24 vorbelegt; die Hardware-Option ist empfohlen, aber der In-App-Weg steht gleichberechtigt daneben und ist nicht mit Warnungen verstellt. Wer nichts anfasst, bekommt ein vollständig funktionierendes 24/24/24-Setup ohne Zusatzgerät.
 
 **Der Hardware-Zweig spart den Prozess-Neustart.** Wird C auf einem externen Gerät erzeugt, war sein Schlüsselmaterial nie im Speicher dieser App — die Session-Trennung, die Weg (b) mühsam herstellt, ist hier strukturell gegeben.
 
@@ -1534,7 +1593,10 @@ Vor Implementierungsbeginn in der Spike-Woche (O12) zu klären. Bewusst **nicht*
 | 8 | Deckt `bitbox-api 0.13.0` den **Whisper-BLE-Transport** ab oder nur USB? | 2.7.6, O14 | Falls nur USB: BLE-Protokoll selbst nachbauen — und ohne BLE gibt es **keine** BitBox-Unterstützung auf iOS |
 | 9 | Existiert eine gepflegte Rust- oder Swift/Kotlin-Referenz für die **Ledger-Bitcoin-App auf App-Ebene** (BIP-388-Registrierung, PSBT-Signatur), oder sind die APDU-Sequenzen selbst zu schreiben? | 2.7.6, O14 | Bestimmt Aufwand und Review-Budget des teuersten Postens der Transportliste |
 | 10 | Genügt Apples **CoreNFC** für die ISO-7816-Kommunikation mit Coldcard Mk4/Q und Tapsigner, und welches Entitlement ist nötig? | 2.7.4 | Entscheidet, ob NFC wirklich in v1 passt oder ob v1 rein QR wird |
-| 11 | Verhalten der Hardware-Signer bei **12-Wort-Setups** in einer BIP-388-Policy — akzeptieren alle Geräte gemischte und kurze Seeds ohne Sonderfall? | 2.2.3, D18 | Wortlänge ist jetzt wählbar; eine nur mit 24 getestete Gerätekette wäre eine Lücke |
+| 11 | Verhalten der Hardware-Signer bei **12-Wort-Setups** in einer BIP-388-Policy — akzeptieren alle Geräte gemischte und kurze Seeds ohne Sonderfall? | 2.2.3, D18 | Wortlänge ist jetzt pro Schlüssel wählbar; eine nur mit 24 getestete Gerätekette wäre eine Lücke |
+| 12 | **Melden Coldcard Q/Mk4 ihre Firmware-Version** über QR bzw. NFC in einer Form, die vor dem xpub-Import auswertbar ist? | 2.7.9 | Ohne auswertbare Versionsmeldung ist das Freigabe-Gate nicht automatisierbar und fällt auf `Manual` zurück |
+| 13 | **Whisper-Kryptografie im Detail:** welcher Schlüsselaustausch, welches AEAD, wie ist der Pairing-Code an den Kanal gebunden? | 0.2, 2.7.4 | Bestimmt, ob wir dem BLE-Kanal für BitBox in v1.1 ohne eigene Zusatzschicht vertrauen |
+| 14 | Kann die App bei **Slot B auf Fremd-Hardware** die Firmware-Version ebenfalls auslesen, oder bleibt es bei der Nutzerabfrage? | 2.7.9 | Bestimmt, ob der Hardware-B-Wechsel geprüft oder nur protokolliert werden kann |
 
 ---
 
