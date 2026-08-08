@@ -13,19 +13,20 @@
 
 ## 0. Executive Summary
 
-### Die Architektur in fünf Sätzen
+### Die Architektur in sechs Sätzen
 
 1. Ein Rust-Kern (rust-bitcoin / BDK, über uniffi eingebunden) hält **alles Geheime**; die Schnittstelle zur UI-Schicht ist ausschließlich **PSBT rein → PSBT raus**, und weder Seed noch xpriv noch Passphrase überqueren jemals die JS-Bridge.
-2. Die Wallet ist ein `wsh(sortedmulti(2, A, B, C))` über **drei unabhängig erzeugte Master-Seeds** auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), von denen A und B als hardware-gebundene, verschlüsselte Blobs auf dem Telefon liegen (A: biometrischer Zugriff, B: Argon2id-Passphrase ⊕ Hardware-Key) und C als Papier-/Stahl-Backup offline bleibt.
-3. Der Code ist in einen **Watch-only-Kern ohne jeden Schlüsselzugriff** (Descriptor, Adressen, UTXOs, PSBT-Bau, Chain-Anbindung) und ein **Signing-Modul** getrennt — der Großteil der App ist damit ohne Schlüsselmaterial testbar und der Sparrow-/Core-Export fällt als Nebenprodukt an.
-4. Vor jeder Signatur prüft ein **vom Builder unabhängiges `verify`-Modul** das PSBT gegen den gespeicherten Descriptor neu — Change-Zugehörigkeit, Ableitungspfade, Gebührenplausibilität — weil die gefälschte Change-Adresse der eine reale Angriffsvektor ist, der nach allen anderen Maßnahmen übrig bleibt.
-5. Korrektheit wird nicht durch eigene Assertions behauptet, sondern durch **Differential Testing gegen Bitcoin Core 30.2** (`deriveaddresses`, `walletprocesspsbt`) und einen **Signet-Recovery-Durchlauf in CI** belegt.
+2. Die Wallet ist ein `wsh(sortedmulti(2, A, B, C))` über **drei unabhängig erzeugte Master-Seeds** auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), von denen A und B als hardware-gebundene, verschlüsselte Blobs auf dem Telefon liegen (A: biometrischer Zugriff, B: Hardware-Key ⊕ Argon2id-Passphrase) und C als Papier-/Stahl-Backup offline bleibt.
+3. Ein Sendevorgang kostet den Nutzer im Regelfall **eine Geste**: Eine biometrische Auswertung öffnet A und B, und darüber liegt eine **im Rust-Kern durchgesetzte Ausgabegrenze** (Default 25 % des Guthabens je Transaktion), oberhalb derer die Passphrase unumgehbar wird — das macht aus dem klassischen „entrissenes Handy = alles weg" ein „bis zur Quote weg, Rest mit Backup-B plus C rettbar".
+4. Der Code ist in einen **Watch-only-Kern ohne jeden Schlüsselzugriff** (Descriptor, Adressen, UTXOs, PSBT-Bau, Chain-Anbindung) und ein **Signing-Modul** getrennt — der Großteil der App ist damit ohne Schlüsselmaterial testbar und der Sparrow-/Core-Export fällt als Nebenprodukt an.
+5. Vor jeder Signatur prüft ein **vom Builder unabhängiges `verify`-Modul** das PSBT gegen den gespeicherten Descriptor neu — Change-Zugehörigkeit, Ableitungspfade, Gebührenplausibilität — weil die gefälschte Change-Adresse der eine reale Angriffsvektor ist, der nach allen anderen Maßnahmen übrig bleibt.
+6. Korrektheit wird nicht durch eigene Assertions behauptet, sondern durch **Differential Testing gegen Bitcoin Core 30.2** (`deriveaddresses`, `walletprocesspsbt`) und einen **Signet-Recovery-Durchlauf in CI** belegt.
 
 ### Die drei größten Risiken
 
 | # | Risiko | Warum es das größte ist | Was die Architektur dagegen tut | Restrisiko |
 |---|---|---|---|---|
-| **R1** | **Kompromittiertes Telefon** | A und B liegen auf demselben Gerät. Wer Code im App-Kontext ausführt und Biometrie sowie Passphrase-Eingabe abfangen kann, hat das Quorum. Kein Multisig-Schema repariert das. | Rust-Kern statt JS-Heap (kein Seed in Crash-Dumps), Passphrase nie als String, `zeroize`, hardware-gebundene KEKs, Verifier vor Signatur. | **Nicht abgedeckt.** Ein Angreifer mit Codeausführung im Prozess *zur Zeit einer Signatur* gewinnt. Einzige echte Gegenmaßnahme: B auf externe Hardware verlagern (Abschnitt 6.6). |
+| **R1** | **Kompromittiertes Telefon** | A und B liegen auf demselben Gerät. Wer nativen Code im App-Kontext ausführt, hat nach einer Biometrie-Freigabe beide Schlüssel und umgeht auch die Ausgabegrenze. Kein Multisig-Schema repariert das — bei einem Single-Sig-Wallet auf demselben Telefon ist die Lage allerdings identisch. | Rust-Kern statt JS-Heap (kein Seed in Crash-Dumps), Passphrase nie als String, `zeroize`, hardware-gebundene KEKs, Verifier vor Signatur. | **Nicht abgedeckt.** Ein Angreifer mit Codeausführung im Prozess *zur Zeit einer Signatur* gewinnt. Einzige echte Gegenmaßnahme: B auf externe Hardware verlagern (Abschnitt 6.6). |
 | **R2** | **Eine Implementierung für zwei Schlüssel** | A und B teilen RNG, Bibliothek, Build und Update-Kanal. Ein RNG-Bug oder ein Supply-Chain-Angriff trifft beide gleichzeitig — das Quorum hat faktisch **eine** Implementierung, nicht zwei. Der Coldcard-Vorfall vom Juli 2026 (Abschnitt 2.1) ist der Beleg, dass genau das passiert. | Nachweisbare Entropie (extern nachrechenbar), Würfel-Option, C zwingend außerhalb der A/B-Session erzeugt, reproducible builds, `cargo vendor`, gepinnte Deps, PSBT-Pfad zu Fremd-Hardware ab v1. | **Teilweise.** C ist die einzige echte Implementierungsdiversität — und C allein kann nichts. Bis B auf Fremd-Hardware liegt, bleibt das Quorum implementierungsseitig 1-von-1. |
 | **R3** | **Descriptor-Verlust / falsche Backup-Verteilung** | Der häufigste Multisig-Totalverlust ist nicht der verlorene Schlüssel, sondern der verlorene Descriptor. Der zweithäufigste ist Backup-B und C in derselben Schublade — dann ist ein Einbruch ein Totalverlust ohne jede Kryptografie. | Descriptor als Pflichtbestandteil jedes Backup-Ausdrucks, erzwungener Backup-Nachweis im Onboarding, explizite Ortstrennungs-Abfrage, BSMS-Export (BIP-129), dokumentierte Recovery ohne diese App. | **Verhalten des Nutzers.** Die App kann die räumliche Trennung weder prüfen noch erzwingen. Nur UX-Verankerung und Wiederholung. |
 
@@ -41,6 +42,7 @@ Diese sechs sind nachträglich nicht oder nur unter Neuaufbau korrigierbar. Deta
 | **E3b** | Wortlänge: 24 Wörter (256 bit) vs. 12 (128 bit) | Bestimmt Backup-Format, Stahlplatten-Kauf, Onboarding-UX und Stichproben-Design. | ✅ **Entschieden: pro Schlüssel.** **C fest 24**; **A und B wählbar** 12 oder 24, Default 24. B ist wählbar, weil eine Fixierung Randbedingung 2 (A/B-Symmetrie) verletzen würde — Begründung in 2.2.3. Nach dem Onboarding unveränderlich. |
 | **E4** | Argon2id-Parameter und deren Speicherung im Blob-Header | Ein späterer Parameterwechsel erzwingt Re-Encryption aller Blobs und einen Migrationspfad. | ✅ **Entschieden.** `m = 262144 KiB (256 MiB), t = 3, p = 4`, Fallback-Profil `m = 65536 KiB, t = 6, p = 4` auf Geräten < 4 GB RAM, automatische Wahl; Profil-ID **im Blob-Header** (Abschnitt 2.4). |
 | **E5** | B ist ab v1 ein austauschbarer Signer hinter derselben PSBT-Schnittstelle | Wenn `sign_with_b` intern an den lokalen Keystore gekoppelt wird, ist der Wechsel auf Fremd-Hardware eine Architekturänderung statt eines Drop-in. | ✅ **Entschieden.** `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` mit `LocalSigner` und `ExternalSigner` ab Tag 1; der `ExternalSigner`-Pfad muss in v1 real getestet sein (Abschnitt 2.7, 6.6). |
+| **E7** | **Ein-Gesten-Signatur mit Ausgabegrenze im Rust-Kern** | Ob A und B mit derselben Geste aufgehen, bestimmt das Blob-Format, die Plattform-Flags und die gesamte Signatur-Choreografie. Nachträglich ist das ein Umbau beider Keystores. | ✅ **Entschieden.** Eine biometrische Auswertung öffnet A **und** B; darüber liegt eine im Rust-Kern durchgesetzte Betrags- und Zeitfenstergrenze, oberhalb derer die Passphrase verlangt wird. Ein Sendevorgang kostet damit **eine Geste**. Vollständige Herleitung, Kosten und Gegenrechnung in Abschnitt 3.6. |
 | **E6** | Hardware-Signer als optionale Quelle für C bei der Wallet-Erstellung | Die Transport-Abstraktion und die BIP-388-Registrierung müssen im Datenmodell stehen, bevor der erste Descriptor erzeugt wird — sonst ist ein Hardware-C nachträglich ein neues Setup. | ✅ **Entschieden.** C wahlweise in-App oder auf einem angebundenen Hardware-Signer erzeugt (nur xpub importiert) — **optional, aber empfohlen**. Vier Transporte hinter einem Trait; **QR und NFC in v1, BLE für BitBox02 Nova und Ledger in v1.1**. **Coldcard ist implementiert und getestet, in der UI aber zunächst ausgegraut** — freigeschaltet durch eine Firmware-Prüfung am Gerät (Abschnitt 2.7.9). |
 
 > **Ein vierter Punkt, der keine Sicherheitslücke ist und trotzdem hierher gehört:** Der Maßstab dieses Produkts ist die Aufstellung, aus der der Nutzer kommt — Börse oder Single-Sig — **nicht** ein Multisig aus drei Hardware-Wallets an drei Orten. Damit wird Reibung zu einer Kostenposition im Bedrohungsmodell (T20): Wer das Onboarding abbricht, bleibt dort, wo ein einziger Fehler Totalverlust bedeutet. Abschnitt 0.1 führt das aus und begründet daraus vier Entscheidungen, die sonst wie Nachlässigkeit aussähen.
@@ -83,12 +85,29 @@ Das ist die Begründung für vier Entscheidungen, die sonst wie Nachlässigkeit 
 | **Hardware optional** (E6) | Ein Pflicht-Gerätekauf im Onboarding halbiert die Abschlussquote. Empfohlen und vorbereitet, aber nicht Voraussetzung. |
 | **Passphrase-Bedienbarkeit** (6.2.1) | ~45 Sekunden pro Sendevorgang treiben Nutzer zurück zur Börse. 10–15 Sekunden nicht. Deshalb Autovervollständigung und vorgezogene KDF statt einer schwächeren Passphrase. |
 
+### Woher die Sicherheit tatsächlich kommt
+
+Ein verbreitetes Missverständnis wäre, den gesamten Gewinn beim Quorum zu verbuchen. Tatsächlich kommt ein großer Teil aus Dingen, die den Nutzer **null Aufwand** kosten und die gängige Software-Wallets schlicht nicht tun:
+
+| Gewinn | Nutzeraufwand | Was ein typisches Software-Wallet stattdessen tut |
+|---|---|---|
+| **Kein Backup allein genügt** — wer B's Wortliste findet, hat 1 von 3 | einmalig zwei Orte wählen | Ein Backup = alles. Fotografiert, gefunden, verbrannt → Totalverlust |
+| **Kein Einzelschlüssel-Leak ist fatal** | keiner | Ein Seed. Ein Leak. Ende. |
+| **Kein Seed im JS-Heap** (Abschnitt 1.1) | keiner | React-Native-Wallets halten Seeds routinemäßig als JS-String — unlöschbar bis Prozessende, in Crash-Dumps enthalten |
+| **Unabhängiger Verifier gegen Change-Adress-Manipulation** (1.5) | keiner | Praktisch kein Consumer-Wallet prüft Change unabhängig vom Builder |
+| **Deterministische Nonces, nachrechenbare Entropie, reproducible builds** (2.2, 3.4, 1.7) | keiner | Genau die Klasse Fehler, die bei Coldcard ≈594 BTC gekostet hat |
+| **Recovery ohne diese App dokumentiert und in CI getestet** (S5/S6) | keiner | „Vertrauen Sie darauf, dass es die App in fünf Jahren noch gibt" |
+| **Ausgabegrenze gegen Diebstahl des entsperrten Geräts** (3.6) | einmalig eine Zahl | Entrissenes entsperrtes Handy = 100 % weg |
+
+**Sechs der sieben Zeilen kosten den Nutzer nichts.** Das ist der eigentliche Inhalt von „exorbitant sicherer bei minimalem Mehraufwand" — nicht das Quorum allein, sondern das Quorum plus sauber gemachte Grundlagen.
+
 ### Wo das Prinzip endet
 
 Reibung reduzieren heißt **nicht**, Sicherheitseigenschaften aufzugeben, die den Abstand zur Ausgangslage überhaupt herstellen. Zwei Dinge bleiben deshalb hart, obwohl sie Reibung kosten:
 
 1. **Der Backup-Nachweis für B und C ist blockierend** (6.1). Ohne ihn ist ein verlorenes Telefon Totalverlust — dann wären wir nicht besser als Single-Sig, sondern nur komplizierter. Das ist der eine Punkt, an dem Abbruch besser ist als Durchwinken.
-2. **Kein Biometrie-Pfad für B** (6.2.1). Ein entrissenes, entsperrtes Telefon ist der häufigste reale Angriff auf Handy-Wallets überhaupt — kein exotisches Szenario. Die Passphrase ist dort der Unterschied zwischen „Handy weg" und „Coins weg". Und seit sie 10–15 Sekunden statt 45 kostet, ist sie kein Abbruchgrund mehr.
+2. **Die Ausgabegrenze lässt sich nicht ohne Passphrase ändern** (3.6). Sie ist das, was aus „entrissenes Handy = alles weg" ein „entrissenes Handy = ein Teil weg, Rest rettbar" macht. Wäre sie mit derselben Geste abschaltbar, die auch signiert, wäre sie wertlos.
+3. **Die Grenze wird im Rust-Kern durchgesetzt, nicht in der UI** (3.6). Ein Limit, das die JS-Schicht prüft, ist gegen den wahrscheinlichsten Angriffsweg — eine kompromittierte npm-Abhängigkeit — wirkungslos.
 
 ---
 
@@ -510,6 +529,7 @@ pub trait ChainBackend: Send + Sync {
 | Toolchain-Pin | `rust-toolchain.toml` mit exakter Version + Komponenten-Hashes. Kein `stable`. |
 | Reproducible Builds | Deterministische `--remap-path-prefix`, `SOURCE_DATE_EPOCH`, Build im Container mit gepinntem Digest. Verifikation durch mindestens zwei unabhängige Builder vor jedem Release. |
 | Audit-Gates | `cargo-deny` (Advisories, Lizenzen, **Duplikat-Crates**, `[bans]` für `miniscript` in `trinity-verify`), `cargo-audit` gegen den gesamten Lockfile, `cargo-vet` für Review-Status der Deps. |
+| **Lizenzen ohne Gebühren** | Allowlist statt Denylist in `cargo-deny [licenses]`: MIT, Apache-2.0, BSD-2/3, ISC. Eine unbekannte Lizenz bricht den Build. Der gesamte Kern-Stack (BDK, rust-bitcoin, miniscript, secp256k1, argon2, zeroize, uniffi, bbqr, ur) ist MIT bzw. Apache-2.0 — es gibt **keine** Komponente mit Nutzungsgebühr, kein kommerzielles SDK und keinen Dienst mit laufenden Kosten im Signatur- oder Chain-Pfad. Das ist eine Produktanforderung, kein Nebenaspekt: laufende Kosten würden ein Serverabhängigkeit erzwingen, die der Auftrag ausschließt. |
 | Keine dynamischen Nachladewege | Keine OTA-Bundles, kein CodePush, kein Remote-Config, kein Feature-Flag-Dienst. Der JS-Bundle ist Teil des signierten App-Binaries. **Diese Regel ist bei React Native aktiv durchzusetzen — sie ist nicht der Default.** |
 | Signaturpfad-Budget | Harte Obergrenze für die transitive Dependency-Zahl von `trinity-signer` + `trinity-keystore` + `trinity-verify`. Vorschlag: **≤ 40 Crates**, CI-geprüft, Überschreitung erfordert explizite Freigabe. |
 
@@ -709,13 +729,18 @@ pub const POLICY_A: SlotPolicy = SlotPolicy {
 
 pub const POLICY_B: SlotPolicy = SlotPolicy {
     slot: KeySlot::B,
-    unlock: UnlockFactor::Passphrase,
+    // Zwei Wege, und welcher gilt, entscheidet die SpendPolicy — nicht der Aufrufer.
+    // Unterhalb der Grenze: dieselbe biometrische Auswertung wie A (3.6.2).
+    // Oberhalb, bei Ersteinrichtung, bei Policy-Änderung und beim Export: Passphrase.
+    unlock: UnlockFactor::BiometryOrPassphrase,
     argon: Some(ArgonProfile::HIGH),
-    invalidate_on_biometric_change: false,   // B hängt nicht an Biometrie — Randbedingung 4
+    invalidate_on_biometric_change: true,    // gilt jetzt auch für B
     require_device_unlocked: true,
     /* … */
 };
 ```
+
+> **Abweichung von Randbedingung 4 des Auftrags — bewusst und benannt.** Der Auftrag verlangte ursprünglich, dass es „keinen Biometrie-Shortcut" für die Passphrase gibt. Diese Anforderung ist mit E7 überstimmt worden, nachdem der Maßstab in 0.1 festgelegt wurde: gemessen wird gegen ein Software-Wallet, nicht gegen ein 3×-Hardware-Multisig. Was von Randbedingung 4 **bleibt**: Die Passphrase darf weiterhin nicht der Gerätepasscode sein, liegt nicht im Keychain, wird nie persistiert, und es gibt keinen Weg, sie *auszulesen*. Was **entfällt**: dass sie bei jeder Signatur verlangt wird. Die Sicherheitseigenschaft, die dadurch verloren geht, wird durch die Ausgabegrenze in 3.6.3 teilweise ersetzt — teilweise, nicht vollständig, und genau so steht es in T4b und T5a.
 
 #### Blob-Format (identisch für A und B)
 
@@ -778,8 +803,9 @@ Slot B:   KEK_B = unwrap_kek(B, wrapped_B)              // Plattform, passcodege
 | **Keine PIN** | Numerische Eingaben werden komplett abgelehnt | hart |
 | **Nicht der Gerätepasscode** | Vergleich gegen den Gerätepasscode ist technisch unmöglich; stattdessen explizite Bestätigungsabfrage und Warnung im Onboarding | UX-Maßnahme, nicht erzwingbar — **ehrlich zu benennen** |
 | **Nicht im Keychain** | Die Passphrase wird zu **keinem** Zeitpunkt persistiert. Kein „Merken"-Schalter, keine Autofill-Integration, `isSecureTextEntry`/`IMPORTANT_FOR_AUTOFILL_NO`, Screenshot-Sperre auf dem Eingabescreen | hart |
-| **Kein Biometrie-Shortcut** | Es gibt keinen Codepfad, in dem Biometrie die Passphrase ersetzt. `POLICY_B.unlock` ist ein Enum ohne `Biometry`-Variante für Slot B | hart, typsystem-erzwungen |
-| **Eingabe zumutbar machen** | Diceware-Autovervollständigung, vorgezogenes Argon2id, wortweises Feedback — senkt einen Sendevorgang von ~45 auf 10–15 s **ohne** Entropieverlust (6.2.1) | Pflicht |
+| **Biometrie ersetzt sie nur unterhalb der Grenze** | Oberhalb der `SpendPolicy`, bei Policy-Änderungen, bei Export und bei der ersten Nutzung nach Installation ist die Passphrase **unumgehbar** — durchgesetzt im Rust-Kern (3.6.3), nicht in der UI | hart |
+| **Eingabe zumutbar machen** | Diceware-Autovervollständigung, vorgezogenes Argon2id, wortweises Feedback — senkt eine Passphrase-Eingabe von ~45 auf 10–15 s **ohne** Entropieverlust (6.2.1) | Pflicht |
+| **Sie bleibt der Anker** | Die Passphrase ist das Einzige, was ein Dieb mit entsperrtem Telefon nicht hat. Fällt sie, fällt die Ausgabegrenze — deshalb gelten alle Anforderungen oben unverändert, obwohl sie seltener eingegeben wird | hart |
 
 > **Warum Randbedingung 4 typsystem-erzwungen wird:** „Es gibt keinen Biometrie-Shortcut" als Kommentar überlebt keine sechs Monate Produktentwicklung. Als Enum-Variante, die für Slot B schlicht nicht existiert, überlebt es.
 
@@ -964,7 +990,7 @@ Key-Information-Vektor:  [ [fpA/48'/0'/0'/2']xpubA,
 
 Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), die bei jeder späteren Signatur mitgegeben wird. **Diese ID gehört in `descriptor.json` und auf den Backup-Ausdruck** — geht sie verloren, muss die Policy neu registriert werden, was eine erneute Bestätigung aller drei xpubs auf dem Gerätedisplay bedeutet.
 
-> **Der Sicherheitswert der Registrierung liegt in der Bestätigung, nicht in der Speicherung.** Bei der Registrierung liest der Nutzer alle drei xpubs auf dem Display des Hardware-Signers — also auf einem Bildschirm, den weder unsere App noch ein kompromittiertes Telefon kontrolliert. Das ist die eine Stelle im gesamten Ablauf, an der T4 (kompromittiertes Telefon) nicht greift. Der Schritt darf deshalb nicht als lästige Formalität gerahmt werden.
+> **Der Sicherheitswert der Registrierung liegt in der Bestätigung, nicht in der Speicherung.** Bei der Registrierung liest der Nutzer alle drei xpubs auf dem Display des Hardware-Signers — also auf einem Bildschirm, den weder unsere App noch ein kompromittiertes Telefon kontrolliert. Das ist die eine Stelle im gesamten Ablauf, an der T4b (kompromittiertes Telefon) nicht greift. Der Schritt darf deshalb nicht als lästige Formalität gerahmt werden.
 
 #### 2.7.4 Transport-Matrix
 
@@ -1015,9 +1041,9 @@ Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), d
 |---|---|---|
 | **T9 Supply Chain** | 🔴 A, B, C teilen eine Codebasis — ein Angriff trifft alle drei | 🟡 C stammt aus fremder Codebasis, fremdem RNG, fremder Firmware. Das Quorum hat erstmals **zwei** Implementierungen. |
 | **T10 RNG-Fehler** | 🔴 ohne Zusatzquelle nicht abgedeckt | ✅ C hat einen unabhängigen RNG |
-| **T4 kompromittiertes Telefon** | 🔴 unverändert | 🔴 **unverändert** — C signiert im Normalbetrieb nicht. Erst Hardware-**B** (6.6) ändert daran etwas. |
+| **T4b kompromittiertes Telefon** | 🔴 unverändert | 🔴 **unverändert** — C signiert im Normalbetrieb nicht. Erst Hardware-**B** (6.6) ändert daran etwas. |
 
-> **Die wichtigste Zeile ist die letzte.** Ein Hardware-C verbessert die Erzeugung und die Supply-Chain-Lage, aber **nicht** den Alltagsbetrieb — im Normalfall signieren weiterhin A und B auf demselben Telefon. Wer T4 adressieren will, muss B verlagern, nicht C. Das ist kein Argument gegen Hardware-C, sondern gegen die Erwartung, damit sei das Telefonproblem gelöst.
+> **Die wichtigste Zeile ist die letzte.** Ein Hardware-C verbessert die Erzeugung und die Supply-Chain-Lage, aber **nicht** den Alltagsbetrieb — im Normalfall signieren weiterhin A und B auf demselben Telefon. Wer T4b adressieren will, muss B verlagern, nicht C. Das ist kein Argument gegen Hardware-C, sondern gegen die Erwartung, damit sei das Telefonproblem gelöst.
 
 #### 2.7.8 Neue Bedrohung durch die Anbindung
 
@@ -1104,40 +1130,37 @@ sequenceDiagram
     NAT-->>U: „X sat an bc1q… · Gebühr Y sat (Z sat/vB)"
     U->>NAT: Bestätigen
 
-    Note over NAT,PKS: Signatur A — Biometrie
-    NAT->>FFI: sign_a(psbt_b64)
-    FFI->>S: sign(slot=A, psbt)
-    S->>V: verify(...) erneut, intern
-    V-->>S: ok
-    S->>KS: unlock(A)
-    KS->>PKS: unwrap_kek(A, wrapped_A)
-    PKS-->>U: Biometrie-Prompt
-    U-->>PKS: Face ID / Fingerabdruck
-    PKS-->>KS: KEK_A
-    KS->>KS: entropy = AEAD-decrypt(blob_A, KEK_A)
-    KS-->>S: xprv_A (kurzlebig)
-    S->>S: ECDSA, RFC-6979-Nonce, low-s
-    S->>S: Eigensignatur gegen Pubkey verifizieren
-    S->>S: zeroize(xprv_A, entropy, KEK_A)
-    S-->>FFI: psbt_a
-    FFI-->>NAT: psbt_a (1 von 2 Signaturen)
+    Note over NAT,S: Ausgabegrenze — im Rust-Kern, vor jedem Schlüsselzugriff
+    NAT->>FFI: sign_ab(psbt_b64)
+    FFI->>S: check SpendPolicy (3.6.3)
+    alt Betrag ≤ Quote, Fenster frei, nicht erste Nutzung
+        S-->>NAT: braucht nur Biometrie
+        NAT->>PKS: EINE Auswertung (LAContext bzw. 5-s-Fenster)
+        PKS-->>U: Face ID / Fingerabdruck
+        U-->>PKS: Geste
+        PKS-->>KS: KEK_A und KEK_B — getrennte Schlüssel, ein Prompt
+    else Betrag > Quote · Policy-Änderung · Export · erste Nutzung
+        S-->>NAT: Passphrase erforderlich
+        NAT->>U: Eingabe (Data/ByteArray, NIE String, Autovervollständigung)
+        U->>NAT: Passphrase
+        NAT->>FFI: sign_ab(psbt_b64, SecretBytes)
+        PKS-->>U: Biometrie für KEK_A
+        KS->>KS: Argon2id(pass, salt, profil) — vorgezogen, ≈ 2 s
+        KS->>KS: KEK_B = HW_B XOR argon_out
+    end
 
-    Note over NAT,PKS: Signatur B — Passphrase
-    NAT->>U: Passphrase-Eingabe (Data/ByteArray, NIE String)
-    U->>NAT: Passphrase
-    NAT->>FFI: sign_b(psbt_a, SecretBytes)
-    FFI->>S: sign(slot=B, psbt)
-    S->>V: verify(...) erneut, intern
-    S->>KS: unlock(B, pass)
-    KS->>PKS: unwrap_kek(B, wrapped_B)
-    PKS-->>U: Gerätepasscode falls verlangt (kein Biometrie-Pfad)
-    PKS-->>KS: HW_B
-    KS->>KS: Argon2id(pass, salt, profil) ≈ 2 s
-    KS->>KS: KEK_B = HW_B XOR argon_out
-    KS->>KS: entropy = AEAD-decrypt(blob_B, KEK_B)
-    KS-->>S: xprv_B (kurzlebig)
+    Note over S,V: Signatur A, dann B — jeweils mit eigener Verifikation
+    S->>V: verify(...) vor Slot A
+    V-->>S: ok
+    KS->>KS: entropy_A = AEAD-decrypt(blob_A, KEK_A)
+    S->>S: ECDSA, RFC-6979-Nonce, low-s, Eigenverifikation
+    S->>S: zeroize(xprv_A, entropy_A, KEK_A)
+    S->>V: verify(...) vor Slot B — unsigned_tx unverändert?
+    V-->>S: ok
+    KS->>KS: entropy_B = AEAD-decrypt(blob_B, KEK_B)
     S->>S: ECDSA, RFC-6979, low-s, Eigenverifikation
     S->>S: zeroize(alles, inkl. SecretBytes)
+    S->>S: SpendPolicy-Zähler fortschreiben (verschlüsselt)
     S-->>FFI: psbt_ab
     FFI-->>NAT: psbt_ab (2 von 2)
 
@@ -1195,6 +1218,117 @@ Zusätzlich prüft `sign_b`, dass die bereits vorhandene Signatur von A zum erwa
 | Größe/Gebühr final | vsize der fertigen Transaktion wird gemessen; die effektive Feerate wird gegen `max_feerate` geprüft. Eine finalisierte Transaktion, die über der Obergrenze liegt, wird **nicht** gesendet. |
 | Broadcast | Über ein separat konfigurierbares Backend (1.6). Fehlschlag ⇒ die Transaktion wird lokal aufbewahrt und kann erneut gesendet werden; kein automatischer Rebroadcast über einen anderen Weg ohne Nutzeraktion. |
 
+### 3.6 Ein-Gesten-Signatur und Ausgabegrenzen (Entscheidung E7)
+
+**Anforderung:** Ein Sendevorgang kostet eine Geste. Die App soll sich anfühlen wie ein gängiges Software-Wallet und im Hintergrund trotzdem ein 2-von-3 sein.
+
+#### 3.6.1 Was dabei kryptografisch nicht geht — und warum das kein Beinbruch ist
+
+Jede Ausgabe braucht zwei Signaturen. Auf dem Telefon liegen A und B. Also müssen für jede telefonseitige Ausgabe **beide** Blobs aufgehen, und damit bestimmt die schwächere der beiden Entsperrungen die Sicherheit. Öffnet eine Geste beide, ist das ein Faktor. Daran ändert auch keine Betragsstaffelung etwas: Was mit Biometrie aufgeht, geht immer mit Biometrie auf.
+
+Es gibt dafür **keinen Trick**. Wer etwas anderes behauptet, hat einen Denkfehler oder verkauft etwas. Also lautet die richtige Frage nicht „wie umgehe ich das", sondern „wo hole ich die Sicherheit stattdessen her".
+
+Der Vergleich, auf den es ankommt (Maßstab aus 0.1) — Ein-Gesten-Trinity gegen ein normales Software-Wallet:
+
+| | Software-Wallet (Single-Sig) | **Trinity, Ein-Gesten-Modus** |
+|---|---|---|
+| Kompromittiertes Telefon | 🔴 alles weg | 🔴 alles weg — **gleichauf, nicht schlechter** |
+| Backup gefunden / fotografiert / gestohlen | 🔴 alles weg | ✅ **1 von 3, wertlos für den Finder** |
+| Ein Schlüssel leakt | 🔴 alles weg | ✅ **abgedeckt, Sweep möglich** |
+| Backup verbrannt / verloren | 🔴 alles weg | ✅ zweites Backup trägt |
+| RNG-Fehler bei der Erzeugung | 🔴 alles weg | ✅ bei Hardware-C oder Zusatzentropie abgedeckt |
+| **Entrissenes, entsperrtes Handy** | 🔴 **alles weg** | ⚠️ **nur bis zur Grenze — Rest rettbar** (3.6.3) |
+| Manipulierte Change-Adresse | 🔴 meist ungeprüft | ✅ unabhängiger Verifier |
+
+**Sechs von sieben Zeilen verbessern sich, eine bleibt gleich, keine wird schlechter.** Das ist die ehrliche Bilanz des Ein-Gesten-Modus — und sie ist deutlich besser, als „ein Faktor statt zwei" klingt.
+
+#### 3.6.2 Eine Geste, zwei Schlüssel — plattformseitig
+
+Beide Blobs bleiben durch **getrennte** hardware-gebundene Schlüssel geschützt; geteilt wird nur die Nutzerinteraktion, nicht das Schlüsselmaterial. Ein Angreifer, der einen KEK extrahiert, bekommt den anderen dadurch nicht.
+
+**iOS** — eine Auswertung, zwei Keychain-Zugriffe:
+
+```swift
+let ctx = LAContext()
+ctx.touchIDAuthenticationAllowableReuseDuration = 10   // deckt genau die zwei Zugriffe
+try await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
+                             localizedReason: "Transaktion signieren")
+// derselbe Kontext für beide SE-Schlüssel — ein Prompt, zwei getrennte Schlüssel
+let kekA = try unwrap(slot: .A, context: ctx)
+let kekB = try unwrap(slot: .B, context: ctx)
+```
+
+**Android** — zeitbasierte Autorisierung statt CryptoObject-Bindung:
+
+```kotlin
+// Ein BiometricPrompt kann per CryptoObject nur EINEN Cipher binden.
+// Für zwei Schlüssel deshalb zeitbasierte Auth mit kurzem Fenster:
+setUserAuthenticationParameters(5 /* Sekunden */, KeyProperties.AUTH_BIOMETRIC_STRONG)
+```
+
+⚠️ **Benannter Trade-off:** Zeitbasierte Autorisierung ist schwächer als die CryptoObject-Bindung pro Nutzung — für 5 Sekunden sind die Schlüssel ohne erneute Auswertung verwendbar. Das ist der Preis dafür, dass ein Send nur einen Prompt hat. Das Fenster wird **so kurz wie technisch möglich** gewählt und ist nicht konfigurierbar.
+
+Alle übrigen Flags aus 2.4 bleiben unverändert, insbesondere `.biometryCurrentSet` bzw. `setInvalidatedByBiometricEnrollment(true)` — ein neu registriertes Gesicht invalidiert **beide** Schlüssel.
+
+#### 3.6.3 Die Ausgabegrenze — durchgesetzt im Rust-Kern
+
+Hier kommt die Sicherheit her, die die eine Geste kostet.
+
+```rust
+// crates/trinity-signer/src/limits.rs — NICHT in der JS-Schicht
+pub struct SpendPolicy {
+    /// Anteil des Guthabens pro Transaktion, oberhalb dessen die Passphrase nötig ist.
+    pub per_tx_fraction: Option<Ratio>,        // Default: 25 %
+    /// Kumulativ im gleitenden Fenster.
+    pub window_fraction: Option<Ratio>,        // Default: 50 %
+    pub window: Duration,                      // Default: 24 h
+    /// Optionale absolute Obergrenze zusätzlich zur Quote.
+    pub absolute_cap_sat: Option<u64>,         // Default: keine
+    /// Erste Signatur nach Neuinstallation verlangt immer die Passphrase.
+    pub passphrase_on_first_use: bool,         // Default: true, nicht abschaltbar
+}
+```
+
+`sign_b` prüft die Policy **vor** dem Entsperren von B und verlangt bei Überschreitung `SecretBytes`. Der geführte Zähler liegt im verschlüsselten Zustand des Kerns, nicht in einer JS-lesbaren Datei.
+
+**Warum Quoten statt fester Beträge:** Eine Grenze in Sat veraltet mit dem Kurs, eine Grenze in Euro braucht einen Preis-Feed — also einen Netzwerkabruf, einen Dritten und eine Privacy-Frage. Ein Anteil des Guthabens skaliert von selbst, ist preisunabhängig und in einem Satz erklärbar. Eine absolute Obergrenze ist zusätzlich einstellbar für alle, die es genauer wollen.
+
+**Was die Grenze leistet — und wogegen sie nichts ausrichtet:**
+
+| Angreifer | Wirkt die Grenze? | Warum |
+|---|---|---|
+| **Dieb mit entsperrtem Telefon** (T5a) | ✅ **Ja** | Er bedient die App über die UI. Der Kern verlangt oberhalb der Quote die Passphrase, die er nicht hat. |
+| **Kompromittierte npm-Abhängigkeit** (JS-Ebene) | ✅ **Ja** | Die Prüfung liegt in Rust. Die JS-Schicht kann sie weder lesen noch umgehen. Das ist der **wahrscheinlichste** Supply-Chain-Weg bei React Native. |
+| **Nativer Codeausführungs-Angriff, Jailbreak/Root** (T4b) | ❌ **Nein** | Wer im Prozess Code ausführt, umgeht jede App-Politik. |
+| **Nötigung** (T17) | ❌ Nein | Der Nutzer gibt die Passphrase her. |
+
+Also: **eine echte Grenze gegen die zwei häufigsten realen Angriffe, keine gegen den stärksten.** Genau so ist sie im UI zu beschreiben — als Diebstahlsbremse, nicht als kryptografische Schranke.
+
+#### 3.6.4 Die Eigenschaft, die daraus folgt und die kein Software-Wallet hat
+
+> Wird dir das entsperrte Telefon entrissen, kommt der Dieb an höchstens 25 % deines Guthabens. Für mehr braucht er die Passphrase. **Du nimmst dein Backup von B, holst C aus dem zweiten Aufbewahrungsort und schiebst den Rest in ein frisches Setup** — mit genau den zwei Schlüsseln, die der Dieb nicht hat.
+
+Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne jede Handlungsoption. Das ist der konkrete, in einem Satz erklärbare Grund, warum sich der Umstieg lohnt — und er kostet den Nutzer eine einmalig eingestellte Zahl.
+
+Damit das trägt, sind drei Dinge **nicht** mit der Signatur-Geste änderbar, sondern verlangen immer die Passphrase:
+
+1. Die `SpendPolicy` ändern oder abschalten
+2. Schlüssel exportieren, Wallet löschen, Schlüsseltausch starten
+3. Die erste Signatur nach einer Neuinstallation
+
+#### 3.6.5 Voreinstellungen und Einstellbarkeit
+
+| Einstellung | Default | Bereich |
+|---|---|---|
+| Pro Transaktion | 25 % des Guthabens | 1 %–100 %, oder „immer fragen" |
+| Gleitendes Fenster | 50 % in 24 h | 1 %–100 %, Fenster 1 h–7 d, oder aus |
+| Absolute Obergrenze | keine | frei, zusätzlich zur Quote |
+| Erste Nutzung nach Installation | Passphrase | **nicht abschaltbar** |
+
+**„Immer fragen"** stellt den Zustand vor dieser Entscheidung her — Passphrase bei jedem Send, zwei echte Faktoren. Das bleibt für alle verfügbar, die es wollen, und ist mit der Bedienbarkeitsarbeit aus 6.2.1 auf 10–15 Sekunden gebracht. Es ist nicht der Default, weil es dem Maßstab aus 0.1 widerspricht.
+
+**Der Weg zu zwei echten Faktoren ohne Reibung bleibt Hardware-B** (6.6): ein NFC-Tap dauert etwa zwei Sekunden — also ungefähr so lang wie die Biometrie — und liefert dabei einen zweiten, physisch getrennten Faktor. Das ist die Stufe, auf die die App hinarbeiten sollte, ohne sie vorauszusetzen.
+
 ---
 
 ## 4. Bedrohungsmodell
@@ -1207,10 +1341,12 @@ Zusätzlich prüft `sign_b`, dass die bereits vorhandene Signatur von A zum erwa
 |---|---|---|---|---|
 | **T1** | **Seed-Leak eines einzelnen Schlüssels** (z.B. C fotografiert) | C (oder A oder B) | ✅ **Ja.** 2-von-3: ein Schlüssel signiert nicht. Die Kette bricht bei der Skriptauswertung — `OP_CHECKMULTISIG` mit k=2 lehnt eine Signatur ab. Reaktion: Sweep in ein frisches Setup mit den zwei verbliebenen (6.5). | Der Angreifer weiß, dass er einen Schlüssel hat, und kann gezielt den zweiten suchen. **Zeitkritisch:** der Sweep muss stattfinden, nicht nur möglich sein. |
 | **T2** | **Geräteverlust** (Diebstahl ohne Entsperrung, Verlust, Defekt, Wasserschaden) | A und B (Gerätekopien) | ✅ **Ja.** Backup-B + C rekonstruieren das Quorum sofort, ohne Wartezeit, ohne Dienst. Die Kette bricht, weil die Gerätekopien nie die einzige Instanz von B waren (Randbedingung 2, erzwungen). | **Nur wenn das B-Backup existiert.** Ohne es ist Geräteverlust Totalverlust — deshalb ist der Backup-Nachweis blockierend und nicht empfehlend. |
-| **T3** | **Malware ohne Root/Jailbreak**, andere App auf demselben Gerät | keine | ✅ **Ja.** iOS/Android-Sandbox trennt Prozessspeicher und Dateisystem; `…ThisDeviceOnly` + SE/StrongBox verhindern KEK-Export; `blob_*` liegt in der App-Sandbox. Die Kette bricht an der OS-Prozessisolation. | Eine Kernel-Lücke oder ein Sandbox-Escape hebt das auf. Dann gilt T4. |
-| **T4** | **Kompromittiertes Telefon** — Codeausführung im App-Kontext, Jailbreak/Root, Zero-Day | **A und B** | ❌ **Nein.** Der Angreifer kann die Biometrie-Freigabe abwarten, die Passphrase-Eingabe abgreifen und beide Schlüssel im Moment der Signatur lesen. Rust-Kern, `zeroize` und Hardware-Bindung **verkleinern das Zeitfenster**, schließen es aber nicht. | 🔴 **Vollständiger Verlust. Explizit nicht abgedeckt.** Einzige echte Gegenmaßnahme: B auf externe Hardware (6.6) — dann braucht der Angreifer zusätzlich das physische Gerät. |
-| **T5** | **Diebstahl mit beobachteter Passphrase** (Shoulder-Surfing, Kamera, Nötigung) + entsperrbares Gerät | **A und B** | ❌ **Nein bei Software-B.** Wer das entsperrte Gerät und die Passphrase hat, hat A (Biometrie) und B (Passphrase) — das Quorum. ✅ **Ja bei Hardware-B:** B liegt dann gar nicht auf dem Telefon; der Angreifer braucht zusätzlich das physische Gerät **und** dessen PIN, die von einem Secure Element mit Wipe nach N Fehlversuchen durchgesetzt wird (6.6.1). | 🔴 **Vollständiger Verlust bei Software-B.** Teilminderungen: Screenshot-Sperre auf dem Eingabescreen, keine Zeichenvorschau, kein Autofill, Sitzungsfenster per Default aus (6.2.1). Ein Duress-Wallet ist **nicht** vorgesehen (Zustand, gestrichen). **Ein Biometrie-Pfad für B würde diese Zeile von „teilweise" auf „sofort offen" verschlechtern** — deshalb gibt es ihn nicht (Randbedingung 4). |
-| **T6** | **Manipulierte Change-Adresse** — kompromittierter Builder oder JS-Schicht leitet Change an den Angreifer | keine (Schlüssel bleiben sicher) | ✅ **Ja, das ist der Kernzweck von `trinity-verify`.** Die Kette bricht bei V3/V4: Jeder Output, der weder ein erklärter Empfänger noch eine **unabhängig aus dem gespeicherten Descriptor abgeleitete** Change-Adresse ist, führt zur Ablehnung **vor** jedem Schlüsselzugriff. Da der Verifier weder `miniscript` noch den Builder-Code nutzt, kann sich ein Builder-Bug nicht selbst bestätigen. | Ein Angreifer, der zusätzlich `descriptor.json` **und** `trinity-verify` ersetzt, gewinnt — das ist aber bereits T4 oder T9. Restrisiko: ein Bug im eigenen Parser. Gegenmaßnahme: Differential Testing gegen Core (5.1). |
+| **T3** | **Malware ohne Root/Jailbreak**, andere App auf demselben Gerät | keine | ✅ **Ja.** iOS/Android-Sandbox trennt Prozessspeicher und Dateisystem; `…ThisDeviceOnly` + SE/StrongBox verhindern KEK-Export; `blob_*` liegt in der App-Sandbox. Die Kette bricht an der OS-Prozessisolation. | Eine Kernel-Lücke oder ein Sandbox-Escape hebt das auf. Dann gilt T4b. |
+| **T4a** | **Kompromittierte JS-Schicht** — bösartige npm-Abhängigkeit, ohne native Codeausführung | keine direkt | ✅ **Ja, und das ist der wahrscheinlichste Supply-Chain-Weg bei React Native.** Die JS-Schicht sieht kein Schlüsselmaterial (1.3), kann die Ausgabegrenze weder lesen noch umgehen (3.6.3) und kann kein manipuliertes PSBT durchbringen (Verifier, 1.5) — der Bestätigungsdialog wird nativ aus dem `PsbtVerdict` gerendert. | Sie kann **täuschen**, nicht stehlen: eine falsche Adresse anzeigen. Dagegen der native Dialog (6.2) und das Adressbuch. |
+| **T4b** | **Kompromittiertes Telefon** — native Codeausführung im App-Kontext, Jailbreak/Root, Zero-Day | **A und B** | ❌ **Nein.** Der Angreifer wartet die Biometrie-Freigabe ab und liest beide Schlüssel im Moment der Signatur. Rust-Kern, `zeroize` und Hardware-Bindung **verkleinern das Zeitfenster**, schließen es aber nicht. Die Ausgabegrenze hilft hier **nicht** — wer im Prozess Code ausführt, umgeht jede App-Politik. | 🔴 **Vollständiger Verlust. Explizit nicht abgedeckt** — genau wie bei jedem Single-Sig-Wallet auf demselben Telefon; wir sind hier gleichauf, nicht schlechter. Einzige echte Gegenmaßnahme: B auf externe Hardware (6.6). |
+| **T5a** | **Entrissenes, entsperrtes Telefon** ohne Kenntnis der Passphrase — der häufigste reale Angriff auf Handy-Wallets | A und B, begrenzt | ⚠️ **Teilweise, und genau hier liegt der Hauptgewinn gegenüber Single-Sig.** Der Dieb kann bis zur `SpendPolicy`-Quote ausgeben (Default 25 % pro Transaktion, 50 % in 24 h). Darüber verlangt der **Rust-Kern** die Passphrase — die Kette bricht in `sign_b`, bevor B entsperrt wird. Policy abschalten geht ebenfalls nur mit Passphrase (3.6.4). | ⚠️ **Verlust bis zur Quote.** Der Rest ist rettbar: Backup-B plus C in ein frisches Setup sweepen, mit genau den zwei Schlüsseln, die der Dieb nicht hat. **Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.** Quote nutzerseitig auf „immer fragen" stellbar (3.6.5). |
+| **T5b** | **Diebstahl mit beobachteter Passphrase** (Shoulder-Surfing, Kamera, Nötigung) + entsperrbares Gerät | **A und B** | ❌ **Nein bei Software-B.** Wer das entsperrte Gerät und die Passphrase hat, hat beide Schlüssel und kann zusätzlich die Ausgabegrenze abschalten. ✅ **Ja bei Hardware-B:** B liegt dann gar nicht auf dem Telefon; der Angreifer braucht zusätzlich das physische Gerät **und** dessen PIN, die ein Secure Element mit Wipe nach N Fehlversuchen durchsetzt (6.6.1). | 🔴 **Vollständiger Verlust bei Software-B.** Teilminderungen: Screenshot-Sperre und keine Zeichenvorschau auf dem Eingabescreen, kein Autofill — und die Passphrase wird durch E7 **seltener** eingegeben, was die Gelegenheiten zum Mitlesen reduziert. Ein Duress-Wallet ist **nicht** vorgesehen (Zustand, gestrichen). |
+| **T6** | **Manipulierte Change-Adresse** — kompromittierter Builder oder JS-Schicht leitet Change an den Angreifer | keine (Schlüssel bleiben sicher) | ✅ **Ja, das ist der Kernzweck von `trinity-verify`.** Die Kette bricht bei V3/V4: Jeder Output, der weder ein erklärter Empfänger noch eine **unabhängig aus dem gespeicherten Descriptor abgeleitete** Change-Adresse ist, führt zur Ablehnung **vor** jedem Schlüsselzugriff. Da der Verifier weder `miniscript` noch den Builder-Code nutzt, kann sich ein Builder-Bug nicht selbst bestätigen. | Ein Angreifer, der zusätzlich `descriptor.json` **und** `trinity-verify` ersetzt, gewinnt — das ist aber bereits T4b oder T9. Restrisiko: ein Bug im eigenen Parser. Gegenmaßnahme: Differential Testing gegen Core (5.1). |
 | **T7** | **Manipulierte Empfängeradresse** — JS-Schicht zeigt X, PSBT enthält Y | keine | ✅ **Weitgehend.** Die Kette bricht an der **nativen** Bestätigungsanzeige: der Dialog wird aus dem `PsbtVerdict` des Rust-Verifiers gerendert, nicht aus JS-State. Der Nutzer sieht, was tatsächlich im PSBT steht. | Der Nutzer muss die Adresse **lesen**. Gegenmaßnahme: Anzeige in Vierergruppen, erste und letzte 8 Zeichen hervorgehoben, plus ein Adressbuch mit Wiedererkennung bekannter Empfänger. |
 | **T8** | **Address Poisoning** — Lookalike-Adresse mit identischen Anfangs-/Endzeichen wird per Dust in die Historie gesetzt; 2026 industrialisiert (≈ 3 Mio Dust-Transfers durch einen einzelnen Contract) | keine | ⚠️ **Teilweise.** Maßnahmen: (a) **Kein Copy-Paste aus der Transaktionshistorie** — Adressen aus eingehenden Transaktionen sind in der UI nicht als Sendeziel wählbar; (b) eingehender Dust unterhalb einer Schwelle wird markiert und aus der Coin Selection ausgeschlossen; (c) Adressbucheinträge nur explizit mit Label anlegbar; (d) Warnung, wenn eine neue Zieladresse mit einer bekannten in den ersten/letzten 6 Zeichen übereinstimmt, aber nicht identisch ist. | Ein Nutzer, der außerhalb der App kopiert (Messenger, E-Mail), ist ungeschützt. Die Warnung nach (d) ist der letzte Schutz und hängt davon ab, dass die echte Adresse bereits bekannt ist. |
 | **T9** | **Supply-Chain-Angriff auf die App** — kompromittierte Dependency, Build-Server oder Update | **A und B gleichzeitig** | ⚠️ **Teilweise, und das ist die unangenehmste Zeile der Tabelle.** Maßnahmen: `cargo vendor`, exakte Pins, reproducible builds mit ≥ 2 unabhängigen Verifizierern, `cargo-deny`/`-audit`/`-vet`, keine dynamischen Nachladewege, Dependency-Budget für den Signaturpfad. **Aber:** A und B teilen die Codebasis — ein erfolgreicher Angriff trifft beide. Der Coldcard-Fall war genau das: ein Build-Fehler, keine Kryptografie-Schwäche. | 🟡 **Reduzierbar ab v1.** Die einzige strukturelle Antwort ist Implementierungsdiversität. **C auf einem Hardware-Signer erzeugen (2.2.5 Weg a) ist ab der Wallet-Erstellung möglich** und macht aus 1-von-1 ein 2-von-1. Vollständig gelöst erst mit Hardware-**B** (6.6). Wer C in der App erzeugt, bleibt bei 1-von-1 — **muss so im Onboarding stehen.** |
@@ -1230,8 +1366,8 @@ Zusätzlich prüft `sign_b`, dass die bereits vorhandene Signatur von A zum erwa
 
 Diese Liste gehört in die App, nicht nur in dieses Dokument.
 
-1. **Kompromittiertes Telefon** (T4) — zwei Schlüssel auf einem Gerät. Kein Multisig-Schema repariert Codeausführung im eigenen Prozess.
-2. **Diebstahl mit beobachteter Passphrase** (T5) — Gerät + Passphrase = Quorum.
+1. **Kompromittiertes Telefon mit nativer Codeausführung** (T4b) — zwei Schlüssel auf einem Gerät. Kein Multisig-Schema repariert Codeausführung im eigenen Prozess.
+2. **Diebstahl mit beobachteter Passphrase** (T5b) — Gerät + Passphrase = Quorum. Ohne Passphrase greift die Ausgabegrenze (T5a) und der Verlust bleibt auf die Quote begrenzt.
 3. **Beide Papier-Backups am selben Ort** (T12) — die eine Regel, die der Nutzer einhalten muss und die die App nicht prüfen kann.
 4. **Nötigung** (T17).
 5. **Supply-Chain-Angriff auf die App** (T9) — nur reduziert, nicht ausgeschlossen, solange A und B dieselbe Implementierung teilen. Ein Hardware-C verbessert die Lage, löst sie aber nicht.
@@ -1329,6 +1465,12 @@ Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtes
 | **S24** | **Sitzungsfenster:** aktivieren, dann App in den Hintergrund · Gerät sperren · Zeit ablaufen lassen · Verifikation fehlschlagen lassen | KEK_B ist in **allen vier** Fällen sofort genullt; die nächste Signatur verlangt die Passphrase erneut. Zusätzlich Heap-Dump-Prüfung nach Fensterende. |
 | **S25** | **Eingabe-Performance:** 6-Wort-Passphrase mit Autovervollständigung, Zeit bis zur signierbaren Transaktion | ≤ 15 s auf einem Referenzgerät der unteren Leistungsklasse, inklusive Argon2id. Reißt der Wert, ist die Vorziehung der KDF nicht wirksam und die Maßnahme aus 6.2.1 nicht umgesetzt. |
 | **S26** | **NFC-Tap-Performance** mit Hardware-B: Zeit vom Bestätigen bis zum fertig signierten PSBT | ≤ 5 s. Belegt die Kernaussage aus 6.2.1, dass Hardware-B schneller ist als jede Passphrase. |
+| **S27** | **Ein-Gesten-Send** unterhalb der Quote: vom Bestätigen bis zum Broadcast | **Genau ein** biometrischer Prompt. Zwei Prompts sind ein Fehlschlag — dann greift die Kontext-Wiederverwendung (iOS) bzw. das Zeitfenster (Android) nicht. Gesamtdauer ≤ 5 s. |
+| **S28** | **Ausgabegrenze greift:** Transaktion über der Quote ohne Passphrase | `SignError::SpendLimitExceeded`, **und** Mock-Assertion, dass weder `unwrap_kek(A)` noch `unwrap_kek(B)` aufgerufen wurde. Kein Biometrie-Prompt erscheint. |
+| **S29** | **Fenstergrenze greift kumulativ:** mehrere Transaktionen knapp unter der Einzelquote, bis das 24-h-Fenster ausgeschöpft ist | Ab Überschreitung wird die Passphrase verlangt. Zähler überlebt App-Neustart und Gerätereboot; er lässt sich nicht durch Löschen von JS-lesbaren Dateien zurücksetzen. |
+| **S30** | **Policy-Änderung ohne Passphrase** versuchen — auch direkt über die FFI-Fassade, nicht nur über die UI | Wird abgelehnt. Es existiert kein exportierter Aufruf, der `SpendPolicy` ohne `SecretBytes` schreibt. |
+| **S31** | **Erste Nutzung nach Neuinstallation:** Wallet aus Descriptor + Blobs wiederherstellen, sofort senden | Passphrase wird verlangt, unabhängig vom Betrag und unabhängig von der Policy. Nicht abschaltbar. |
+| **S32** | **Diebstahl-Simulation, vollständig:** entsperrtes Gerät, Angreifer schöpft die Quote aus; danach Recovery mit Backup-B + C auf einem zweiten Gerät | Angreifer kommt an höchstens die Quote. Der Sweep des Restguthabens gelingt. **Das ist der Testfall, der die zentrale Produktaussage aus 3.6.4 belegt** — reißt er, ist die Aussage nicht haltbar. |
 
 ### 5.4 Weitere Testebenen
 
@@ -1350,16 +1492,18 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 |---|---|
 | 1 | D1–D19 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
 | 2 | P1–P16 grün mit ≥ 100.000 Fällen je Property. |
-| 3 | S1–S26 grün auf Signet **und** Regtest. |
+| 3 | S1–S32 grün auf Signet **und** Regtest. |
 | 3b | **Beide Wortlängen** (24 und 12) sowie **gemischte Kombinationen** durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
 | 3c | **Mindestens ein realer Hardware-Signer** über QR in der Testbank: S16, S17, S18 grün. Emulator allein genügt nicht, weil BIP-388-Displayverhalten nur am Gerät prüfbar ist. |
 | 4 | **S4 und S5 grün** — Recovery mit und ohne diese App. Diese beiden allein sind ein Veto. |
 | 5 | S9 grün **inklusive** der Assertion, dass kein Schlüsselzugriff stattfand. |
-| 5b | **S23 grün** — kein Biometrie-Pfad zu B. Bricht dieser Check, ist Randbedingung 4 verletzt und das Release blockiert, unabhängig von allem anderen. |
+| 5b | **S28, S30, S31, S32 grün** — die Ausgabegrenze greift, ist nicht ohne Passphrase änderbar, und der Diebstahlsfall endet nachweislich mit gerettetem Restguthaben. Das ist die zentrale Produktaussage (3.6.4); bricht einer dieser vier, ist das Release blockiert. |
+| 5c | **S27 grün** — genau ein biometrischer Prompt pro Send unterhalb der Quote. Zwei Prompts sind ein Produktfehler, kein Schönheitsfehler. |
 | 6 | Fuzzing ≥ 24 h ohne Crash oder Timeout auf allen drei Zielen. |
 | 7 | Speicher-Hygiene-Test grün auf Linux und Android; iOS-Lücke dokumentiert. |
 | 8 | Reproducible Build durch ≥ 2 unabhängige Verifizierer bestätigt, Hashes veröffentlicht. |
 | 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` ohne offene Findings; Signaturpfad ≤ 40 Crates. |
+| 9b | **Lizenzprüfung:** jede Abhängigkeit unter MIT, Apache-2.0, BSD oder ISC — **keine** copyleft- oder kommerziell lizenzierte Komponente, kein SDK mit Nutzungsgebühr, kein Dienst mit laufenden Kosten im Signatur- oder Chain-Pfad. `cargo-deny [licenses]` mit Allowlist statt Denylist, damit eine unbekannte Lizenz den Build bricht statt durchzurutschen. |
 | 10 | FFI-Allowlist unverändert **oder** Änderung mit dokumentierter Sicherheitsbegründung und Zweit-Review. |
 | 11 | D14/D15/S6 manuell gegen die **aktuelle** Sparrow-Version durchgeführt und protokolliert. |
 | 12 | `docs/RECOVERY.md` gegen diesen Build verifiziert — jemand, der die App nicht kennt, führt S5 nur anhand des Dokuments durch. |
@@ -1376,7 +1520,7 @@ Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kei
 
 ```mermaid
 flowchart TD
-    A0["Start"] --> A1["Aufklärung: 3 Schlüssel, 2 genügen<br/>Was NICHT geschützt ist (T4, T5, T12, T17)<br/>— nicht überspringbar, Verweildauer erzwungen"]
+    A0["Start"] --> A1["Aufklärung: 3 Schlüssel, 2 genügen<br/>Was NICHT geschützt ist (T4b, T5b, T12, T17)<br/>— nicht überspringbar, Verweildauer erzwungen"]
     A1 --> A1b{"Wortlänge für A und B wählen<br/>je 24 (Default) oder 12<br/>C ist immer 24 — unveränderlich"}
     A1b --> A1c{"Herkunft von C wählen<br/>optional, Hardware empfohlen"}
     A1c -->|"Hardware-Signer ⭐"| HW1
@@ -1464,10 +1608,12 @@ flowchart TD
     B6 -->|"ja"| B7["NATIVER Bestätigungsdialog<br/>aus PsbtVerdict, nicht aus JS-State<br/>Adresse in 4er-Gruppen<br/>Betrag · Gebühr · sat/vB · Change"]
     B7 --> B8{"Bestätigt?"}
     B8 -->|"nein"| B0
-    B8 -->|"ja"| B9["sign_a — verify erneut → Biometrie"]
-    B9 --> B10["Passphrase-Eingabe<br/>nativ, Data/ByteArray, kein String<br/>Screenshot gesperrt, kein Autofill"]
-    B10 --> B11["sign_b — verify erneut → Argon2id ≈2s → Signatur"]
-    B11 --> B12["finalize + Konsensprüfung"]
+    B8 -->|"ja"| B8a{"SpendPolicy im Rust-Kern<br/>Betrag ≤ Quote?<br/>Fenster nicht ausgeschöpft?<br/>nicht erste Nutzung?"}
+    B8a -->|"ja — Regelfall"| B9["EINE biometrische Auswertung<br/>öffnet A und B (3.6.2)<br/>sign_a + sign_b, je mit verify"]
+    B8a -->|"nein"| B10["Passphrase-Eingabe<br/>nativ, Data/ByteArray, kein String<br/>Autovervollständigung, KDF vorgezogen<br/>Screenshot gesperrt, kein Autofill"]
+    B10 --> B11["sign_a + sign_b, je mit verify"]
+    B9 --> B12["finalize + Konsensprüfung"]
+    B11 --> B12
     B12 --> B13["broadcast — separates Backend"]
     B13 --> B14["✅ txid"]
 
@@ -1478,9 +1624,11 @@ flowchart TD
 
 **Der native Bestätigungsdialog ist keine Kosmetik.** Er ist die Stelle, an der T7 bricht. Würde er in React Native gerendert, könnte eine kompromittierte JS-Schicht eine andere Adresse anzeigen als die, die im PSBT steht. Der Dialog wird deshalb aus dem `PsbtVerdict` gebaut, das der Rust-Verifier aus dem PSBT selbst gelesen hat — nicht aus dem, was die UI zu wissen glaubt.
 
-#### 6.2.1 Die Passphrase-Eingabe schnell machen, ohne sie zu schwächen
+**Der Regelfall ist eine Geste.** Unterhalb der Ausgabegrenze (3.6) öffnet eine biometrische Auswertung A und B; der Nutzer sieht einen Face-ID-Prompt und danach die Bestätigung. Ein Send dauert damit etwa so lang wie in einem gängigen Software-Wallet.
 
-Sechs Diceware-Wörter zu tippen und dann zwei Sekunden zu warten ist der mit Abstand unangenehmste Moment der ganzen App. Das ist ein reales Problem und der Grund, aus dem Nutzer nach einem Biometrie-Shortcut fragen. Die Antwort darauf ist **nicht**, die Anforderung zu senken — die Entropie der Passphrase ist das, was B überhaupt zu einem zweiten Faktor macht. Die Antwort ist, den Weg dorthin zu verkürzen.
+#### 6.2.1 Wenn die Passphrase doch verlangt wird, muss sie schnell gehen
+
+Oberhalb der Grenze, bei der ersten Nutzung nach einer Installation und bei jeder Policy-Änderung ist die Passphrase unumgehbar. Das sind die Momente, in denen die App entweder überzeugt oder verloren geht — sechs Diceware-Wörter zu tippen und dann zwei Sekunden zu warten, ist der unangenehmste Moment der ganzen Anwendung. Die Antwort darauf ist **nicht**, die Anforderung an die Passphrase zu senken: Sie ist das Einzige, was ein Dieb mit entsperrtem Telefon nicht hat, und damit die Grundlage der gesamten Ausgabegrenze. Die Antwort ist, den Weg dorthin zu verkürzen.
 
 | Maßnahme | Wirkung | Sicherheitskosten |
 |---|---|---|
@@ -1493,13 +1641,13 @@ Sechs Diceware-Wörter zu tippen und dann zwei Sekunden zu warten ist der mit Ab
 
 **Zum Sitzungsfenster, weil es das einzige mit echten Kosten ist:**
 
-- **Default: aus.** Wer es einschaltet, wählt eine Dauer (Vorschlag: 1, 5 oder 15 Minuten).
+- **Default: aus.** Wer es einschaltet, wählt eine Dauer (Vorschlag: 1, 5 oder 15 Minuten). Es betrifft nur die Fälle *oberhalb* der Ausgabegrenze — unterhalb wird ohnehin keine Passphrase verlangt.
 - Während des Fensters liegt der abgeleitete KEK_B im Speicher des Rust-Kerns — nicht die Passphrase selbst, aber funktional gleichwertig.
-- **Was das kostet:** Wird das Telefon in diesem Fenster im entsperrten Zustand gestohlen oder ist es kompromittiert, hat der Angreifer A und B. Das Fenster ist damit exakt so lang, wie du bereit bist, T4 und T5 offenzuhalten.
+- **Was das kostet:** In diesem Fenster ist die Ausgabegrenze faktisch aufgehoben. Wird das Telefon dann im entsperrten Zustand gestohlen, greift T5a nicht mehr.
 - Das Fenster endet **hart** bei: App im Hintergrund, Gerätesperre, Ablauf der Zeit, jedem Fehlschlag einer Verifikation. Kein Verlängern durch Aktivität.
-- Es gilt **nicht** für die erste Transaktion nach App-Start und nicht oberhalb eines konfigurierbaren Betrags.
+- Es gilt **nie** für Policy-Änderungen, Export, Schlüsseltausch und die erste Nutzung nach Installation.
 
-> **Was ich bewusst nicht anbiete: einen Biometrie-Pfad für B.** A geht mit Biometrie auf. Ginge B auch damit auf, wären zwei Schlüssel auf einem Gerät durch dasselbe Geheimnis geschützt — aus „2 von 3" würde faktisch „1 von 1: dein Gesicht". Ein Dieb mit entsperrtem Telefon hätte beides; ein Gesicht ist einem schlafenden oder genötigten Menschen abnehmbar, eine Passphrase im Kopf nicht; und Malware müsste keine Tastatureingabe mehr abgreifen, sondern nur zwei Biometrie-Prompts auslösen, die normal aussehen. Ein *optionaler* Biometrie-Pfad ändert daran nichts — ein Angreifer nimmt immer den schwächsten aktivierten Weg. Das ist auch der Inhalt von Randbedingung 4 des Auftrags. **Wer die Geschwindigkeit wirklich braucht, bekommt sie über Hardware-B (6.6) — ein NFC-Tap dauert etwa zwei Sekunden und ist damit schneller als jede Passphrase, bei gleichzeitig zwei unabhängigen Faktoren.**
+> **Der Weg zu zwei echten Faktoren ohne Reibung ist Hardware-B** (6.6). Ein NFC-Tap dauert etwa zwei Sekunden — ungefähr so lang wie die biometrische Auswertung — und liefert dabei einen zweiten, physisch getrennten Faktor mit eigener PIN und eigener Brute-Force-Bremse. Das ist die einzige Konfiguration, in der ein Send *gleichzeitig* eine Geste kostet und zwei Faktoren hat. Die App sollte darauf hinarbeiten, ohne es vorauszusetzen.
 
 ### 6.3 Empfangen
 
@@ -1597,7 +1745,7 @@ flowchart TD
 
 **Warum auch hier ein komplett neues Setup:** Nur `xpub_B` zu tauschen hieße, die alten A und C weiterzuverwenden — beide aus derselben Codebasis. Der Gewinn an Implementierungsdiversität wäre dann auf einen von drei Schlüsseln beschränkt, und der alte Software-B bliebe als Papier-Backup gültig, das den alten Descriptor weiterhin bedienen kann. Ein sauberer Schnitt ist teurer und richtig.
 
-**Nach dem Wechsel gilt:** A ist Software (Telefon, Biometrie), B ist Hardware (separates Gerät, eigene Firmware, eigener RNG, eigene PIN), C ist Papier oder ein zweites Gerät. Damit ist T9 (Supply-Chain) erstmals nicht mehr „trifft beide gleichzeitig", und T4 (kompromittiertes Telefon) verliert den zweiten Schlüssel. **Das ist die eigentliche Zielkonfiguration dieses Produkts** — die reine Software-Variante ist der Einstieg, nicht das Ziel. Diese Einordnung sollte auch die Produktkommunikation tragen.
+**Nach dem Wechsel gilt:** A ist Software (Telefon, Biometrie), B ist Hardware (separates Gerät, eigene Firmware, eigener RNG, eigene PIN), C ist Papier oder ein zweites Gerät. Damit ist T9 (Supply-Chain) erstmals nicht mehr „trifft beide gleichzeitig", und T4b (kompromittiertes Telefon) verliert den zweiten Schlüssel. **Das ist die eigentliche Zielkonfiguration dieses Produkts** — die reine Software-Variante ist der Einstieg, nicht das Ziel. Diese Einordnung sollte auch die Produktkommunikation tragen.
 
 #### 6.6.1 Diebstahl des Hardware-Signers — die Gegenrechnung
 
@@ -1623,6 +1771,8 @@ Der naheliegende Einwand gegen Hardware-B lautet: dann kann eben das Gerät gest
 |---|---|---|---|---|
 | ~~**O1**~~ | ~~Wo wird C erzeugt?~~ | — | — | ✅ **Entschieden (E6):** Nutzer wählt bei der Erstellung; Hardware-Signer ist hervorgehobener Default, in-App bleibt möglich. Umgesetzt in 2.2.5 und 2.7. |
 | ~~**O2**~~ | ~~Zusatzentropie verpflichtend?~~ | — | — | ✅ **Entschieden (E3): durchgehend optional**, auch für C — abweichend von meiner Empfehlung. Konsequenz ist in T10 und 4.2 Punkt 8 dokumentiert: Wer für alle drei Schlüssel überspringt und C in der App erzeugt, ist gegen den Coldcard-Fehlertyp ungeschützt. Die App macht das an der Übersprungstelle sichtbar und blockiert nicht. |
+| **O15** | Default-Quote der `SpendPolicy` | (a) 25 % je Tx / 50 % je 24 h · (b) konservativer, 10 % / 25 % · (c) beim Onboarding abfragen | Zu niedrig heißt: die Passphrase kommt ständig, der Ein-Gesten-Vorteil verpufft, Abbruchrisiko steigt (T20). Zu hoch heißt: die Diebstahlsbremse greift kaum. Die richtige Zahl hängt am typischen Nutzungsprofil, das wir noch nicht kennen. | **(a) als Startwert, plus Erhebung im Nutzertest (5.5, Punkt 15).** Die Zahl ist der einzige Parameter dieses Entwurfs, der Sicherheit und Bedienbarkeit direkt gegeneinander stellt — sie sollte aus Daten kommen, nicht aus dem Bauch. Bis dahin 25/50 und in den Einstellungen prominent. |
+| **O16** | Absolute Obergrenze zusätzlich zur Quote als Default? | (a) keine (Vorgabe) · (b) ja, nutzerdefiniert beim Onboarding erfragt | Eine Quote allein skaliert mit dem Guthaben — wer 10 BTC hält, verliert bei Diebstahl bis zu 2,5 BTC. Eine absolute Kappung begrenzt das, kostet aber eine Onboarding-Frage. | **(a) keine als Default, aber im Onboarding sichtbar angeboten**, sobald das Guthaben eine Schwelle übersteigt. Eine Frage, die bei leerer Wallet gestellt wird, kann niemand sinnvoll beantworten. |
 | **O13** | Umfang der Zusatzentropie-Quellen in v1 | (a) nur Würfel · (b) Würfel + Münzen + Karten · (c) zusätzlich Klasse-B-Sensorquellen | Jede Quelle ist eigener Code, eigene kanonische Kodierung und eigene Testvektoren. Klasse B bringt keine anrechenbaren Bit und verleitet zu falscher Sicherheit (2.2.1). | **(b).** Würfel, Münzen und Karten sind alle drei zählbar, teilen dieselbe ASCII-Kodierungslogik und decken die realistischen Fälle ab („ich habe keine Würfel, aber ein Kartendeck"). Klasse B **nicht in v1** — der Nutzen ist null anrechenbare Bit, das Risiko ist ein Fortschrittsbalken, der lügt. |
 | **O14** | BLE-Transport: Reihenfolge BitBox02 Nova vs. Ledger | (a) BitBox zuerst · (b) Ledger zuerst · (c) parallel | `bitbox-api 0.13.0` ist aktuell gepflegt; für Ledger existiert **kein** Rust-Crate auf App-Ebene, BIP-388-Registrierung und Signatur wären selbstgeschriebene APDU-Sequenzen ohne gepflegte Referenz (2.7.6). | **(a) BitBox02 Nova zuerst.** Erst klären, ob `bitbox-api` den Whisper-BLE-Transport abdeckt (Anhang B, Punkt 8). Ledger danach, mit eigenem Review-Budget für den APDU-Code. |
 | **O3** | Default-Chain-Backend | (a) CBF (Kyoto) · (b) Nutzer muss wählen, kein Default · (c) Electrum mit eingetragenem Server | (a) bester Kompromiss aus Privacy und Bequemlichkeit, aber der Privacy-Anspruch ist noch unbelegt (0.3, Lücke 3). (b) höchste Ehrlichkeit, höchste Abbruchrate. | **(a) CBF als Default**, mit ehrlichem Label („privater als ein fremder Server, nicht anonym") — **aber erst, nachdem Lücke 3 geschlossen ist.** Bis dahin (b). |

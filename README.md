@@ -22,6 +22,21 @@ unsichereren Wallet, sondern bleibt dort, wo ein einziger Fehler Totalverlust be
 
 Abschnitt 0.1 der Spezifikation führt das aus.
 
+## Wie es sich anfühlen soll
+
+Ein Sendevorgang kostet **eine Geste**. Eine biometrische Auswertung öffnet A und B; darüber
+liegt eine im Rust-Kern durchgesetzte Ausgabegrenze (Default 25 % des Guthabens je
+Transaktion), oberhalb derer die Passphrase unumgehbar wird.
+
+Daraus folgt die Eigenschaft, die ein gängiges Software-Wallet nicht hat:
+
+> Wird dir das entsperrte Telefon entrissen, kommt der Dieb an höchstens die Quote. Für mehr
+> braucht er die Passphrase. Du nimmst dein Backup von B, holst C aus dem zweiten
+> Aufbewahrungsort und schiebst den Rest in ein frisches Setup — mit genau den zwei
+> Schlüsseln, die der Dieb nicht hat.
+
+Bei Single-Sig ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.
+
 ## Status
 
 Spezifikationsphase. Es existiert noch kein Code.
