@@ -27,6 +27,23 @@ Spezifikationsverweis, Abnahmekriterien und den Tests, die grün sein müssen.
 
 `OFFEN` · `BLOCKIERT` (mit Grund) · `IN ARBEIT` · `REVIEW` · `FERTIG`
 
+> **`FERTIG` ist keine Meinung.** Sobald ein WP diesen Zustand trägt, verlangt
+> `scripts/check_plan.py` für **jede** ihm zugeordnete Test-ID eine Testfunktion und bricht
+> sonst den Build. So entstehen keine unbemerkten Testschulden.
+
+### Stand (2026-08-08)
+
+| WP | Zustand | Was belegt ist |
+|---|---|---|
+| **WP-00** | **FERTIG** | Workspace baut (`cargo build --workspace` grün). Pinning **gegen die echte Registry verifiziert**: `secp256k1 0.29.1`, `miniscript 12.3.7`, `bitcoin 0.32.11` je genau einmal im Baum. Signaturpfad gemessen: **41 externe Crates**, `trinity-verify` allein **22**. |
+| WP-01 | IN ARBEIT | Workflow geschrieben, YAML valide. **Noch nicht auf einem Runner ausgeführt.** |
+| WP-02 | IN ARBEIT | `test-env.sh` und `docker/compose.yml` geschrieben, Syntax geprüft, Core-Versionssperre implementiert. **Noch nicht gestartet** — Container-Digests fehlen. |
+| WP-03 | IN ARBEIT | `coverage_gate.py` und `check_plan.py` geschrieben und **gegen synthetische Fälle selbstgetestet**: das Gate schlägt bei `trinity-verify` unter 100 % an, der Plan-Checker fordert bei einem WP auf FERTIG genau dessen Tests. `cargo-llvm-cov` und `cargo-mutants` sind hier nicht installiert. |
+| WP-04 | OFFEN | Vendoring und Reproducible-Build-Nachweis stehen aus. |
+
+**Nächster Schritt: WP-05.** Es ist das einzige Paket, das jetzt inhaltlich weiterführt, und es
+gibt M1 bis M5 frei.
+
 ---
 
 ## 1. Meilensteine
@@ -106,7 +123,7 @@ des WP; was dort steht, ist ohne Ausnahme zu erfüllen.
 ### M0 — Fundament
 
 #### WP-00 · Workspace und Pinning
-**Spec:** 0.3, 1.1, 1.7 · **Blockiert:** alles · **Zustand:** OFFEN
+**Spec:** 0.3, 1.1, 1.7 · **Blockiert:** alles · **Zustand:** FERTIG
 
 Cargo-Workspace mit den neun Crates aus 1.1 als leere Gerüste. `[workspace.dependencies]` mit
 **exakten** `=`-Pins aus der Tabelle in 0.3. `Cargo.lock` eingecheckt.
@@ -114,7 +131,8 @@ Cargo-Workspace mit den neun Crates aus 1.1 als leere Gerüste. `[workspace.depe
 
 **Abnahme**
 - `cargo build --workspace --locked` grün, offline (`--offline`)
-- `cargo tree -d` meldet **keine** doppelten Crates — insbesondere nur **eine** `secp256k1`-Version
+- `cargo tree -d` meldet nur die in `deny.toml` **mit Begründung** eingetragenen Duplikate — insbesondere nur **eine** `secp256k1`-Version
+- ✅ **Am 2026-08-08 verifiziert:** `secp256k1 0.29.1`, `miniscript 12.3.7`, `bitcoin 0.32.11` je genau einmal. Akzeptiert und begründet: `bitcoin_hashes 1.2.0` (nur über `ur` im QR-Transport, außerhalb des Signaturpfads), `getrandom 0.2.17` und `rand_core 0.6.4` (über `argon2` → `password-hash`)
 - `miniscript` löst auf `12.3.x` auf, **nicht** 13.x; `secp256k1` auf `0.29.1`
 - `deny.toml` vorhanden mit `[licenses]` als **Allowlist** (MIT, Apache-2.0, BSD-2/3, ISC) und `[bans]`-Regel: `miniscript` ist in `trinity-verify` verboten
 - `cargo deny check` grün
@@ -122,7 +140,7 @@ Cargo-Workspace mit den neun Crates aus 1.1 als leere Gerüste. `[workspace.depe
 ---
 
 #### WP-01 · CI-Grundgerüst
-**Spec:** 5.4, 5.5 · **Braucht:** WP-00 · **Zustand:** OFFEN
+**Spec:** 5.4, 5.5 · **Braucht:** WP-00 · **Zustand:** IN ARBEIT
 
 GitHub-Actions-Pipeline nach TESTING.md §5: `fmt` → `clippy -D warnings` → `build` →
 `test` → `deny` → `audit`.
@@ -135,7 +153,7 @@ GitHub-Actions-Pipeline nach TESTING.md §5: `fmt` → `clippy -D warnings` → 
 ---
 
 #### WP-02 · Testumgebung
-**Spec:** 5.1, 5.3 · **Braucht:** WP-00 · **Zustand:** OFFEN
+**Spec:** 5.1, 5.3 · **Braucht:** WP-00 · **Zustand:** IN ARBEIT
 
 Reproduzierbare Umgebung nach TESTING.md §2: **Bitcoin Core 30.2** (Regtest und Signet),
 Electrum-Server, CBF-Peer, alles containerisiert und über ein Skript startbar.
@@ -150,7 +168,7 @@ Electrum-Server, CBF-Peer, alles containerisiert und über ein Skript startbar.
 ---
 
 #### WP-03 · Coverage- und Mutations-Gates
-**Spec:** 5.5 · **Braucht:** WP-01 · **Zustand:** OFFEN
+**Spec:** 5.5 · **Braucht:** WP-01 · **Zustand:** IN ARBEIT
 
 `cargo-llvm-cov` mit **Schwellen pro Crate** nach TESTING.md §3, plus `cargo-mutants` für die
 Sicherheitskerne.
@@ -169,7 +187,7 @@ Sicherheitskerne.
 - `vendor/` eingecheckt, `.cargo/config.toml` mit `replace-with = "vendored-sources"`
 - Build ohne Netzwerk erfolgreich (im Container ohne Netz nachgewiesen)
 - Zwei unabhängige CI-Runner erzeugen **bitgleiche** Artefakt-Hashes
-- Dependency-Zahl im Signaturpfad wird gemessen und gegen die Grenze **≤ 40** geprüft
+- `scripts/dep_budget.py` läuft in CI; Grenze **45 externe Crates**, gemessen sind **41** (Stand 2026-08-08)
 
 ---
 

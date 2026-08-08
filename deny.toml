@@ -1,0 +1,88 @@
+# cargo-deny — Supply-Chain-Gates (docs/SPECIFICATION.md §1.7)
+#
+# Läuft in CI bei jedem Push. Rot bricht den Build.
+
+[graph]
+all-features = false
+
+# ---------------------------------------------------------------------------
+# Lizenzen: Allowlist, nicht Denylist.
+#
+# Eine unbekannte Lizenz bricht den Build, statt durchzurutschen. Anforderung
+# aus dem Auftrag: keine Lizenzgebühren, kein kommerzielles SDK, kein Dienst mit
+# laufenden Kosten im Signatur- oder Chain-Pfad (Freigabekriterium 9b).
+# ---------------------------------------------------------------------------
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+# ---------------------------------------------------------------------------
+# Bans
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "deny"
+wildcards = "deny"          # keine "*"-Versionen
+deny = [
+    # miniscript darf NICHT in trinity-verify landen. Der Verifier leitet
+    # unabhängig ab; nutzte er dieselbe Bibliothek wie der Builder, bestätigte
+    # sich ein Parser-Bug selbst (SPECIFICATION.md §1.5, Entscheidung E2).
+    { name = "miniscript", deny-multiple-versions = true, wrappers = ["bdk_wallet", "bdk_chain", "trinity-watch"] },
+
+    # hwi wickelt das Python-HWI und braucht eine Python-Laufzeit — auf
+    # Mobilgeräten unbrauchbar (SPECIFICATION.md §2.7.4).
+    { name = "hwi" },
+
+    # Kein Logging in den Secret-Crates. Ein versehentliches Debug-Log im
+    # Signaturpfad ist ein Leck (SPECIFICATION.md §2.5).
+    { name = "log", wrappers = ["bdk_wallet", "bdk_chain", "bdk_electrum", "bdk_kyoto", "ur", "bbqr", "fast_qr"] },
+    { name = "tracing", wrappers = ["bdk_kyoto"] },
+]
+
+# Akzeptierte Mehrfachversionen. JEDER Eintrag braucht eine Begründung, und die
+# Liste wird bei jedem Release gereviewt — wächst sie, ist das ein Befund.
+skip = [
+    # ur 0.5.2 nutzt bitcoin_hashes 1.x für die UR-Kodierung, während der
+    # bitcoin-0.32-Baum auf 0.14 steht. Betrifft AUSSCHLIESSLICH
+    # trinity-transport (QR-Transport) und liegt damit außerhalb des
+    # Signaturpfads — dort wandern nur PSBTs und xpubs, nichts Geheimes.
+    # Auflösung erwartet, sobald bdk_wallet auf rust-bitcoin 0.33 geht.
+    { name = "bitcoin_hashes", version = "=1.2.0" },
+
+    # argon2 0.5.3 zieht über password-hash → rand_core 0.6 ein getrandom 0.2.
+    # Unsere eigene Entropie ruft getrandom 0.4.3 direkt auf (WP-30); alle
+    # Versionen bedienen denselben OS-Syscall. Auflösung mit argon2 0.6.
+    { name = "getrandom", version = "=0.2.17" },
+    { name = "rand_core", version = "=0.6.4" },
+]
+
+skip-tree = [
+    # Nur Test- und Build-Werkzeuge. Nicht im ausgelieferten Artefakt.
+    { name = "proptest", depth = 5 },
+    { name = "trybuild", depth = 5 },
+    { name = "uniffi_bindgen", depth = 5 },
+]
+
+# ---------------------------------------------------------------------------
+# Advisories
+# ---------------------------------------------------------------------------
+[advisories]
+yanked = "deny"
+ignore = []     # jede Ausnahme braucht einen Kommentar mit Begründung und Datum
+
+# ---------------------------------------------------------------------------
+# Quellen: ausschließlich crates.io, und der Build zieht aus vendor/ (WP-04)
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

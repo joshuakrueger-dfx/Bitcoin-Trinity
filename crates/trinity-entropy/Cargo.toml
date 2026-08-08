@@ -1,0 +1,18 @@
+[package]
+name         = "trinity-entropy"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+trinity-types = { path = "../trinity-types" }
+bitcoin = { workspace = true }
+bip39 = { workspace = true }
+getrandom = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

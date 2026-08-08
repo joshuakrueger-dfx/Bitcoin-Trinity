@@ -1,0 +1,17 @@
+[package]
+name         = "trinity-ffi"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+trinity-types = { path = "../trinity-types" }
+trinity-watch = { path = "../trinity-watch" }
+trinity-verify = { path = "../trinity-verify" }
+trinity-signer = { path = "../trinity-signer" }
+trinity-chain = { path = "../trinity-chain" }
+trinity-export = { path = "../trinity-export" }
+uniffi = { workspace = true }
+thiserror = { workspace = true }

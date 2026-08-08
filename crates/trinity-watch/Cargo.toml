@@ -1,0 +1,18 @@
+[package]
+name         = "trinity-watch"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+trinity-types = { path = "../trinity-types" }
+bdk_wallet = { workspace = true }
+bdk_chain = { workspace = true }
+bitcoin = { workspace = true }
+miniscript = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
