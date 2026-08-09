@@ -81,7 +81,7 @@ wenn es dieses Projekt nicht mehr gibt. Die Abläufe darin sind die Ziel-Testfä
 noch kein einziger dieser Tests — sie sind Abnahme von WP-46 und WP-71.
 
 **→ [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)** — die Arbeitsliste.
-52 Arbeitspakete in 8 Meilensteinen, jedes mit Abhängigkeiten, Spec-Verweis, Abnahmekriterien
+53 Arbeitspakete in 8 Meilensteinen, jedes mit Abhängigkeiten, Spec-Verweis, Abnahmekriterien
 und den Tests, die grün sein müssen. Jedes Paket ist so geschnitten, dass es ohne Rückfragen
 abgearbeitet werden kann.
 

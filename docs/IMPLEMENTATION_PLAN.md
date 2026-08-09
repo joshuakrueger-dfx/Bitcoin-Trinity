@@ -56,7 +56,7 @@ gibt M1 bis M5 frei.
 
 | M | Name | Ziel | Enthält |
 |---|---|---|---|
-| **M0** | Fundament | Repo baut reproduzierbar, CI läuft, Testumgebung steht | WP-00 … WP-05 |
+| **M0** | Fundament | Repo baut reproduzierbar, CI läuft, Testumgebung steht | WP-00 … WP-06 |
 | **M1** | Watch-only-Kern | Descriptor, Adressen, UTXOs, PSBT-Bau — **ohne jedes Schlüsselmaterial** | WP-10 … WP-16 |
 | **M2** | Verifier | Unabhängige Prüfung, gegen Bitcoin Core abgeglichen | WP-20 … WP-23 |
 | **M3** | Schlüssel und Signatur | Entropie, Blobs, Keystore, Signatur, Ausgabegrenze | WP-30 … WP-36 |
@@ -79,6 +79,7 @@ flowchart LR
         W01 --> W03["WP-03 Coverage-Gates"]
         W00 --> W04["WP-04 Vendoring"]
         W02 --> W05["WP-05 Spike-Woche"]
+        W00 --> W06["WP-06 Basis App-Schale"]
     end
     subgraph M1["M1 Watch-only"]
         W05 --> W10["WP-10 Typen"]
@@ -244,6 +245,31 @@ Produktionscode.
 - Alle ⟨API-VERIFY⟩-Marken sind aufgelöst oder ausdrücklich verlängert
 - Besonders: B.2 (uniffi-Puffernullung), B.3 (Kyoto-Peer-Verhalten), B.9 (Ledger-APDU-Referenz), B.13 (Whisper-Krypto) — sie berühren Architektur
 - Coldcard-Versionsangaben gegen die **Primärquelle** verifiziert (B.6) — bis dahin darf WP-54 nicht starten
+
+**Tests:** —
+
+---
+
+#### WP-06 · Basis-Entscheidung App-Schale
+**Spec:** 1.3, 1.7, 6.1 · **Braucht:** — · **Zustand:** REVIEW
+
+Spike, kein Bau: auf welcher Grundlage die App-Schale (Navigation, Onboarding, Senden,
+Empfangen, QR, Adressbuch, Einstellungen) entsteht — Nullvariante, WDK-Schale ohne
+Wallet-Hälfte, BlueWallet als Vorlage, Nunchuk nur als GPL-Ausschluss. Der Rust-Kern
+(`bdk_wallet` + uniffi) und E1 bleiben unberührt. Ergebnis ist ein Entscheidungspapier mit
+messbaren Kriterien K1–K9 und einer Empfehlung; die Wahl trifft der Projektverantwortliche.
+
+**Dateien:** `docs/BASIS_ENTSCHEIDUNG.md`, `docs/IMPLEMENTATION_PLAN.md` (dieses Paket, M6-Verweise)
+**Verbote:** Kein Anwendungscode; kein Fork; kein `npx create-expo-app`; kein `npm install` der
+Kandidaten; keine Änderung an `docs/SPECIFICATION.md`; keine Entscheidung an JKs Stelle
+(nur Empfehlung); kein Commit/Push durch den Spike-Ausführenden.
+
+**Abnahme**
+- `docs/BASIS_ENTSCHEIDUNG.md` existiert mit: Frage, Nicht-Debatte (Kern/E1), Tabelle K1–K9
+  über vier Zeilen mit Zahlen oder „nicht gemessen", harter §1.3-Prüfung mit Datei/Zeile,
+  Empfehlung inkl. Gegenargumenten, Revisionskosten, Liste „nicht gemessen"
+- M6-Pakete (mindestens WP-60) verweisen auf Abhängigkeit vom Ergebnis dieses Pakets
+- `python3 scripts/check_plan.py` grün
 
 **Tests:** —
 
@@ -796,13 +822,20 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 ### M6 — App und UX
 
 #### WP-60 · RN-Gerüst
-**Spec:** 1.7, 6.1 · **Braucht:** WP-43 · **Zustand:** OFFEN
+**Spec:** 1.7, 6.1 · **Braucht:** WP-43, WP-06 · **Zustand:** OFFEN
+
+Zuschnitt hängt von **WP-06** ab: nach der Basis-Entscheidung entweder leeres Expo/RN-Gerüst
+(Nullvariante) oder Übernehmen/Entkernen einer gewählten Schale — siehe
+`docs/BASIS_ENTSCHEIDUNG.md`. Der Titel „RN-Gerüst" bleibt bis zur Entscheidung; der Inhalt
+folgt der dort festgehaltenen Wahl.
 
 **Dateien:** `app/**` (Gerüst, Lint-Regeln)
-**Verbote:** Kein CodePush, kein Remote-Config, kein dynamisches Nachladen von Code.
+**Verbote:** Kein CodePush, kein Remote-Config, kein dynamisches Nachladen von Code; kein
+Übernehmen von Wallet-Hälften, die Seed/xpriv als JS-String halten (§1.3).
 
 **Abnahme**
 - Kein CodePush, kein Remote-Config; per Lint erzwungen (1.7)
+- Gerüst entspricht der in WP-06 getroffenen Basis-Entscheidung
 
 **Tests:** —
 
@@ -810,6 +843,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 
 #### WP-61 · Onboarding
 **Spec:** 6.1 · **Braucht:** WP-60 · **Zustand:** OFFEN
+
+Zuschnitt (welche Screens neu vs. aus einer Vorlage) hängt von **WP-06** über WP-60 ab.
 
 **Dateien:** `app/**` (Onboarding-Flows)
 **Verbote:** Backup-Nachweis nicht überspringbar machen; C nicht mit 12 Wörtern anbieten.
@@ -826,6 +861,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 #### WP-62 · Nativer Bestätigungsdialog
 **Spec:** 6.2 · **Braucht:** WP-60 · **Zustand:** OFFEN
 
+Zuschnitt der App-Anbindung hängt von **WP-06** über WP-60 ab.
+
 **Dateien:** `platform/ios/**`, `platform/android/**`, `app/**` (Anbindung)
 **Verbote:** Bestätigungstexte nicht aus JS-State rendern, sondern aus `PsbtVerdict`.
 
@@ -839,6 +876,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 
 #### WP-63 · Passphrase-Eingabe
 **Spec:** 6.2.1 · **Braucht:** WP-60 · **Zustand:** OFFEN
+
+Zuschnitt der App-Anbindung hängt von **WP-06** über WP-60 ab.
 
 **Dateien:** `platform/ios/**`, `platform/android/**`, `app/**`
 **Verbote:** Passphrase nie als `String`; kein Autofill; kein Persistieren.
@@ -854,6 +893,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 #### WP-64 · Empfangen
 **Spec:** 6.3 · **Braucht:** WP-60 · **Zustand:** OFFEN
 
+Zuschnitt hängt von **WP-06** über WP-60 ab.
+
 **Dateien:** `app/**`
 **Verbote:** Keine Adresswiederverwendung; keine Anzeige ohne Verifier-Abgleich.
 
@@ -866,6 +907,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 
 #### WP-65 · Recovery-Flow
 **Spec:** 6.4 · **Braucht:** WP-60 · **Zustand:** OFFEN
+
+Zuschnitt hängt von **WP-06** über WP-60 ab.
 
 **Dateien:** `app/**`, Anbindung `sign_with_recovery_key` in `crates/trinity-ffi/**`
 **Verbote:** Mnemonics nie als JS-`String`; Wortliste nur über `SecretBytes` aus der nativen Schicht.
@@ -881,6 +924,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 #### WP-66 · Schlüsseltausch
 **Spec:** 6.5 · **Braucht:** WP-60 · **Zustand:** OFFEN
 
+Zuschnitt hängt von **WP-06** über WP-60 ab.
+
 **Dateien:** `app/**`
 **Verbote:** Alter Descriptor wird stillgelegt, nicht gelöscht.
 
@@ -894,6 +939,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 #### WP-67 · Address-Poisoning-Schutz
 **Spec:** 4.1 (T8), 6.3 · **Braucht:** WP-60 · **Zustand:** OFFEN
 
+Zuschnitt der UI hängt von **WP-06** über WP-60 ab.
+
 **Dateien:** `app/**`, `crates/trinity-watch/**` (Coin Selection)
 **Verbote:** Kein Kopieren aus der Historie als Default-Empfänger.
 
@@ -906,6 +953,8 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 
 #### WP-68 · Einstellungen
 **Spec:** 1.6, 3.6.5 · **Braucht:** WP-60 · **Zustand:** OFFEN
+
+Zuschnitt hängt von **WP-06** über WP-60 ab.
 
 **Dateien:** `app/**`
 **Verbote:** Lockerungen der SpendPolicy ohne Passphrase; Privacy-Text nicht nur in Hilfeseiten verstecken.
@@ -1022,6 +1071,7 @@ Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
 | Anhang B.3 (Kyoto-Peers) | CBF als Default (O3) | WP-05 |
 | O13 (Entropie-Quellen) | WP-30 | Entscheidung vor WP-30 |
 | O6 (Crash-Reporting) | WP-60 | Entscheidung vor WP-60 |
+| Basis-Entscheidung offen | M6 | WP-06 |
 | O14 (BLE-Reihenfolge) | v1.1, nicht v1 | nach WP-54 |
 
 ---
