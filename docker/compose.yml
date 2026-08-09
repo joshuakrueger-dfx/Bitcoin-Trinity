@@ -1,16 +1,16 @@
-# Testumgebung — docs/TESTING.md §2
+# Test environment — docs/TESTING.md §2
 #
-# Ist-Zustand: Images hängen an Tags (siehe TODO(WP-02) unten). Tags sind
-# veränderlich — Digest-Pinning ist Abnahmekriterium von WP-02 und macht den
-# Aufbau reproduzierbar und offline-fähig nach dem ersten Pull.
+# Current state: images hang on tags (see TODO(WP-02) below). Tags are
+# mutable — digest pinning is an acceptance criterion of WP-02 and makes the
+# setup reproducible and offline-capable after the first pull.
 #
-# ⚠️ Bitcoin Core 30.0 und 30.1 sind verboten (Wallet-Migrations-Bug,
-#    Binaries am 2026-01-05 zurückgezogen). scripts/test-env.sh prüft die
-#    laufende Version über getnetworkinfo und bricht hart ab.
+# ⚠️ Bitcoin Core 30.0 and 30.1 are forbidden (wallet migration bug,
+#    binaries withdrawn on 2026-01-05). scripts/test-env.sh checks the
+#    running version via getnetworkinfo and hard-aborts.
 
 services:
   bitcoind:
-    # TODO(WP-02): Digest eintragen, sobald das Image ausgewählt ist —
+    # TODO(WP-02): enter digest once the image is chosen —
     # image: <repo>@sha256:<digest>
     image: bitcoin/bitcoin:30.2
     command:
@@ -22,12 +22,12 @@ services:
       - -rpcpassword=regtest
       - -fallbackfee=0.0002
       - -txindex=1
-      - -blockfilterindex=1      # für CBF (BIP-157/158), WP-16
+      - -blockfilterindex=1      # for CBF (BIP-157/158), WP-16
       - -peerblockfilters=1
-      # -deprecatedrpc=create_bdb bewusst NICHT gesetzt: das Projekt nutzt
-      # ausschließlich Descriptor-Wallets (createwallet … descriptors=true).
-      # Das Flag würde den Legacy-BDB-Pfad freischalten, an dem der Wallet-Bug
-      # von Core 30.0/30.1 hing — nicht aus Gewohnheit wieder eintragen.
+      # -deprecatedrpc=create_bdb deliberately NOT set: the project uses
+      # exclusively descriptor wallets (createwallet … descriptors=true).
+      # The flag would unlock the legacy BDB path that the wallet bug
+      # of Core 30.0/30.1 hung on — do not re-enter out of habit.
     ports:
       - "18443:18443"            # RPC regtest
       - "18444:18444"            # P2P regtest
@@ -40,7 +40,7 @@ services:
       retries: 30
 
   electrs:
-    # Backend für trinity-chain::ElectrumBackend (WP-14)
+    # Backend for trinity-chain::ElectrumBackend (WP-14)
     image: getumbrel/electrs:v0.10.9
     depends_on:
       bitcoind:

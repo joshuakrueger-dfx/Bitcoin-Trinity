@@ -1,91 +1,90 @@
-# Implementierungsplan
+# Implementation Plan
 
-**Zweck:** Diese Datei ist die Arbeitsliste. Jedes Arbeitspaket (WP) ist so geschnitten, dass
-ein Agent oder Entwickler es **ohne Rückfragen** abarbeiten kann: mit Eingaben, Ausgaben,
-Spezifikationsverweis, Abnahmekriterien und den Tests, die grün sein müssen.
+**Purpose:** This file is the work list. Each work package (WP) is cut so that
+an agent or developer can complete it **without follow-up questions**: with inputs, outputs,
+specification reference, acceptance criteria, and the tests that must pass.
 
-**Bezugsdokumente:**
-[`SPECIFICATION.md`](SPECIFICATION.md) — das Was und Warum ·
-[`TESTING.md`](TESTING.md) — Testumgebung, Coverage-Politik, CI ·
-[`RECOVERY.md`](RECOVERY.md) — Nutzerdokument, Testfälle S5/S6
+**Reference documents:**
+[`SPECIFICATION.md`](SPECIFICATION.md) — the what and why ·
+[`TESTING.md`](TESTING.md) — test environment, coverage policy, CI ·
+[`RECOVERY.md`](RECOVERY.md) — user document, test cases S5/S6
 
 ---
 
-## 0. Regeln für jeden, der hier arbeitet
+## 0. Rules for everyone working here
 
-| # | Regel |
+| # | Rule |
 |---|---|
-| R1 | **Ein WP = ein Branch = ein PR.** Branch-Name `wp/<id>-<kurzname>`. |
-| R2 | **Kein WP gilt als fertig ohne seine Tests.** Die Testliste im WP ist die Abnahme, nicht der Code. |
-| R3 | **Die Spec ist die Wahrheit.** Weicht die Umsetzung ab, wird zuerst die Spec geändert (mit Begründung im PR), dann der Code. Nie umgekehrt und nie stillschweigend. |
-| R4 | **Blockiert statt geraten.** Wo die Spec ⟨API-VERIFY⟩ oder „offen" sagt, wird nicht improvisiert — Ergebnis in die Spec eintragen, dann weiter. |
-| R5 | **Kein WP darf die FFI-Allowlist erweitern**, außer **WP-40** (das sie anlegt). Jede spätere Änderung braucht Zweit-Review mit Sicherheitsbegründung im PR. |
-| R6 | **Coverage-Gate gilt ab dem WP, das den Crate anlegt** — nicht „später nachziehen". Siehe TESTING.md §3. |
-| R7 | **Jeder PR nennt die WP-ID, die Spec-Abschnitte und die Test-IDs** in der Beschreibung. |
-| R8 | **Keine Zahl wird abgeschrieben.** Anzahlen (Arbeitspakete, Freigabepunkte, Crates, Abhängigkeiten) stehen an genau einer Stelle und werden von `check_plan.py` bzw. `dep_budget.py` gegen die Wirklichkeit gehalten. Wer eine Zahl in einen Fließtext schreibt, macht sie damit prüfpflichtig. |
-| R9 | **Ein Widerspruch zwischen zwei Dokumenten ist ein Blocker, kein Detail.** Wer beim Abarbeiten eines Pakets auf einen stößt, hält an und meldet ihn, statt sich für eine Lesart zu entscheiden. R3 (Spec zuerst ändern) gilt dann für die Auflösung. |
+| R1 | **One WP = one branch = one PR.** Branch name `wp/<id>-<shortname>`. |
+| R2 | **No WP is done without its tests.** The test list in the WP is the acceptance, not the code. |
+| R3 | **The Spec is the truth.** If the implementation diverges, change the Spec first (with justification in the PR), then the code. Never the other way around and never silently. |
+| R4 | **Block rather than guess.** Where the Spec says ⟨API-VERIFY⟩ or "open", do not improvise — record the result in the Spec, then continue. |
+| R5 | **No WP may extend the FFI allowlist**, except **WP-40** (which creates it). Any later change needs second review with a security justification in the PR. |
+| R6 | **Coverage gate applies from the WP that creates the crate** — not "catch up later". See TESTING.md §3. |
+| R7 | **Every PR names the WP-ID, the Spec sections, and the test IDs** in the description. |
+| R8 | **No number is copied by hand.** Counts (work packages, release criteria, crates, dependencies) live in exactly one place and are held against reality by `check_plan.py` or `dep_budget.py`. Anyone who writes a number into prose makes it subject to checking. |
+| R9 | **A contradiction between two documents is a blocker, not a detail.** Anyone who hits one while working a package stops and reports it, rather than choosing one reading. R3 (change Spec first) then applies to the resolution. |
 
-### Zustandslegende
+### State legend
 
-`OFFEN` · `BLOCKIERT` (mit Grund) · `IN ARBEIT` · `REVIEW` · `FERTIG`
+`OPEN` · `BLOCKED` (with reason) · `IN PROGRESS` · `REVIEW` · `DONE`
 
-> **`FERTIG` ist keine Meinung.** Sobald ein WP diesen Zustand trägt, verlangt
-> `scripts/check_plan.py` für **jede** ihm zugeordnete Test-ID eine Testfunktion und bricht
-> sonst den Build. So entstehen keine unbemerkten Testschulden.
+> **`DONE` is not an opinion.** Once a WP carries this state,
+> `scripts/check_plan.py` requires a test function for **every** test ID assigned to it and
+> otherwise breaks the build. That way unnoticed test debt cannot accumulate.
 
-### Stand (2026-08-09)
+### Status (2026-08-09)
 
-| WP | Zustand | Belegt | Was fehlt |
+| WP | State | Evidence | What's missing |
 |---|---|---|---|
-| **WP-00** | **FERTIG** | `cargo build --workspace --locked` **und** `--offline` grün · `cargo deny check` **ausgeführt und grün** · Pinning verifiziert · Signaturpfad gemessen: **40 externe Crates** (MEASURED in `dep_budget.py`), `trinity-verify` allein **22** · `fmt` und `clippy -D warnings` sauber | — |
-| WP-01 | IN ARBEIT | Workflow geschrieben, YAML valide. Jobs `differential`/`signet` gated auf Harness-Verzeichnisse (fail-closed statt sofort rot). Alle aufgerufenen Skripte existieren und laufen lokal grün. | **Nie auf einem Runner ausgeführt.** `cargo-audit` nicht installiert. |
-| WP-02 | IN ARBEIT | `test-env.sh` (Syntax geprüft, Core-Versionssperre implementiert) und `docker/compose.yml` (valide; Images noch per Tag) | **Nie gestartet.** Image-**Digests fehlen**. Kein `bitcoind`, kein `electrs` gezogen. |
-| WP-03 | IN ARBEIT | `coverage_gate.py`, `check_plan.py`, `dep_budget.py` fail-closed: fehlende Zweigdaten und fehlende Crate-Einträge sind Befunde; Test-Zuordnung aus WP-Blöcken; Zahlenprüfung. | `cargo-llvm-cov`/`cargo-mutants` — realer Coverage-/Mutationslauf ausstehend; Zweigabdeckbarkeit der gepinnten Toolchain in TESTING.md §3.1 dokumentiert. |
-| WP-04 | **OFFEN** | — | `vendor/`, `.cargo/config.toml`, Build ohne Netz im Container, Reproducible-Build-Nachweis durch zwei Runner. |
+| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **40 external crates** (MEASURED in `dep_budget.py`), `trinity-verify` alone **22** · `fmt` and `clippy -D warnings` clean | — |
+| WP-01 | IN PROGRESS | Workflow written, YAML valid. Jobs `differential`/`signet` gated on harness directories (fail-closed instead of immediately red). All invoked scripts exist and run green locally. | **Never executed on a runner.** `cargo-audit` not installed. |
+| WP-02 | IN PROGRESS | `test-env.sh` (syntax checked, Core version lock implemented) and `docker/compose.yml` (valid; images still by tag) | **Never started.** Image-**digests missing**. No `bitcoind`, no `electrs` pulled. |
+| WP-03 | IN PROGRESS | `coverage_gate.py`, `check_plan.py`, `dep_budget.py` fail-closed: missing branch data and missing crate entries are findings; test assignment from WP blocks; number checks. | `cargo-llvm-cov`/`cargo-mutants` — real coverage/mutation run pending; branch coverage feasibility of the pinned toolchain documented in TESTING.md §3.1. |
+| WP-04 | **OPEN** | — | `vendor/`, `.cargo/config.toml`, build without network in container, reproducible-build proof via two runners. |
 
-**Also: nein, M0 ist nicht fertig.** Fertig ist WP-00. Die drei Pakete in Arbeit hängen
-sämtlich daran, dass Werkzeuge und Container in dieser Umgebung fehlen — nicht an
-ungeschriebenem Code.
+**So: no, M0 is not done.** What is done is WP-00. The three packages in progress all hang
+on tools and containers missing in this environment — not on unwritten code.
 
-**Nächster Schritt: WP-05.** Es ist das einzige Paket, das jetzt inhaltlich weiterführt, und es
-gibt M1 bis M5 frei.
+**Next step: WP-05.** It is the only package that advances content now, and it
+unlocks M1 through M5.
 
 ---
 
-## 1. Meilensteine
+## 1. Milestones
 
-| M | Name | Ziel | Enthält |
+| M | Name | Goal | Contains |
 |---|---|---|---|
-| **M0** | Fundament | Repo baut reproduzierbar, CI läuft, Testumgebung steht | WP-00 … WP-06 |
-| **M1** | Watch-only-Kern | Descriptor, Adressen, UTXOs, PSBT-Bau — **ohne jedes Schlüsselmaterial** | WP-10 … WP-16 |
-| **M2** | Verifier | Unabhängige Prüfung, gegen Bitcoin Core abgeglichen | WP-20 … WP-23 |
-| **M3** | Schlüssel und Signatur | Entropie, Blobs, Keystore, Signatur, Ausgabegrenze | WP-30 … WP-36 |
-| **M4** | Plattform und FFI | uniffi-Fassade, iOS- und Android-Keystore, Ein-Gesten-Ablauf | WP-40 … WP-46 |
-| **M5** | Hardware-Signer | QR- und NFC-Transport, BIP-388, Gerätefreigabe | WP-50 … WP-54 |
-| **M6** | App und UX | Onboarding, Senden, Empfangen, Recovery, Export | WP-60 … WP-68 |
-| **M7** | Härtung und Freigabe | Fuzzing, Speicher-Hygiene, Audit, Nutzertest | WP-70 … WP-76 |
+| **M0** | Foundation | Repo builds reproducibly, CI runs, test environment stands | WP-00 … WP-06 |
+| **M1** | Watch-only core | Descriptor, addresses, UTXOs, PSBT build — **without any key material** | WP-10 … WP-16 |
+| **M2** | Verifier | Independent checking, aligned against Bitcoin Core | WP-20 … WP-23 |
+| **M3** | Keys and signature | Entropy, blobs, keystore, signature, spending limit | WP-30 … WP-36 |
+| **M4** | Platform and FFI | uniffi facade, iOS and Android keystore, one-gesture flow | WP-40 … WP-46 |
+| **M5** | Hardware signer | QR and NFC transport, BIP-388, device allowlisting | WP-50 … WP-54 |
+| **M6** | App and UX | Onboarding, send, receive, recovery, export | WP-60 … WP-68 |
+| **M7** | Hardening and release | Fuzzing, memory hygiene, audit, user test | WP-70 … WP-76 |
 
-**M0 bis M4 sind die kritische Kette.** M5 kann ab M3 parallel laufen, M6 ab M4.
+**M0 through M4 are the critical chain.** M5 can run in parallel from M3, M6 from M4.
 
 ---
 
-## 2. Abhängigkeitsgraph
+## 2. Dependency graph
 
 ```mermaid
 flowchart LR
-    subgraph M0["M0 Fundament"]
+    subgraph M0["M0 Foundation"]
         W00["WP-00 Workspace"] --> W01["WP-01 CI"]
-        W00 --> W02["WP-02 Testumgebung"]
-        W01 --> W03["WP-03 Coverage-Gates"]
+        W00 --> W02["WP-02 Test environment"]
+        W01 --> W03["WP-03 Coverage gates"]
         W00 --> W04["WP-04 Vendoring"]
-        W02 --> W05["WP-05 Spike-Woche"]
-        W00 --> W06["WP-06 Basis App-Schale"]
+        W02 --> W05["WP-05 Spike week"]
+        W00 --> W06["WP-06 Base app shell"]
     end
     subgraph M1["M1 Watch-only"]
-        W05 --> W10["WP-10 Typen"]
+        W05 --> W10["WP-10 Types"]
         W10 --> W11["WP-11 Descriptor"]
         W11 --> W12["WP-12 Wallet"]
-        W12 --> W13["WP-13 Chain-Trait"]
+        W12 --> W13["WP-13 Chain trait"]
         W13 --> W14["WP-14 Electrum"]
         W13 --> W15["WP-15 Core RPC"]
         W13 --> W16["WP-16 CBF"]
@@ -96,301 +95,301 @@ flowchart LR
         W21 --> W22["WP-22 V1–V10"]
         W22 --> W23["WP-23 Differential"]
     end
-    subgraph M3["M3 Schlüssel"]
-        W10 --> W30["WP-30 Entropie"]
+    subgraph M3["M3 Keys"]
+        W10 --> W30["WP-30 Entropy"]
         W30 --> W31["WP-31 Blob"]
         W31 --> W32["WP-32 Keystore"]
         W32 --> W33["WP-33 Signer"]
         W22 --> W33
         W33 --> W34["WP-34 SpendPolicy"]
         W34 --> W35["WP-35 Passphrase"]
-        W33 --> W36["WP-36 Finalisierung"]
+        W33 --> W36["WP-36 Finalization"]
     end
-    subgraph M4["M4 Plattform"]
+    subgraph M4["M4 Platform"]
         W36 --> W40["WP-40 FFI"]
         W40 --> W41["WP-41 iOS"]
         W40 --> W42["WP-42 Android"]
-        W41 --> W43["WP-43 Ein-Geste"]
+        W41 --> W43["WP-43 One gesture"]
         W42 --> W43
     end
     W33 --> W50["M5 Hardware"]
     W43 --> W60["M6 App"]
-    W60 --> W70["M7 Freigabe"]
+    W60 --> W70["M7 Release"]
 ```
 
 ---
 
-## 3. Arbeitspakete
+## 3. Work packages
 
-Jedes WP hat dieselbe Struktur. **Abnahme** ist bindend — was dort nicht steht, ist nicht Teil
-des WP; was dort steht, ist ohne Ausnahme zu erfüllen. Die Zuordnung Test-ID → WP steht in der
-`**Tests:**`-Zeile; `scripts/check_plan.py` erzwingt Vollständigkeit in beide Richtungen und
-Eindeutigkeit.
+Every WP has the same structure. **Acceptance** is binding — what is not listed there is not part
+of the WP; what is listed there must be met without exception. The assignment test-ID → WP is in the
+`**Tests:**` line; `scripts/check_plan.py` enforces completeness in both directions and
+uniqueness.
 
 ---
 
-### M0 — Fundament
+### M0 — Foundation
 
-#### WP-00 · Workspace und Pinning
-**Spec:** 0.3, 1.1, 1.7 · **Braucht:** — · **Zustand:** FERTIG
+#### WP-00 · Workspace and pinning
+**Spec:** 0.3, 1.1, 1.7 · **Needs:** — · **State:** DONE
 
-Cargo-Workspace mit den zehn Crates aus 1.1 als leere Gerüste. `[workspace.dependencies]` mit
-**exakten** `=`-Pins aus der Tabelle in 0.3. `Cargo.lock` eingecheckt.
-`rust-toolchain.toml` mit fester Version.
+Cargo workspace with the ten crates from 1.1 as empty scaffolds. `[workspace.dependencies]` with
+**exact** `=`-pins from the table in 0.3. `Cargo.lock` checked in.
+`rust-toolchain.toml` with fixed version.
 
-**Dateien:** `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `deny.toml`, `crates/*/Cargo.toml`, `crates/*/src/lib.rs`
-**Verbote:** Keine Fachlogik; keine neuen Abhängigkeiten ohne Eintrag in 0.3; kein Anfassen von `app/` oder `platform/`.
+**Files:** `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `deny.toml`, `crates/*/Cargo.toml`, `crates/*/src/lib.rs`
+**Prohibited:** No domain logic; no new dependencies without an entry in 0.3; no touching of `app/` or `platform/`.
 
-**Abnahme**
-- `cargo build --workspace --locked` grün, offline (`--offline`)
-- `cargo tree -d` meldet nur die in `deny.toml` **mit Begründung** eingetragenen Duplikate — insbesondere nur **eine** `secp256k1`-Version
-- ✅ **Am 2026-08-08 verifiziert:** `secp256k1 0.29.1`, `miniscript 12.3.7`, `bitcoin 0.32.11` je genau einmal. Akzeptiert und begründet: `bitcoin_hashes 1.2.0` (nur über `ur` im QR-Transport, außerhalb des Signaturpfads), `getrandom 0.2.17` und `rand_core 0.6.4` (über `argon2` → `password-hash`)
-- `miniscript` löst auf `12.3.x` auf, **nicht** 13.x; `secp256k1` auf `0.29.1`
-- `deny.toml` vorhanden mit `[licenses]` als **Allowlist** nach §1.7 (Datei-Copyleft MPL-2.0 zugelassen; Projekt-Copyleft GPL/AGPL/SSPL/BUSL und Nutzungsgebühr ausgeschlossen) und `[bans]`-Regel: `miniscript` ist in `trinity-verify` verboten
-- `cargo deny check` grün
+**Acceptance**
+- `cargo build --workspace --locked` green, offline (`--offline`)
+- `cargo tree -d` reports only the duplicates entered in `deny.toml` **with justification** — in particular only **one** `secp256k1` version
+- ✅ **Verified 2026-08-08:** `secp256k1 0.29.1`, `miniscript 12.3.7`, `bitcoin 0.32.11` exactly once each. Accepted and justified: `bitcoin_hashes 1.2.0` (only via `ur` in QR transport, outside the signature path), `getrandom 0.2.17` and `rand_core 0.6.4` (via `argon2` → `password-hash`)
+- `miniscript` resolves to `12.3.x`, **not** 13.x; `secp256k1` to `0.29.1`
+- `deny.toml` present with `[licenses]` as an **allowlist** per §1.7 (file-copyleft MPL-2.0 allowed; project-copyleft GPL/AGPL/SSPL/BUSL and usage fees excluded) and `[bans]` rule: `miniscript` is banned in `trinity-verify`
+- `cargo deny check` green
 
 **Tests:** —
 
 ---
 
-#### WP-01 · CI-Grundgerüst
-**Spec:** 5.4, 5.5 · **Braucht:** WP-00 · **Zustand:** IN ARBEIT
+#### WP-01 · CI scaffold
+**Spec:** 5.4, 5.5 · **Needs:** WP-00 · **State:** IN PROGRESS
 
-GitHub-Actions-Pipeline nach TESTING.md §5: `fmt` → `clippy -D warnings` → `build` →
-`test` → `deny` → `audit`. Differential bei jedem PR, sobald der Harness existiert; Signet/Mutants nach `main`.
+GitHub Actions pipeline per TESTING.md §5: `fmt` → `clippy -D warnings` → `build` →
+`test` → `deny` → `audit`. Differential on every PR once the harness exists; Signet/Mutants after `main`.
 
-**Dateien:** `.github/workflows/ci.yml`
-**Verbote:** Keine Secrets in Logs; keine `allow`-Clippy-Ausnahmen ohne Kommentar mit Begründung; Cargo-Features `differential`/`signet` hier nicht anlegen (WP-23 bzw. WP-45).
+**Files:** `.github/workflows/ci.yml`
+**Prohibited:** No secrets in logs; no `allow` Clippy exceptions without a comment with justification; do not create Cargo features `differential`/`signet` here (WP-23 and WP-45 respectively).
 
-**Abnahme**
-- Pipeline läuft auf jedem PR und blockiert bei Rot
-- `clippy` mit `-D warnings`, keine `allow`-Ausnahmen ohne Kommentar mit Begründung
-- Laufzeit des schnellen Pfades < 10 min
-- Jobs `differential` und `signet` sind auf Harness-Verzeichnisse gated und brechen nicht mehr ohne Harness ab
-
-**Tests:** —
-
----
-
-#### WP-02 · Testumgebung
-**Spec:** 5.1, 5.3 · **Braucht:** WP-00 · **Zustand:** IN ARBEIT
-
-Reproduzierbare Umgebung nach TESTING.md §2: **Bitcoin Core 30.2** (Regtest; Signet als
-Abnahmeziel), Electrum-Server, CBF über denselben Regtest-Node mit Filter-Indizes, alles
-containerisiert und über ein Skript startbar.
-
-**Dateien:** `docker/compose.yml`, `scripts/test-env.sh`, `justfile` (test-env-*)
-**Verbote:** Keine Image-Tags ohne TODO(WP-02)-Digest-Hinweis als endgültig behaupten; Core 30.0/30.1 nicht zulassen.
-
-**Abnahme**
-- `just test-env-up` bringt Core 30.2 (Regtest), electrs und CBF-fähigen Node hoch
-- Version wird geprüft: **30.0 und 30.1 werden aktiv abgelehnt** (Wallet-Bug, 0.3)
-- Deterministischer Regtest-Zustand: Skript erzeugt 101 Blöcke und eine geförderte Wallet
-- `just test-env-down` räumt vollständig auf
-- Läuft auf Linux **und** macOS
-- Image-Digests eingetragen (Abnahmekriterium; heute noch offen)
+**Acceptance**
+- Pipeline runs on every PR and blocks on red
+- `clippy` with `-D warnings`, no `allow` exceptions without a comment with justification
+- Fast-path runtime < 10 min
+- Jobs `differential` and `signet` are gated on harness directories and no longer fail without harness
 
 **Tests:** —
 
 ---
 
-#### WP-03 · Coverage- und Mutations-Gates
-**Spec:** 5.5 · **Braucht:** WP-01 · **Zustand:** IN ARBEIT
+#### WP-02 · Test environment
+**Spec:** 5.1, 5.3 · **Needs:** WP-00 · **State:** IN PROGRESS
 
-`cargo-llvm-cov` mit **Schwellen pro Crate** nach TESTING.md §3, plus `cargo-mutants` für die
-Sicherheitskerne. Gates sind fail-closed: fehlende Zeilen- oder Zweigdaten für Crates mit
-Quellcode sind Befunde, keine stillen 100 %.
+Reproducible environment per TESTING.md §2: **Bitcoin Core 30.2** (Regtest; Signet as
+acceptance target), Electrum server, CBF via the same Regtest node with filter indices, all
+containerized and startable via a script.
 
-**Dateien:** `scripts/coverage_gate.py`, `scripts/check_plan.py`, `scripts/dep_budget.py`, `coverage-exclusions.toml`, `justfile`, `.github/workflows/ci.yml` (coverage-Job)
-**Verbote:** Keine Ausnahme für `trinity-verify`; keine Zahl behaupten, die nicht gemessen wird.
+**Files:** `docker/compose.yml`, `scripts/test-env.sh`, `justfile` (test-env-*)
+**Prohibited:** Do not claim image tags without a TODO(WP-02) digest note as final; do not allow Core 30.0/30.1.
 
-**Abnahme**
-- Coverage-Bericht je Crate, Gate bricht den Build bei Unterschreitung
-- Ausnahmeliste existiert als Datei mit **Begründung je Eintrag**; ein Eintrag ohne Begründung bricht den Build
-- `cargo-mutants` läuft gegen `trinity-verify` und `trinity-signer`, überlebende Mutanten brechen den Build
-- Fehlende BRF/BRH-Zeilen im lcov sind ein Befund (nicht still 100 % Zweige)
-- Zweigabdeckbarkeit der gepinnten Toolchain ist in TESTING.md §3.1/§3.2 als Messung oder benannte Lücke dokumentiert
-
-**Tests:** —
-
----
-
-#### WP-04 · Vendoring und reproduzierbare Builds
-**Spec:** 1.7 · **Braucht:** WP-00 · **Zustand:** OFFEN
-
-**Dateien:** `vendor/`, `.cargo/config.toml`, CI-Job oder Skript für Offline-Build
-**Verbote:** `vendor/` nicht in `.gitignore`; Build darf im freigegebenen Zustand nicht aus dem Netz ziehen.
-
-**Abnahme**
-- `vendor/` eingecheckt, `.cargo/config.toml` mit `replace-with = "vendored-sources"`
-- Build ohne Netzwerk erfolgreich (im Container ohne Netz nachgewiesen)
-- Zwei unabhängige CI-Runner erzeugen **bitgleiche** Artefakt-Hashes
-- `scripts/dep_budget.py` läuft in CI; Budget-Grenze **45**, gemessen **40 externe Crates** (`MEASURED` in `dep_budget.py`, Stand 2026-08-09)
+**Acceptance**
+- `just test-env-up` brings up Core 30.2 (Regtest), electrs, and a CBF-capable node
+- Version is checked: **30.0 and 30.1 are actively rejected** (wallet bug, 0.3)
+- Deterministic Regtest state: script produces 101 blocks and a funded wallet
+- `just test-env-down` cleans up fully
+- Runs on Linux **and** macOS
+- Image digests entered (acceptance criterion; still open today)
 
 **Tests:** —
 
 ---
 
-#### WP-05 · Spike-Woche: Anhang B abarbeiten
-**Spec:** Anhang B (14 Punkte), O12 · **Braucht:** WP-02 · **Zustand:** OFFEN
+#### WP-03 · Coverage and mutation gates
+**Spec:** 5.5 · **Needs:** WP-01 · **State:** IN PROGRESS
 
-**Alle 14 offenen Punkte** aus Anhang B klären und **die Spec aktualisieren**. Kein
-Produktionscode.
+`cargo-llvm-cov` with **thresholds per crate** per TESTING.md §3, plus `cargo-mutants` for the
+security cores. Gates are fail-closed: missing line or branch data for crates with
+source code are findings, not silent 100 %.
 
-**Dateien:** `docs/SPECIFICATION.md` (Anhang B, markierte ⟨API-VERIFY⟩-Stellen)
-**Verbote:** Kein Produktionscode in `crates/`; keine ⟨API-VERIFY⟩ stillschweigend erfinden.
+**Files:** `scripts/coverage_gate.py`, `scripts/check_plan.py`, `scripts/dep_budget.py`, `coverage-exclusions.toml`, `justfile`, `.github/workflows/ci.yml` (coverage job)
+**Prohibited:** No exception for `trinity-verify`; no claiming a number that is not measured.
 
-**Abnahme**
-- Jeder der 14 Punkte hat in der Spec ein Ergebnis oder eine begründete Vertagung
-- Alle ⟨API-VERIFY⟩-Marken sind aufgelöst oder ausdrücklich verlängert
-- Besonders: B.2 (uniffi-Puffernullung), B.3 (Kyoto-Peer-Verhalten), B.9 (Ledger-APDU-Referenz), B.13 (Whisper-Krypto) — sie berühren Architektur
-- Coldcard-Versionsangaben gegen die **Primärquelle** verifiziert (B.6) — bis dahin darf WP-54 nicht starten
-
-**Tests:** —
-
----
-
-#### WP-06 · Basis-Entscheidung App-Schale
-**Spec:** 1.3, 1.7, 6.1 · **Braucht:** — · **Zustand:** REVIEW
-
-Spike, kein Bau: auf welcher Grundlage die App-Schale (Navigation, Onboarding, Senden,
-Empfangen, QR, Adressbuch, Einstellungen) entsteht — Nullvariante, WDK-Schale ohne
-Wallet-Hälfte, BlueWallet als Vorlage, Nunchuk nur als GPL-Ausschluss. Der Rust-Kern
-(`bdk_wallet` + uniffi) und E1 bleiben unberührt. Ergebnis ist ein Entscheidungspapier mit
-messbaren Kriterien K1–K9 und einer Empfehlung; die Wahl trifft der Projektverantwortliche.
-
-**Dateien:** `docs/BASIS_ENTSCHEIDUNG.md`, `docs/IMPLEMENTATION_PLAN.md` (dieses Paket, M6-Verweise)
-**Verbote:** Kein Anwendungscode; kein Fork; kein `npx create-expo-app`; kein `npm install` der
-Kandidaten; keine Änderung an `docs/SPECIFICATION.md`; keine Entscheidung an JKs Stelle
-(nur Empfehlung); kein Commit/Push durch den Spike-Ausführenden.
-
-**Abnahme**
-- `docs/BASIS_ENTSCHEIDUNG.md` existiert mit: Frage, Nicht-Debatte (Kern/E1), Tabelle K1–K9
-  über vier Zeilen mit Zahlen oder „nicht gemessen", harter §1.3-Prüfung mit Datei/Zeile,
-  Empfehlung inkl. Gegenargumenten, Revisionskosten, Liste „nicht gemessen"
-- M6-Pakete (mindestens WP-60) verweisen auf Abhängigkeit vom Ergebnis dieses Pakets
-- `python3 scripts/check_plan.py` grün
+**Acceptance**
+- Coverage report per crate; gate breaks the build on under-threshold
+- Exception list exists as a file with **justification per entry**; an entry without justification breaks the build
+- `cargo-mutants` runs against `trinity-verify` and `trinity-signer`; surviving mutants break the build
+- Missing BRF/BRH lines in lcov are a finding (not silent 100 % branches)
+- Branch coverage feasibility of the pinned toolchain is documented in TESTING.md §3.1/§3.2 as a measurement or named gap
 
 **Tests:** —
 
 ---
 
-### M1 — Watch-only-Kern
+#### WP-04 · Vendoring and reproducible builds
+**Spec:** 1.7 · **Needs:** WP-00 · **State:** OPEN
+
+**Files:** `vendor/`, `.cargo/config.toml`, CI job or script for offline build
+**Prohibited:** Do not put `vendor/` in `.gitignore`; build must not pull from the network in the released state.
+
+**Acceptance**
+- `vendor/` checked in, `.cargo/config.toml` with `replace-with = "vendored-sources"`
+- Build without network succeeds (proven in a container without network)
+- Two independent CI runners produce **bit-identical** artifact hashes
+- `scripts/dep_budget.py` runs in CI; budget limit **45**, measured **40 external crates** (`MEASURED` in `dep_budget.py`, as of 2026-08-09)
+
+**Tests:** —
+
+---
+
+#### WP-05 · Spike week: work through Appendix B
+**Spec:** Appendix B (14 points), O12 · **Needs:** WP-02 · **State:** OPEN
+
+Clarify **all 14 open points** from Appendix B and **update the Spec**. No
+production code.
+
+**Files:** `docs/SPECIFICATION.md` (Appendix B, marked ⟨API-VERIFY⟩ places)
+**Prohibited:** No production code in `crates/`; do not invent ⟨API-VERIFY⟩ silently.
+
+**Acceptance**
+- Each of the 14 points has a result in the Spec or a justified deferral
+- All ⟨API-VERIFY⟩ marks are resolved or explicitly extended
+- Especially: B.2 (uniffi buffer zeroing), B.3 (Kyoto peer behaviour), B.9 (Ledger APDU reference), B.13 (Whisper crypto) — they touch architecture
+- Coldcard version claims verified against the **primary source** (B.6) — until then WP-54 must not start
+
+**Tests:** —
+
+---
+
+#### WP-06 · Base decision app shell
+**Spec:** 1.3, 1.7, 6.1 · **Needs:** — · **State:** REVIEW
+
+Spike, no build: on which basis the app shell (navigation, onboarding, send,
+receive, QR, address book, settings) is created — null variant, WDK shell without
+wallet half, BlueWallet as template, Nunchuk only as GPL exclusion. The Rust core
+(`bdk_wallet` + uniffi) and E1 remain untouched. Result is a decision paper with
+measurable criteria K1–K9 and a recommendation; the project owner makes the choice.
+
+**Files:** `docs/APP_SHELL_DECISION.md`, `docs/IMPLEMENTATION_PLAN.md` (this package, M6 references)
+**Prohibited:** No application code; no fork; no `npx create-expo-app`; no `npm install` of
+candidates; no change to `docs/SPECIFICATION.md`; no decision in JK's place
+(recommendation only); no commit/push by the spike executor.
+
+**Acceptance**
+- `docs/APP_SHELL_DECISION.md` exists with: question, non-debate (core/E1), table K1–K9
+  across four rows with numbers or "not measured", hard §1.3 check with file/line,
+  recommendation including counter-arguments, revision costs, "not measured" list
+- M6 packages (at least WP-60) reference dependency on this package's result
+- `python3 scripts/check_plan.py` green
+
+**Tests:** —
+
+---
+
+### M1 — Watch-only core
 
 #### WP-10 · `trinity-types`
-**Spec:** 1.1, 1.3 · **Braucht:** WP-05 · **Zustand:** OFFEN
+**Spec:** 1.1, 1.3 · **Needs:** WP-05 · **State:** OPEN
 
-Wertetypen ohne I/O: `KeySlot`, `Network`, `PsbtB64`, `Fingerprint`, `WordCount`,
+Value types without I/O: `KeySlot`, `Network`, `PsbtB64`, `Fingerprint`, `WordCount`,
 `XpubWithOrigin`, `Balance`, `AddressInfo`, `PsbtVerdict`, `SendRequest`, `SecretBytes`.
 
-**Dateien:** `crates/trinity-types/**`
-**Verbote:** Keine I/O-Abhängigkeit; kein Zugriff auf Keystore/Signer; keine Secrets in `Debug`/`Display`.
+**Files:** `crates/trinity-types/**`
+**Prohibited:** No I/O dependency; no access to keystore/signer; no secrets in `Debug`/`Display`.
 
-**Abnahme**
-- `SecretBytes`: `ZeroizeOnDrop`, **kein** `Clone`, **kein** `Debug`/`Display` außer `"[redacted]"`
-- Kompilier-Test (`trybuild`): `Clone` auf `SecretBytes` **schlägt fehl**
-- Der Crate hat **keine** I/O-Abhängigkeit — per `cargo-deny [bans]` erzwungen
-- Coverage 100 % Zeilen und Zweige
+**Acceptance**
+- `SecretBytes`: `ZeroizeOnDrop`, **no** `Clone`, **no** `Debug`/`Display` except `"[redacted]"`
+- Compile test (`trybuild`): `Clone` on `SecretBytes` **fails**
+- The crate has **no** I/O dependency — enforced via `cargo-deny [bans]`
+- Coverage 100 % lines and branches
 
 **Tests:** —
 
 ---
 
-#### WP-11 · Descriptor-Erzeugung und -Persistenz
-**Spec:** 2.3 · **Braucht:** WP-10 · **Zustand:** OFFEN
+#### WP-11 · Descriptor generation and persistence
+**Spec:** 2.3 · **Needs:** WP-10 · **State:** OPEN
 
-`wsh(sortedmulti(2,…))` mit BIP-48-Pfaden, Origin-Info, Checksum. `descriptor.json` mit
-`word_count` **je Schlüssel**, `source` je Schlüssel, `policy_id`, `birthday`, Netz, Version.
+`wsh(sortedmulti(2,…))` with BIP-48 paths, origin info, checksum. `descriptor.json` with
+`word_count` **per key**, `source` per key, `policy_id`, `birthday`, network, version.
 
-**Dateien:** `crates/trinity-watch/**` (Descriptor-Teile), ggf. `crates/trinity-types/**` (Descriptor-Typen)
-**Verbote:** Kein Multipath-Descriptor; kein Schlüsselmaterial; kein Zugriff auf `trinity-keystore`/`trinity-signer`.
+**Files:** `crates/trinity-watch/**` (descriptor parts), optionally `crates/trinity-types/**` (descriptor types)
+**Prohibited:** No multipath descriptor; no key material; no access to `trinity-keystore`/`trinity-signer`.
 
-**Abnahme**
-- **D1** (Checksum gegen `getdescriptorinfo`, 10.000 Fälle)
-- **P5** (Permutationsinvarianz), **P7** (identische Fingerprints werden abgelehnt), **P9** (fremde Grammatik abgelehnt)
-- Receive- und Change-Descriptor getrennt (O8), Multipath wird **nicht** erzeugt
-- Round-Trip `descriptor.json` verlustfrei, inkl. gemischter Wortlängen
+**Acceptance**
+- **D1** (checksum against `getdescriptorinfo`, 10,000 cases)
+- **P5** (permutation invariance), **P7** (identical fingerprints rejected), **P9** (foreign grammar rejected)
+- Receive and change descriptors separate (O8), multipath is **not** produced
+- Round-trip `descriptor.json` lossless, including mixed word lengths
 
 **Tests:** D1, P5, P7, P9
 
 ---
 
-#### WP-12 · `trinity-watch` — BDK-Wallet
-**Spec:** 1.1, 3.2 · **Braucht:** WP-11 · **Zustand:** OFFEN
+#### WP-12 · `trinity-watch` — BDK wallet
+**Spec:** 1.1, 3.2 · **Needs:** WP-11 · **State:** OPEN
 
-Wallet-Aufbau aus Descriptor, Adressableitung, UTXO-Verwaltung, `TxBuilder`, Persistenz.
-Gap-Limit 20 (O10). ⟨API-VERIFY aus WP-05 einsetzen⟩
+Wallet build from descriptor, address derivation, UTXO management, `TxBuilder`, persistence.
+Gap limit 20 (O10). ⟨API-VERIFY from WP-05 insert⟩
 
-**Dateien:** `crates/trinity-watch/**`
-**Verbote:** Kein Zugriff auf `trinity-keystore`/`trinity-signer` — per `[bans]` erzwungen.
+**Files:** `crates/trinity-watch/**`
+**Prohibited:** No access to `trinity-keystore`/`trinity-signer` — enforced via `[bans]`.
 
-**Abnahme**
-- **D2**, **D3** (Adressen gegen `deriveaddresses`, 500 Setups × 1.000 Adressen)
-- **D6** (BIP-67 über alle 6 Permutationen)
-- `nLockTime = Tip-Höhe`, `nSequence = 0xFFFFFFFE` (Anti-Fee-Sniping)
-- Coin Selection: BnB mit SRD-Fallback; changelose Lösung wird bevorzugt
-- **P8** (Gebührenidentität, Overflow-Grenzfälle)
-- Dust-Change wandert in die Gebühr
+**Acceptance**
+- **D2**, **D3** (addresses against `deriveaddresses`, 500 setups × 1,000 addresses)
+- **D6** (BIP-67 across all 6 permutations)
+- `nLockTime = tip height`, `nSequence = 0xFFFFFFFE` (anti-fee-sniping)
+- Coin selection: BnB with SRD fallback; changeless solution preferred
+- **P8** (fee identity, overflow edge cases)
+- Dust change goes into the fee
 
 **Tests:** D2, D3, D6, P8
 
 ---
 
-#### WP-13 · `ChainBackend`-Trait
-**Spec:** 1.6 · **Braucht:** WP-12 · **Zustand:** OFFEN
+#### WP-13 · `ChainBackend` trait
+**Spec:** 1.6 · **Needs:** WP-12 · **State:** OPEN
 
-**Dateien:** `crates/trinity-chain/src/lib.rs` (Trait), Tests unter `crates/trinity-chain/**`
-**Verbote:** Keine konkrete Backend-Implementierung außer In-Memory-Fake; kein Netzwerkzwang in Unit-Tests.
+**Files:** `crates/trinity-chain/src/lib.rs` (trait), tests under `crates/trinity-chain/**`
+**Prohibited:** No concrete backend implementation except in-memory fake; no network requirement in unit tests.
 
-**Abnahme**
-- Trait nach 1.6, inkl. `privacy_profile()`
-- In-Memory-Fake für Tests, der ohne Netz funktioniert
-- `broadcast` ist **getrennt** konfigurierbar vom Sync-Backend
+**Acceptance**
+- Trait per 1.6, including `privacy_profile()`
+- In-memory fake for tests that works without network
+- `broadcast` is **separately** configurable from the sync backend
 
 **Tests:** —
 
 ---
 
-#### WP-14 · Electrum-Backend
-**Spec:** 1.6 · **Braucht:** WP-13 · **Zustand:** OFFEN
+#### WP-14 · Electrum backend
+**Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
 
-**Dateien:** `crates/trinity-chain/**` (Electrum-Backend)
-**Verbote:** Kein stiller Fallback auf Core-RPC oder CBF; kein Schlüsselmaterial.
+**Files:** `crates/trinity-chain/**` (Electrum backend)
+**Prohibited:** No silent fallback to Core RPC or CBF; no key material.
 
-**Abnahme**
-- **S2** (Saldo über alle drei Backends identisch — Mitwirkung dieses Backends)
-- **S13** (Ausfall → sauberer Fehler, **kein** stiller Fallback auf ein anderes Backend)
-- `privacy_profile()` liefert die Angaben aus der Tabelle in 1.6
+**Acceptance**
+- **S2** (balance identical across all three backends — this backend contributes)
+- **S13** (failure → clean error, **no** silent fallback to another backend)
+- `privacy_profile()` returns the data from the table in 1.6
 
 **Tests:** S13
 
 ---
 
-#### WP-15 · Core-RPC-Backend
-**Spec:** 1.6 · **Braucht:** WP-13 · **Zustand:** OFFEN
+#### WP-15 · Core RPC backend
+**Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
 
-**Dateien:** `crates/trinity-chain/**` (Core-RPC-Backend)
-**Verbote:** Kein stiller Fallback; kein Schlüsselmaterial.
+**Files:** `crates/trinity-chain/**` (Core RPC backend)
+**Prohibited:** No silent fallback; no key material.
 
-**Abnahme**
-- Saldo identisch zu den anderen Backends im Rahmen von S2 (Eigentum von WP-45)
-- Ausfallverhalten analog S13 (sauberer Fehler, kein stiller Fallback)
-- `privacy_profile()` liefert die Angaben aus der Tabelle in 1.6
+**Acceptance**
+- Balance identical to the other backends within S2 (owned by WP-45)
+- Failure behaviour analogous to S13 (clean error, no silent fallback)
+- `privacy_profile()` returns the data from the table in 1.6
 
 **Tests:** —
 
 ---
 
-#### WP-16 · CBF-Backend
-**Spec:** 1.6 · **Braucht:** WP-13 · **Zustand:** OFFEN
+#### WP-16 · CBF backend
+**Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
 
-**Dateien:** `crates/trinity-chain/**` (CBF-Backend)
-**Verbote:** CBF nicht als Default setzen, solange Anhang B.3 offen ist (O3); kein stiller Fallback.
+**Files:** `crates/trinity-chain/**` (CBF backend)
+**Prohibited:** Do not set CBF as default while Appendix B.3 is open (O3); no silent fallback.
 
-**Abnahme**
-- Saldo identisch im Rahmen von S2; Ausfall analog S13
-- `privacy_profile()` liefert die Angaben aus der Tabelle in 1.6
-- Ergebnis von Anhang B.3 ist eingearbeitet; ohne den Nachweis darf CBF **nicht** als Default gesetzt werden (O3)
+**Acceptance**
+- Balance identical within S2; failure analogous to S13
+- `privacy_profile()` returns the data from the table in 1.6
+- Result of Appendix B.3 is incorporated; without that evidence CBF must **not** be set as default (O3)
 
 **Tests:** —
 
@@ -398,116 +397,116 @@ Gap-Limit 20 (O10). ⟨API-VERIFY aus WP-05 einsetzen⟩
 
 ### M2 — Verifier
 
-#### WP-20 · Eigener Descriptor-Parser
-**Spec:** 1.5, E2 · **Braucht:** WP-10 · **Zustand:** OFFEN
+#### WP-20 · Own descriptor parser
+**Spec:** 1.5, E2 · **Needs:** WP-10 · **State:** OPEN
 
-~250 Zeilen für **genau** die Grammatik `wsh(sortedmulti(2,·,·,·))`. Alles andere ist harter
-Fehler. **Ohne `miniscript`.**
+~250 lines for **exactly** the grammar `wsh(sortedmulti(2,·,·,·))`. Everything else is a hard
+error. **Without `miniscript`.**
 
-**Dateien:** `crates/trinity-verify/**` (Parser)
-**Verbote:** Keine `miniscript`-Abhängigkeit; kein Zugriff auf `trinity-keystore` oder `trinity-signer`.
+**Files:** `crates/trinity-verify/**` (parser)
+**Prohibited:** No `miniscript` dependency; no access to `trinity-keystore` or `trinity-signer`.
 
-**Abnahme**
-- `cargo-deny` bestätigt: `miniscript` ist keine Abhängigkeit dieses Crates
-- Negativfälle mit zufälligen gültigen Miniscript-Descriptoren (Ergänzung zu P9)
-- `cargo-fuzz` ≥ 1 h ohne Fund (voller Lauf in WP-70)
-- Coverage **100 % Zeilen und Zweige**, keine Ausnahmen
+**Acceptance**
+- `cargo-deny` confirms: `miniscript` is not a dependency of this crate
+- Negative cases with random valid Miniscript descriptors (supplement to P9)
+- `cargo-fuzz` ≥ 1 h without finding (full run in WP-70)
+- Coverage **100 % lines and branches**, no exceptions
 
 **Tests:** —
 
 ---
 
-#### WP-21 · Eigene BIP-32-Ableitung und BIP-67-Sortierung
-**Spec:** 1.5 · **Braucht:** WP-20 · **Zustand:** OFFEN
+#### WP-21 · Own BIP-32 derivation and BIP-67 sorting
+**Spec:** 1.5 · **Needs:** WP-20 · **State:** OPEN
 
-Eigene CKDpub, eigene Sortierung, eigener witnessScript-Bau. Geteilt bleiben nur `secp256k1`
-und die Hashes — die Grenze der Unabhängigkeit ist in 1.5 tabelliert und gilt.
+Own CKDpub, own sorting, own witnessScript construction. Shared remain only `secp256k1`
+and the hashes — the independence boundary is tabulated in 1.5 and applies.
 
-**Dateien:** `crates/trinity-verify/**`
-**Verbote:** Keine `miniscript`-Abhängigkeit; kein Keystore/Signer.
+**Files:** `crates/trinity-verify/**`
+**Prohibited:** No `miniscript` dependency; no keystore/signer.
 
-**Abnahme**
-- **D4** (Verifier gegen `deriveaddresses`) — **der wichtigste Test des Meilensteins**
-- **D5** (Verifier gegen Builder); jede Divergenz ist ein Alarm, kein Testfehler
+**Acceptance**
+- **D4** (verifier against `deriveaddresses`) — **the most important test of the milestone**
+- **D5** (verifier against builder); every divergence is an alarm, not a test failure
 - Coverage 100 %
 
 **Tests:** D4, D5
 
 ---
 
-#### WP-22 · Prüfungen V1–V10
-**Spec:** 1.5, 3.3 · **Braucht:** WP-21 · **Zustand:** OFFEN
+#### WP-22 · Checks V1–V10
+**Spec:** 1.5, 3.3 · **Needs:** WP-21 · **State:** OPEN
 
-**Dateien:** `crates/trinity-verify/**`
-**Verbote:** Keine `miniscript`-Abhängigkeit; kein Keystore/Signer.
+**Files:** `crates/trinity-verify/**`
+**Prohibited:** No `miniscript` dependency; no keystore/signer.
 
-**Abnahme**
-- Jede Prüfung V1–V10 hat mindestens einen Positiv- und einen Negativtest
+**Acceptance**
+- Every check V1–V10 has at least one positive and one negative test
 - **P1, P2, P3, P11, P12**
-- Jede Ablehnung liefert einen **konkreten** Fehlergrund, nie ein generisches „ungültig"
-- Der Verifier läuft an allen **drei** Stellen aus 3.3
+- Every rejection returns a **concrete** error reason, never a generic "invalid"
+- The verifier runs at all **three** places from 3.3
 
 **Tests:** P1, P2, P3, P11, P12
 
 ---
 
-#### WP-23 · Differential-Harness
-**Spec:** 5.1 · **Braucht:** WP-22, WP-02 · **Zustand:** OFFEN
+#### WP-23 · Differential harness
+**Spec:** 5.1 · **Needs:** WP-22, WP-02 · **State:** OPEN
 
-Harness, das **D1–D19** gegen Bitcoin Core 30.2 fährt, mit stabilem Seed und reproduzierbaren
-Fällen. Legt das Cargo-Feature `differential` an und das Verzeichnis `tests/differential/`,
-damit der CI-Job reaktiviert werden kann.
+Harness that runs **D1–D19** against Bitcoin Core 30.2, with stable seed and reproducible
+cases. Creates the Cargo feature `differential` and the directory `tests/differential/`,
+so the CI job can be reactivated.
 
-**Dateien:** `tests/differential/**`, Feature `differential` in betroffenen `Cargo.toml`, `justfile` (`diff-test`)
-**Verbote:** Keine Fachlogik-Änderungen in Verify/Signer außer Harness-Anbindung; Features nicht anlegen ohne echte Tests.
+**Files:** `tests/differential/**`, feature `differential` in affected `Cargo.toml`, `justfile` (`diff-test`)
+**Prohibited:** No domain-logic changes in Verify/Signer except harness wiring; do not create features without real tests.
 
-**Abnahme**
-- Cargo-Feature `differential` ist definiert und an den Harness gebunden
-- Verzeichnis `tests/differential/` existiert und enthält lauffähige Tests
-- Alle D-Tests laufen per `just diff-test` lokal und in CI
-- Ein Fehlschlag zeigt Eingabe, Erwartung und Ist im Klartext
-- Laufzeit < 20 min
-- Nach diesem WP entfällt die `hashFiles`-Bedingung am CI-Job `differential`
+**Acceptance**
+- Cargo feature `differential` is defined and bound to the harness
+- Directory `tests/differential/` exists and contains runnable tests
+- All D-tests run via `just diff-test` locally and in CI
+- A failure shows input, expected, and actual in plain text
+- Runtime < 20 min
+- After this WP the `hashFiles` condition on CI job `differential` is removed
 
 **Tests:** —
 
 ---
 
-### M3 — Schlüssel und Signatur
+### M3 — Keys and signature
 
 #### WP-30 · `trinity-entropy`
-**Spec:** 2.2, 2.2.1–2.2.5 · **Braucht:** WP-10 · **Zustand:** OFFEN
+**Spec:** 2.2, 2.2.1–2.2.5 · **Needs:** WP-10 · **State:** OPEN
 
-`entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = extra_bytes)[0..L]`. Quellen Klasse A
-(Würfel, Münzen, Karten) mit kanonischer Kodierung und Separator-Regel; Klasse B nur
-einspeisbar, **null** anrechenbare Bit. Zusatzentropie optional (E3), auch für C.
+`entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = extra_bytes)[0..L]`. Sources class A
+(dice, coins, cards) with canonical encoding and separator rule; class B injectable only,
+**zero** countable bits. Additional entropy optional (E3), also for C.
 
-**Dateien:** `crates/trinity-entropy/**`
-**Verbote:** Keine Pflicht-Zusatzentropie; keine I/O außer Entropiequellen; kein Keystore.
+**Files:** `crates/trinity-entropy/**`
+**Prohibited:** No mandatory additional entropy; no I/O except entropy sources; no keystore.
 
-**Abnahme**
+**Acceptance**
 - **D12, D13, D17** · **P10, P14, P15, P16**
-- **S20**: externes Shell-Skript rechnet `entropy` aus `raw_csprng` + `extra_bytes` nach — für **alle** Quellkombinationen
-- `word_count`-Regel: C ist auf 24 festgenagelt, `SetupConfig` mit `C = 12` wird abgelehnt (**S15b**)
-- Verifikationsblatt wird erzeugt und enthält `L`, die Separator-Regel und alle Zwischenwerte
+- **S20**: external shell script recomputes `entropy` from `raw_csprng` + `extra_bytes` — for **all** source combinations
+- `word_count` rule: C is fixed at 24, `SetupConfig` with `C = 12` is rejected (**S15b**)
+- Verification printout is produced and contains `L`, the separator rule, and all intermediate values
 - Coverage 100 %
 
 **Tests:** D12, D13, D17, P10, P14, P15, P16, S15b, S20
 
 ---
 
-#### WP-31 · Blob-Format
-**Spec:** 2.4 · **Braucht:** WP-30 · **Zustand:** OFFEN
+#### WP-31 · Blob format
+**Spec:** 2.4 · **Needs:** WP-30 · **State:** OPEN
 
-XChaCha20-Poly1305, Header als AAD, `word_count` im Header. **Kein KDF-Feld** — Argon2id sitzt
-seit der Korrektur in 2.4 im Policy-Record.
+XChaCha20-Poly1305, header as AAD, `word_count` in the header. **No KDF field** — Argon2id sits
+since the correction in 2.4 in the policy record.
 
-**Dateien:** `crates/trinity-keystore/**` (Blob)
-**Verbote:** Kein KDF im Blob-Header; kein Logging von Klartext-Entropie.
+**Files:** `crates/trinity-keystore/**` (blob)
+**Prohibited:** No KDF in the blob header; no logging of plaintext entropy.
 
-**Abnahme**
-- **P6** (Round-Trip, jede Header-Mutation ⇒ AEAD-Fehler), **P13** (`word_count`-Mutation)
-- Blob-Format für A und B **bitgleich** — ein Test vergleicht die Layouts
+**Acceptance**
+- **P6** (round-trip, every header mutation ⇒ AEAD error), **P13** (`word_count` mutation)
+- Blob format for A and B **bit-identical** — one test compares the layouts
 - Coverage 100 %
 
 **Tests:** P6, P13
@@ -515,20 +514,20 @@ seit der Korrektur in 2.4 im Policy-Record.
 ---
 
 #### WP-32 · `trinity-keystore`
-**Spec:** 2.4, 2.5 · **Braucht:** WP-31 · **Zustand:** OFFEN
+**Spec:** 2.4, 2.5 · **Needs:** WP-31 · **State:** OPEN
 
-`SlotPolicy`, `PlatformKeyStore`-Callback-Trait, `POLICY_A` (`.biometryCurrentSet`) und
-`POLICY_B` (`.userPresence`). Speicher-Handling nach 2.5.
+`SlotPolicy`, `PlatformKeyStore` callback trait, `POLICY_A` (`.biometryCurrentSet`) and
+`POLICY_B` (`.userPresence`). Memory handling per 2.5.
 
-**Dateien:** `crates/trinity-keystore/**`
-**Verbote:** Kein `log`/`tracing`; keine Secrets ohne `ZeroizeOnDrop`; kein `print!`/`dbg!`.
+**Files:** `crates/trinity-keystore/**`
+**Prohibited:** No `log`/`tracing`; no secrets without `ZeroizeOnDrop`; no `print!`/`dbg!`.
 
-**Abnahme**
-- Kein `log`/`tracing` als Abhängigkeit — per `[bans]` erzwungen
+**Acceptance**
+- No `log`/`tracing` as a dependency — enforced via `[bans]`
 - `#![deny(clippy::print_stdout, clippy::dbg_macro)]`
-- Kompilier-Test: kein Secret-Typ ohne `ZeroizeOnDrop`
-- `panic = "abort"` im Release-Profil
-- Fake-`PlatformKeyStore` für Tests; **Mock zählt Aufrufe** (für S9, S28)
+- Compile test: no secret type without `ZeroizeOnDrop`
+- `panic = "abort"` in the release profile
+- Fake `PlatformKeyStore` for tests; **mock counts calls** (for S9, S28)
 - Coverage 100 %
 
 **Tests:** —
@@ -536,579 +535,579 @@ seit der Korrektur in 2.4 im Policy-Record.
 ---
 
 #### WP-33 · `trinity-signer`
-**Spec:** 3.4 · **Braucht:** WP-32, WP-22 · **Zustand:** OFFEN
+**Spec:** 3.4 · **Needs:** WP-32, WP-22 · **State:** OPEN
 
-`Signer`-Trait, `LocalSigner`. RFC-6979 über `secp256k1`, low-s, `SIGHASH_ALL` ausschließlich,
-Eigenverifikation nach jeder Signatur. Crate-interne `sign_a`/`sign_b`; exportiert wird
-später nur `sign_ab` (WP-40).
+`Signer` trait, `LocalSigner`. RFC-6979 via `secp256k1`, low-s, `SIGHASH_ALL` exclusively,
+self-verification after every signature. Crate-internal `sign_a`/`sign_b`; later only
+`sign_ab` is exported (WP-40).
 
-**Dateien:** `crates/trinity-signer/**`
-**Verbote:** Kein RNG im Signaturpfad; kein Export von Seeds; kein SIGHASH außer ALL.
+**Files:** `crates/trinity-signer/**`
+**Prohibited:** No RNG on the signature path; no export of seeds; no SIGHASH except ALL.
 
-**Abnahme**
-- **D7, D8** (bitgleich zu `walletprocesspsbt`) · **P4** (Determinismus)
-- Verifier läuft **vor** jedem Schlüsselzugriff; **S9** inkl. Mock-Assertion, dass `unwrap_kek` **nicht** aufgerufen wurde
-- **S10** (Manipulation zwischen A und B wird erkannt)
-- Jeder andere SIGHASH als `ALL` wird abgelehnt (**P11** — Eigentum WP-22; hier Mitwirkung)
-- Coverage 100 %, `cargo-mutants` ohne Überlebende
+**Acceptance**
+- **D7, D8** (bit-identical to `walletprocesspsbt`) · **P4** (determinism)
+- Verifier runs **before** every key access; **S9** including mock assertion that `unwrap_kek` was **not** called
+- **S10** (manipulation between A and B is detected)
+- Every SIGHASH other than `ALL` is rejected (**P11** — owned by WP-22; contribution here)
+- Coverage 100 %, `cargo-mutants` without survivors
 
 **Tests:** D7, D8, P4, S9, S10
 
 ---
 
-#### WP-34 · `SpendPolicy` und Fensterzähler
-**Spec:** 3.6.3, 3.6.5, 3.6.7 · **Braucht:** WP-33 · **Zustand:** OFFEN
+#### WP-34 · `SpendPolicy` and window counter
+**Spec:** 3.6.3, 3.6.5, 3.6.7 · **Needs:** WP-33 · **State:** OPEN
 
-`clamp(20 % des Guthabens, 200 €, 500 €)` je 24 h, gleitendes Fenster, Zähler im
-verschlüsselten Kernzustand. Anrechnung **exakt** nach 3.6.7.
+`clamp(20 % of balance, 200 €, 500 €)` per 24 h, sliding window, counter in
+encrypted core state. Accounting **exactly** per 3.6.7.
 
-**Dateien:** `crates/trinity-signer/**` (SpendPolicy), ggf. `crates/trinity-types/**`
-**Verbote:** Keine Policy-Durchsetzung in der JS-Schicht; kein Kursabruf zur Signaturzeit.
+**Files:** `crates/trinity-signer/**` (SpendPolicy), optionally `crates/trinity-types/**`
+**Prohibited:** No policy enforcement in the JS layer; no rate fetch at signature time.
 
-**Abnahme**
-- **S28** (Grenze greift, kein `unwrap_kek`, kein Biometrie-Prompt)
-- **S29** (Stückelung hilft nicht), **S29b** (alle drei Bereiche + Grenzfälle), **S29f** (Invariante `Sockel ≤ Deckel`)
-- **S29h** (Anrechnung: Gebühr, Change, Selbstüberweisung, RBF-Delta, verworfene Tx)
-- **S29i** (unbestätigte Fremdzahlung hebt die Bezugsgröße **nicht**)
-- **S29j** (gleitendes Fenster über Kalendergrenze)
-- Zähler überlebt Neustart und Reboot; nicht durch Löschen JS-lesbarer Dateien rücksetzbar
-- Coverage 100 %, `cargo-mutants` ohne Überlebende
+**Acceptance**
+- **S28** (limit applies, no `unwrap_kek`, no biometry prompt)
+- **S29** (splitting does not help), **S29b** (all three ranges + edge cases), **S29f** (invariant `floor ≤ cap`)
+- **S29h** (accounting: fee, change, self-transfer, RBF delta, dropped tx)
+- **S29i** (unconfirmed external payment does **not** raise the reference size)
+- **S29j** (sliding window across calendar boundary)
+- Counter survives restart and reboot; not resettable by deleting JS-readable files
+- Coverage 100 %, `cargo-mutants` without survivors
 
 **Tests:** S28, S29, S29b, S29f, S29h, S29i, S29j
 
 ---
 
-#### WP-35 · Passphrase-Verifier und Fiat-Verankerung
-**Spec:** 2.4 („Autorisierungsgeheimnis"), 3.6.6, 3.6.8 · **Braucht:** WP-34 · **Zustand:** OFFEN
+#### WP-35 · Passphrase verifier and fiat anchoring
+**Spec:** 2.4 ("authorization secret"), 3.6.6, 3.6.8 · **Needs:** WP-34 · **State:** OPEN
 
-`H = SHA-256(Argon2id(pass, pp_salt, profil))`, Vergleich in konstanter Zeit.
-Diceware-Prüfung ≥ 6 Wörter. Fiat→Sat-Verankerung mit Plausibilitätsfilter und Asymmetrie.
+`H = SHA-256(Argon2id(pass, pp_salt, profile))`, comparison in constant time.
+Diceware check ≥ 6 words. Fiat→sat anchoring with plausibility filter and asymmetry.
 
-**Dateien:** `crates/trinity-keystore/**`, `crates/trinity-signer/**` (Policy-Verifier)
-**Verbote:** Passphrase nie als `String`; kein `==` auf Secret-Bytes; kein Netzwerk in der Signaturprüfung.
+**Files:** `crates/trinity-keystore/**`, `crates/trinity-signer/**` (policy verifier)
+**Prohibited:** Passphrase never as `String`; no `==` on secret bytes; no network in signature checking.
 
-**Abnahme**
-- **D16** (Argon2id gegen RFC-9106-Vektoren, beide Profile)
-- **S29c** (Kursmanipulation in 5 Varianten; **Assertion: kein Netzwerkabruf zur Signaturzeit**)
-- **S29d**, **S29g** (Anheben verlangt Passphrase — auch direkt über die FFI, nicht nur über die UI)
-- **S29e** (Signieren im Flugmodus), **S30**, **S31**
-- **S35** (Erinnerungsübung nach 60 Tagen), **S36** (vergessene Passphrase ist kein Geldverlust)
-- Vergleich nachweislich konstantzeitig (`subtle` o.ä., kein `==` auf Bytes)
+**Acceptance**
+- **D16** (Argon2id against RFC-9106 vectors, both profiles)
+- **S29c** (rate manipulation in 5 variants; **assertion: no network fetch at signature time**)
+- **S29d**, **S29g** (raising requires passphrase — also directly via FFI, not only via UI)
+- **S29e** (signing in airplane mode), **S30**, **S31**
+- **S35** (reminder exercise after 60 days), **S36** (forgotten passphrase is not loss of funds)
+- Comparison demonstrably constant-time (`subtle` or similar, no `==` on bytes)
 - Coverage 100 %
 
 **Tests:** D16, S29c, S29d, S29e, S29g, S30, S31, S35, S36
 
 ---
 
-#### WP-36 · Finalisierung und Broadcast
-**Spec:** 3.5 · **Braucht:** WP-33 · **Zustand:** OFFEN
+#### WP-36 · Finalization and broadcast
+**Spec:** 3.5 · **Needs:** WP-33 · **State:** OPEN
 
-Witness in **BIP-67-Reihenfolge** (nicht in Signaturreihenfolge — häufige Fehlerquelle),
-Konsensprüfung über `bitcoinconsensus` (O7), vsize-Messung gegen `max_feerate`.
+Witness in **BIP-67 order** (not signature order — common error source),
+consensus check via `bitcoinconsensus` (O7), vsize measurement against `max_feerate`.
 
-**Dateien:** `crates/trinity-signer/**`, `crates/trinity-watch/**` (Finalize/Broadcast-Anbindung)
-**Verbote:** Keine Signaturreihenfolge als Witness-Reihenfolge; kein Broadcast ohne Konsensprüfung.
+**Files:** `crates/trinity-signer/**`, `crates/trinity-watch/**` (finalize/broadcast wiring)
+**Prohibited:** No signature order as witness order; no broadcast without consensus check.
 
-**Abnahme**
-- **D10** (Raw-Tx bitgleich zu `finalizepsbt`), **D11** (`testmempoolaccept` erlaubt)
-- **S11** (Fee-Angriff wird vor jedem Schlüsselzugriff abgelehnt), **S12** (RBF-Bump)
-- Ein Test vertauscht bewusst die Signaturreihenfolge und erwartet dennoch eine gültige Witness
+**Acceptance**
+- **D10** (raw tx bit-identical to `finalizepsbt`), **D11** (`testmempoolaccept` allows)
+- **S11** (fee attack rejected before every key access), **S12** (RBF bump)
+- One test deliberately swaps signature order and still expects a valid witness
 
 **Tests:** D10, D11, S11, S12
 
 ---
 
-### M4 — Plattform und FFI
+### M4 — Platform and FFI
 
 #### WP-40 · `trinity-ffi`
-**Spec:** 1.3 · **Braucht:** WP-36 · **Zustand:** OFFEN
+**Spec:** 1.3 · **Needs:** WP-36 · **State:** OPEN
 
-uniffi-Fassade **exakt** nach der Signaturliste in 1.3 (`sign_ab`, `sign_with_recovery_key`,
-kein exportiertes `sign_a`/`sign_b`), plus `ffi-allowlist.toml` und CI-Gate-Skript.
+uniffi facade **exactly** per the signature list in 1.3 (`sign_ab`, `sign_with_recovery_key`,
+no exported `sign_a`/`sign_b`), plus `ffi-allowlist.toml` and CI gate script.
 
-**Dateien:** `crates/trinity-ffi/**`, `crates/trinity-ffi/ffi-allowlist.toml`, `scripts/check_ffi_boundary.py`
-**Verbote:** Keine Erweiterung der Allowlist außerhalb dieses WP ohne Zweit-Review; kein Export von Seed/Mnemonic/xpriv; `sign_a`/`sign_b` nicht exportieren.
+**Files:** `crates/trinity-ffi/**`, `crates/trinity-ffi/ffi-allowlist.toml`, `scripts/check_ffi_boundary.py`
+**Prohibited:** No allowlist extension outside this WP without second review; no export of seed/mnemonic/xpriv; do not export `sign_a`/`sign_b`.
 
-**Abnahme**
-- CI-Gate `ffi-boundary` bricht bei jeder Signaturänderung außerhalb der Allowlist
-- Skript `scripts/check_ffi_boundary.py` und Allowlist `crates/trinity-ffi/ffi-allowlist.toml` existieren
-- Kein exportierter Aufruf gibt Seed, Mnemonic oder xpriv zurück — automatisiert geprüft
-- **S23** ist ein **Build-brechender** Signatur-Check (kein Secret-Export; `blob_B` nur nach SpendPolicy; keine Policy-/Schlüsselexporte ohne `SecretBytes`)
-- `sign_ab` und `sign_with_recovery_key` sind exportiert und in der Allowlist
-- Ergebnis aus Anhang B.2 (`RustBuffer`-Nullung) ist umgesetzt
+**Acceptance**
+- CI gate `ffi-boundary` breaks on every signature change outside the allowlist
+- Script `scripts/check_ffi_boundary.py` and allowlist `crates/trinity-ffi/ffi-allowlist.toml` exist
+- No exported call returns seed, mnemonic, or xpriv — checked automatically
+- **S23** is a **build-breaking** signature check (no secret export; `blob_B` only after SpendPolicy; no policy/key exports without `SecretBytes`)
+- `sign_ab` and `sign_with_recovery_key` are exported and on the allowlist
+- Result from Appendix B.2 (`RustBuffer` zeroing) is implemented
 
 **Tests:** S23
 
 ---
 
-#### WP-41 · iOS-Plattformschicht
-**Spec:** 2.4, 3.6.2 · **Braucht:** WP-40 · **Zustand:** OFFEN
+#### WP-41 · iOS platform layer
+**Spec:** 2.4, 3.6.2 · **Needs:** WP-40 · **State:** OPEN
 
-Keychain, `PlatformKeyStore`-Implementierung, Passphrase-Eingabe **ohne `String`**.
+Keychain, `PlatformKeyStore` implementation, passphrase entry **without `String`**.
 
-**Dateien:** `platform/ios/**`
-**Verbote:** Passphrase nie als Swift-`String`; Slot B nicht mit `.biometryCurrentSet` anlegen; kein iCloud-Backup der KEKs.
+**Files:** `platform/ios/**`
+**Prohibited:** Passphrase never as Swift `String`; do not create slot B with `.biometryCurrentSet`; no iCloud backup of KEKs.
 
-**Abnahme**
-- SE-P-256-Schlüssel, `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`; A `.biometryCurrentSet`, B `.userPresence`
-- Passphrase nie als `String` — Code-Review-Checkliste **plus** Lint
-- **S14**, **S33** (Enrollment-Wechsel: A weg, **B lebt**), **S34** (nur Passcode ⇒ nur B)
-- Verhalten bei App-Deinstallation dokumentiert (Anhang B.4)
+**Acceptance**
+- SE-P-256 keys, `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`; A `.biometryCurrentSet`, B `.userPresence`
+- Passphrase never as `String` — code-review checklist **plus** lint
+- **S14**, **S33** (enrollment change: A gone, **B lives**), **S34** (device passcode only ⇒ only B)
+- Behaviour on app uninstall documented (Appendix B.4)
 
 **Tests:** S14, S33, S34
 
 ---
 
-#### WP-42 · Android-Plattformschicht
-**Spec:** 2.4, 3.6.2 · **Braucht:** WP-40 · **Zustand:** OFFEN
+#### WP-42 · Android platform layer
+**Spec:** 2.4, 3.6.2 · **Needs:** WP-40 · **State:** OPEN
 
-Keystore, `PlatformKeyStore`-Implementierung, Passphrase-Eingabe **ohne `String`**.
+Keystore, `PlatformKeyStore` implementation, passphrase entry **without `String`**.
 
-**Dateien:** `platform/android/**`
-**Verbote:** Passphrase nie als Kotlin-`String`; Enrollment-Invalidierung für B nicht einschalten; kein Klartext in Autofill.
+**Files:** `platform/android/**`
+**Prohibited:** Passphrase never as Kotlin `String`; do not enable enrollment invalidation for B; no plaintext in autofill.
 
-**Abnahme**
-- StrongBox mit Feature-Detection; A `AUTH_BIOMETRIC_STRONG` + `setInvalidatedByBiometricEnrollment(true)`; B zusätzlich `AUTH_DEVICE_CREDENTIAL`, Enrollment-Invalidierung **aus**
-- Passphrase nie als `String` — Code-Review-Checkliste **plus** Lint
-- Dieselben Verhaltensanforderungen wie S14/S33/S34 auf Android (Eigentum der IDs: WP-41)
-- Verhalten bei App-Deinstallation dokumentiert (Anhang B.4)
+**Acceptance**
+- StrongBox with feature detection; A `AUTH_BIOMETRIC_STRONG` + `setInvalidatedByBiometricEnrollment(true)`; B additionally `AUTH_DEVICE_CREDENTIAL`, enrollment invalidation **off**
+- Passphrase never as `String` — code-review checklist **plus** lint
+- Same behavioural requirements as S14/S33/S34 on Android (ID ownership: WP-41)
+- Behaviour on app uninstall documented (Appendix B.4)
 
 **Tests:** —
 
 ---
 
-#### WP-43 · Ein-Gesten-Ablauf
-**Spec:** 3.6.2 · **Braucht:** WP-41, WP-42 · **Zustand:** OFFEN
+#### WP-43 · One-gesture flow
+**Spec:** 3.6.2 · **Needs:** WP-41, WP-42 · **State:** OPEN
 
-iOS: ein `LAContext` für beide Zugriffe. Android: zeitbasierte Autorisierung, Fenster so kurz
-wie technisch möglich, **nicht** konfigurierbar. Ein Aufruf `sign_ab` — nicht zwei exportierte
-Signaturen mit JS dazwischen.
+iOS: one `LAContext` for both accesses. Android: time-based authorization, window as short
+as technically possible, **not** configurable. One call `sign_ab` — not two exported
+signatures with JS in between.
 
-**Dateien:** `platform/ios/**`, `platform/android/**`, Anbindung an `crates/trinity-ffi/**`
-**Verbote:** Keine zwei biometrischen Prompts unterhalb der Quote; `sign_a`/`sign_b` nicht aus JS aufrufen.
+**Files:** `platform/ios/**`, `platform/android/**`, wiring to `crates/trinity-ffi/**`
+**Prohibited:** No two biometric prompts below the quota; do not call `sign_a`/`sign_b` from JS.
 
-**Abnahme**
-- **S27**: **genau ein** biometrischer Prompt pro Send unterhalb der Grenze. Zwei Prompts sind ein Fehlschlag.
-- Gesamtdauer ≤ 5 s auf dem Referenzgerät der unteren Leistungsklasse
-- Auf echten Geräten geprüft, nicht nur im Simulator
+**Acceptance**
+- **S27**: **exactly one** biometric prompt per send below the limit. Two prompts are a failure.
+- Total duration ≤ 5 s on the lower-performance-class reference device
+- Checked on real devices, not only in the simulator
 
 **Tests:** S27
 
 ---
 
-#### WP-44 · Speicher-Hygiene-Harness
-**Spec:** 5.4 · **Braucht:** WP-43 · **Zustand:** OFFEN
+#### WP-44 · Memory hygiene harness
+**Spec:** 5.4 · **Needs:** WP-43 · **State:** OPEN
 
-**Dateien:** `tests/**` (Hygiene-Harness), ggf. CI-Job
-**Verbote:** Keine Secrets in Test-Fixtures im Klartext dauerhaft speichern.
+**Files:** `tests/**` (hygiene harness), optionally CI job
+**Prohibited:** Do not permanently store secrets in test fixtures in plaintext.
 
-**Abnahme**
-- Heap-Dump nach `sign_*` enthält die bekannte Entropie **nicht**
-- Läuft unter Linux und Android; iOS-Lücke dokumentiert
+**Acceptance**
+- Heap dump after `sign_*` does **not** contain the known entropy
+- Runs under Linux and Android; iOS gap documented
 
 **Tests:** —
 
 ---
 
-#### WP-45 · Signet-E2E-Harness
-**Spec:** 5.3 · **Braucht:** WP-43 · **Zustand:** OFFEN
+#### WP-45 · Signet E2E harness
+**Spec:** 5.3 · **Needs:** WP-43 · **State:** OPEN
 
-Harness für Signet/Regtest-Szenarien. Legt das Cargo-Feature `signet` und
-`tests/signet-e2e/` an, damit der CI-Job reaktiviert werden kann.
+Harness for Signet/Regtest scenarios. Creates the Cargo feature `signet` and
+`tests/signet-e2e/`, so the CI job can be reactivated.
 
-**Dateien:** `tests/signet-e2e/**`, Feature `signet` in betroffenen `Cargo.toml`, `justfile` (`signet-test`)
-**Verbote:** Features nicht anlegen ohne echte Tests; S4/S5/S6/S7 gehören anderen WPs.
+**Files:** `tests/signet-e2e/**`, feature `signet` in affected `Cargo.toml`, `justfile` (`signet-test`)
+**Prohibited:** Do not create features without real tests; S4/S5/S6/S7 belong to other WPs.
 
-**Abnahme**
-- Cargo-Feature `signet` ist definiert und an den Harness gebunden
-- Verzeichnis `tests/signet-e2e/` existiert
-- **S1, S2, S3, S8** laufen automatisiert auf Signet und Regtest
-- **S32** — die vollständige Diebstahl-Simulation: entsperrtes Gerät, Angreifer schöpft die Quote aus, danach Recovery mit Backup-B + C auf einem zweiten Gerät. **Veto 5b**
-- Nach diesem WP entfällt die `hashFiles`-Bedingung am CI-Job `signet`
+**Acceptance**
+- Cargo feature `signet` is defined and bound to the harness
+- Directory `tests/signet-e2e/` exists
+- **S1, S2, S3, S8** run automated on Signet and Regtest
+- **S32** — the full theft simulation: unlocked device, attacker exhausts the quota, then recovery with backup B + C on a second device. **Veto 5b**
+- After this WP the `hashFiles` condition on CI job `signet` is removed
 
 **Tests:** S1, S2, S3, S8, S32
 
 ---
 
 #### WP-46 · Export
-**Spec:** 2.3 · **Braucht:** WP-43 · **Zustand:** OFFEN
+**Spec:** 2.3 · **Needs:** WP-43 · **State:** OPEN
 
-**Dateien:** `crates/trinity-export/**`
-**Verbote:** Kein privates Schlüsselmaterial im Export; keine Passphrase in Dateien.
+**Files:** `crates/trinity-export/**`
+**Prohibited:** No private key material in the export; no passphrase in files.
 
-**Abnahme**
+**Acceptance**
 - **D14, D15** (Sparrow, BSMS)
-- **S5** (Recovery ohne diese App über Core — automatisiert)
-- **S6** (Sparrow-Import — je Release manuell verifiziert und dokumentiert)
-- `export_core_importdescriptors` erzeugt lauffähige Befehle für RECOVERY.md §3
+- **S5** (recovery without this app via Core — automated)
+- **S6** (Sparrow import — manually verified and documented per release)
+- `export_core_importdescriptors` produces runnable commands for RECOVERY.md §3
 
 **Tests:** D14, D15, S5, S6
 
 ---
 
-### M5 — Hardware-Signer
+### M5 — Hardware signer
 
-#### WP-50 · Transport-Trait
-**Spec:** 2.7.1–2.7.2 · **Braucht:** WP-33 · **Zustand:** OFFEN
+#### WP-50 · Transport trait
+**Spec:** 2.7.1–2.7.2 · **Needs:** WP-33 · **State:** OPEN
 
-**Dateien:** `crates/trinity-transport/**` (Trait), `crates/trinity-signer/**` (ExternalSigner-Anbindung)
-**Verbote:** Kein privates Material über den Transport; kein BLE-Zwang in v1.
+**Files:** `crates/trinity-transport/**` (trait), `crates/trinity-signer/**` (ExternalSigner wiring)
+**Prohibited:** No private material over the transport; no BLE requirement in v1.
 
-**Abnahme**
-- `PsbtTransport`-Trait nach 2.7; nur PSBT/xpub/Policy über den Kanal
-- `ExternalSigner` nutzt den Trait; Software-B bleibt Default
+**Acceptance**
+- `PsbtTransport` trait per 2.7; only PSBT/xpub/policy over the channel
+- `ExternalSigner` uses the trait; software B remains default
 
 **Tests:** —
 
 ---
 
 #### WP-51 · QR (BBQr/UR)
-**Spec:** 2.7.3–2.7.4 · **Braucht:** WP-50 · **Zustand:** OFFEN
+**Spec:** 2.7.3–2.7.4 · **Needs:** WP-50 · **State:** OPEN
 
-**Dateien:** `crates/trinity-transport/**` (QR)
-**Verbote:** Kein privates Material im QR; kein Kamera-Zwang in Unit-Tests (Frame-Injection).
+**Files:** `crates/trinity-transport/**` (QR)
+**Prohibited:** No private material in the QR; no camera requirement in unit tests (frame injection).
 
-**Abnahme**
-- **D19** (BBQr/UR-Round-Trip, mehrframige 5–20 KB PSBTs)
+**Acceptance**
+- **D19** (BBQr/UR round-trip, multi-frame 5–20 KB PSBTs)
 
 **Tests:** D19
 
 ---
 
 #### WP-52 · NFC
-**Spec:** 2.7.5 · **Braucht:** WP-50 · **Zustand:** OFFEN
+**Spec:** 2.7.5 · **Needs:** WP-50 · **State:** OPEN
 
-**Dateien:** `crates/trinity-transport/**` (NFC), `platform/ios/**` / `platform/android/**` (Entitlements)
-**Verbote:** Kein privates Material über NFC.
+**Files:** `crates/trinity-transport/**` (NFC), `platform/ios/**` / `platform/android/**` (entitlements)
+**Prohibited:** No private material over NFC.
 
-**Abnahme**
-- Ergebnis aus Anhang B.10 (CoreNFC-Entitlement) eingearbeitet
-- **S26** (NFC-Tap-Performance ≤ 5 s mit Hardware-B)
+**Acceptance**
+- Result from Appendix B.10 (CoreNFC entitlement) incorporated
+- **S26** (NFC tap performance ≤ 5 s with hardware B)
 
 **Tests:** S26
 
 ---
 
 #### WP-53 · BIP-388
-**Spec:** 2.7.3, 2.7.6 · **Braucht:** WP-50 · **Zustand:** OFFEN
+**Spec:** 2.7.3, 2.7.6 · **Needs:** WP-50 · **State:** OPEN
 
-**Dateien:** `crates/trinity-export/**`, `crates/trinity-transport/**`
-**Verbote:** Policy-ID nicht nur im Telefonspeicher; Import ohne Displaybestätigung ablehnen.
+**Files:** `crates/trinity-export/**`, `crates/trinity-transport/**`
+**Prohibited:** Policy ID not only in phone storage; reject import without display confirmation.
 
-**Abnahme**
-- **D18**, **S16**, **S18** (Gerät zeigt Change **als eigenen** an)
+**Acceptance**
+- **D18**, **S16**, **S18** (device shows change **as own**)
 
 **Tests:** D18, S16, S18
 
 ---
 
-#### WP-54 · Gerätefreigabe
-**Spec:** 2.7.9 · **Braucht:** WP-50 · **Zustand:** BLOCKIERT (Anhang B.6 — Coldcard-Primärquelle)
+#### WP-54 · Device allowlisting
+**Spec:** 2.7.9 · **Needs:** WP-50 · **State:** BLOCKED (Appendix B.6 — Coldcard primary source)
 
-**Dateien:** `crates/trinity-transport/**`, `crates/trinity-export/**`, Geräte-Allowlist-Daten
-**Verbote:** Mk2/Mk3 in keiner Version freigeben; bestehende Geräte-Seeds für Slot C nicht importieren.
+**Files:** `crates/trinity-transport/**`, `crates/trinity-export/**`, device allowlist data
+**Prohibited:** Do not allowlist Mk2/Mk3 in any version; do not import existing device seeds for slot C.
 
-**Abnahme**
-- **D9** (PSBT-Signatur C bitgleich)
-- **S21** (Firmware-Gate greift, Mk2/Mk3 bleiben in jeder Version gesperrt)
-- **S22** (Import eines bestehenden Geräte-Seeds für Slot C wird abgelehnt, **herstellerunabhängig**)
-- **S17** (Signatur mit Hardware-C im Recovery-Fall)
-- **BLOCKIERT bis Anhang B.6** — Coldcard-Versionsangaben gegen die Primärquelle
+**Acceptance**
+- **D9** (PSBT signature C bit-identical)
+- **S21** (firmware gate applies, Mk2/Mk3 remain blocked in every version)
+- **S22** (import of an existing device seed for slot C is rejected, **vendor-independent**)
+- **S17** (signature with hardware C in the recovery case)
+- **BLOCKED until Appendix B.6** — Coldcard version claims against the primary source
 
 **Tests:** D9, S17, S21, S22
 
 ---
 
-### M6 — App und UX
+### M6 — App and UX
 
-#### WP-60 · RN-Gerüst
-**Spec:** 1.7, 6.1 · **Braucht:** WP-43, WP-06 · **Zustand:** OFFEN
+#### WP-60 · RN scaffold
+**Spec:** 1.7, 6.1 · **Needs:** WP-43, WP-06 · **State:** OPEN
 
-Zuschnitt hängt von **WP-06** ab: nach der Basis-Entscheidung entweder leeres Expo/RN-Gerüst
-(Nullvariante) oder Übernehmen/Entkernen einer gewählten Schale — siehe
-`docs/BASIS_ENTSCHEIDUNG.md`. Der Titel „RN-Gerüst" bleibt bis zur Entscheidung; der Inhalt
-folgt der dort festgehaltenen Wahl.
+Scope depends on **WP-06**: after the base decision either empty Expo/RN scaffold
+(null variant) or adopt/hollow out a chosen shell — see
+`docs/APP_SHELL_DECISION.md`. The title "RN scaffold" remains until the decision; the content
+follows the choice recorded there.
 
-**Dateien:** `app/**` (Gerüst, Lint-Regeln)
-**Verbote:** Kein CodePush, kein Remote-Config, kein dynamisches Nachladen von Code; kein
-Übernehmen von Wallet-Hälften, die Seed/xpriv als JS-String halten (§1.3).
+**Files:** `app/**` (scaffold, lint rules)
+**Prohibited:** No CodePush, no remote config, no dynamic code loading; no
+adopting wallet halves that hold seed/xpriv as a JS string (§1.3).
 
-**Abnahme**
-- Kein CodePush, kein Remote-Config; per Lint erzwungen (1.7)
-- Gerüst entspricht der in WP-06 getroffenen Basis-Entscheidung
+**Acceptance**
+- No CodePush, no remote config; enforced via lint (1.7)
+- Scaffold matches the base decision made in WP-06
 
 **Tests:** —
 
 ---
 
 #### WP-61 · Onboarding
-**Spec:** 6.1 · **Braucht:** WP-60 · **Zustand:** OFFEN
+**Spec:** 6.1 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt (welche Screens neu vs. aus einer Vorlage) hängt von **WP-06** über WP-60 ab.
+Scope (which screens new vs. from a template) depends on **WP-06** via WP-60.
 
-**Dateien:** `app/**` (Onboarding-Flows)
-**Verbote:** Backup-Nachweis nicht überspringbar machen; C nicht mit 12 Wörtern anbieten.
+**Files:** `app/**` (onboarding flows)
+**Prohibited:** Do not make backup proof skippable; do not offer C with 12 words.
 
-**Abnahme**
+**Acceptance**
 - **S15**, **S19**
-- Onboarding-Pfad von **S1** (Eigentum WP-45) ist hier implementiert; der E2E-Lauf liegt im Signet-Harness
-- Backup-Nachweis **blockiert** `reveal_next_address`
+- Onboarding path of **S1** (owned by WP-45) is implemented here; the E2E run lives in the Signet harness
+- Backup proof **blocks** `reveal_next_address`
 
 **Tests:** S15, S19
 
 ---
 
-#### WP-62 · Nativer Bestätigungsdialog
-**Spec:** 6.2 · **Braucht:** WP-60 · **Zustand:** OFFEN
+#### WP-62 · Native confirmation dialog
+**Spec:** 6.2 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt der App-Anbindung hängt von **WP-06** über WP-60 ab.
+Scope of app wiring depends on **WP-06** via WP-60.
 
-**Dateien:** `platform/ios/**`, `platform/android/**`, `app/**` (Anbindung)
-**Verbote:** Bestätigungstexte nicht aus JS-State rendern, sondern aus `PsbtVerdict`.
+**Files:** `platform/ios/**`, `platform/android/**`, `app/**` (wiring)
+**Prohibited:** Do not render confirmation texts from JS state, but from `PsbtVerdict`.
 
-**Abnahme**
-- Dialog aus `PsbtVerdict` gerendert, **nicht** aus JS-State
-- **S3** (Senden end-to-end — Mitwirkung; Eigentum der ID: WP-45)
+**Acceptance**
+- Dialog rendered from `PsbtVerdict`, **not** from JS state
+- **S3** (send end-to-end — contribution; ID ownership: WP-45)
 
 **Tests:** —
 
 ---
 
-#### WP-63 · Passphrase-Eingabe
-**Spec:** 6.2.1 · **Braucht:** WP-60 · **Zustand:** OFFEN
+#### WP-63 · Passphrase entry
+**Spec:** 6.2.1 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt der App-Anbindung hängt von **WP-06** über WP-60 ab.
+Scope of app wiring depends on **WP-06** via WP-60.
 
-**Dateien:** `platform/ios/**`, `platform/android/**`, `app/**`
-**Verbote:** Passphrase nie als `String`; kein Autofill; kein Persistieren.
+**Files:** `platform/ios/**`, `platform/android/**`, `app/**`
+**Prohibited:** Passphrase never as `String`; no autofill; no persisting.
 
-**Abnahme**
-- **S25** (≤ 15 s), Autovervollständigung, KDF vorgezogen
-- **S24** (Sitzungsfenster: KEK_B in allen vier Fällen genullt)
+**Acceptance**
+- **S25** (≤ 15 s), autocomplete, KDF precomputed
+- **S24** (session window: KEK_B zeroed in all four cases)
 
 **Tests:** S24, S25
 
 ---
 
-#### WP-64 · Empfangen
-**Spec:** 6.3 · **Braucht:** WP-60 · **Zustand:** OFFEN
+#### WP-64 · Receive
+**Spec:** 6.3 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt hängt von **WP-06** über WP-60 ab.
+Scope depends on **WP-06** via WP-60.
 
-**Dateien:** `app/**`
-**Verbote:** Keine Adresswiederverwendung; keine Anzeige ohne Verifier-Abgleich.
+**Files:** `app/**`
+**Prohibited:** No address reuse; no display without verifier counter-check.
 
-**Abnahme**
-- Ein-Tipp-Verifikation der Adresse gegen den Descriptor
+**Acceptance**
+- One-tap verification of the address against the descriptor
 
 **Tests:** —
 
 ---
 
-#### WP-65 · Recovery-Flow
-**Spec:** 6.4 · **Braucht:** WP-60 · **Zustand:** OFFEN
+#### WP-65 · Recovery flow
+**Spec:** 6.4 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt hängt von **WP-06** über WP-60 ab.
+Scope depends on **WP-06** via WP-60.
 
-**Dateien:** `app/**`, Anbindung `sign_with_recovery_key` in `crates/trinity-ffi/**`
-**Verbote:** Mnemonics nie als JS-`String`; Wortliste nur über `SecretBytes` aus der nativen Schicht.
+**Files:** `app/**`, wiring `sign_with_recovery_key` in `crates/trinity-ffi/**`
+**Prohibited:** Mnemonics never as JS `String`; word list only via `SecretBytes` from the native layer.
 
-**Abnahme**
-- **S4** — Veto-Test, gemischte Wortlängen
-- Einziger Pfad, auf dem eine Wortliste in den Kern gelangt: `sign_with_recovery_key`
+**Acceptance**
+- **S4** — veto test, mixed word lengths
+- Only path on which a word list reaches the core: `sign_with_recovery_key`
 
 **Tests:** S4
 
 ---
 
-#### WP-66 · Schlüsseltausch
-**Spec:** 6.5 · **Braucht:** WP-60 · **Zustand:** OFFEN
+#### WP-66 · Key rotation
+**Spec:** 6.5 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt hängt von **WP-06** über WP-60 ab.
+Scope depends on **WP-06** via WP-60.
 
-**Dateien:** `app/**`
-**Verbote:** Alter Descriptor wird stillgelegt, nicht gelöscht.
+**Files:** `app/**`
+**Prohibited:** Old descriptor is retired, not deleted.
 
-**Abnahme**
-- **S7**; alter Descriptor wird **stillgelegt, nicht gelöscht**
+**Acceptance**
+- **S7**; old descriptor is **retired, not deleted**
 
 **Tests:** S7
 
 ---
 
-#### WP-67 · Address-Poisoning-Schutz
-**Spec:** 4.1 (T8), 6.3 · **Braucht:** WP-60 · **Zustand:** OFFEN
+#### WP-67 · Address-poisoning protection
+**Spec:** 4.1 (T8), 6.3 · **Needs:** WP-60 · **State:** OPEN
 
-Zuschnitt der UI hängt von **WP-06** über WP-60 ab.
+Scope of the UI depends on **WP-06** via WP-60.
 
-**Dateien:** `app/**`, `crates/trinity-watch/**` (Coin Selection)
-**Verbote:** Kein Kopieren aus der Historie als Default-Empfänger.
+**Files:** `app/**`, `crates/trinity-watch/**` (coin selection)
+**Prohibited:** No copying from history as default recipient.
 
-**Abnahme**
-- Kein Kopieren aus der Historie; Dust markiert und aus der Coin Selection ausgeschlossen; Ähnlichkeitswarnung (T8)
-
-**Tests:** —
-
----
-
-#### WP-68 · Einstellungen
-**Spec:** 1.6, 3.6.5 · **Braucht:** WP-60 · **Zustand:** OFFEN
-
-Zuschnitt hängt von **WP-06** über WP-60 ab.
-
-**Dateien:** `app/**`
-**Verbote:** Lockerungen der SpendPolicy ohne Passphrase; Privacy-Text nicht nur in Hilfeseiten verstecken.
-
-**Abnahme**
-- Lockerungen verlangen Passphrase
-- Backend-Auswahl zeigt den Privacy-Text aus 1.6 **direkt**, nicht in einer Hilfeseite
+**Acceptance**
+- No copying from history; dust marked and excluded from coin selection; similarity warning (T8)
 
 **Tests:** —
 
 ---
 
-### M7 — Härtung und Freigabe
+#### WP-68 · Settings
+**Spec:** 1.6, 3.6.5 · **Needs:** WP-60 · **State:** OPEN
+
+Scope depends on **WP-06** via WP-60.
+
+**Files:** `app/**`
+**Prohibited:** Loosening of SpendPolicy without passphrase; do not hide privacy text only in help pages.
+
+**Acceptance**
+- Loosenings require passphrase
+- Backend selection shows the privacy text from 1.6 **directly**, not in a help page
+
+**Tests:** —
+
+---
+
+### M7 — Hardening and release
 
 #### WP-70 · Fuzzing
-**Spec:** 5.4, 5.5 · **Braucht:** WP-20, WP-22, WP-31 · **Zustand:** OFFEN
+**Spec:** 5.4, 5.5 · **Needs:** WP-20, WP-22, WP-31 · **State:** OPEN
 
-**Dateien:** `fuzz/**` oder `crates/*/fuzz/**`
-**Verbote:** Gefundene Crashes nicht still schließen ohne Regressionstest.
+**Files:** `fuzz/**` or `crates/*/fuzz/**`
+**Prohibited:** Do not silently close found crashes without a regression test.
 
-**Abnahme**
-- ≥ 24 h ohne Fund auf Descriptor-Parser, PSBT-Deserialisierung, Blob-Header
-
-**Tests:** —
-
----
-
-#### WP-71 · Interop-Regression
-**Spec:** 5.3, 5.5 · **Braucht:** WP-46 · **Zustand:** OFFEN
-
-**Dateien:** Protokolle unter `tests/manual/**`, ggf. Skripte
-**Verbote:** Keine zweite Eigentümerschaft an Test-IDs — dieses WP **wiederholt** D14, D15, S5 und S6 gegen die aktuelle Sparrow-Version, besitzt sie aber nicht (Eigentum: WP-46).
-
-**Abnahme**
-- **D14, D15, S5, S6** gegen die **aktuelle** Sparrow-Version ausgeführt und protokolliert (Wiederholung, nicht Eigentum)
+**Acceptance**
+- ≥ 24 h without finding on descriptor parser, PSBT deserialization, blob header
 
 **Tests:** —
 
 ---
 
-#### WP-72 · RECOVERY.md verifizieren
-**Spec:** 5.5 · **Braucht:** WP-46 · **Zustand:** OFFEN
+#### WP-71 · Interop regression
+**Spec:** 5.3, 5.5 · **Needs:** WP-46 · **State:** OPEN
 
-**Dateien:** `docs/RECOVERY.md` (nur Korrekturen nach Fund), Protokoll
-**Verbote:** Keine App-Kenntnis im Testdurchlauf voraussetzen.
+**Files:** protocols under `tests/manual/**`, optionally scripts
+**Prohibited:** No second ownership of test IDs — this WP **repeats** D14, D15, S5 and S6 against the current Sparrow version, but does not own them (ownership: WP-46).
 
-**Abnahme**
-- Jemand ohne App-Kenntnis führt S5 **nur anhand des Dokuments** durch
-
-**Tests:** —
-
----
-
-#### WP-73 · Nutzertest
-**Spec:** 5.5, T20 · **Braucht:** WP-61 · **Zustand:** OFFEN
-
-**Dateien:** Protokoll / Auswertung (kein Produktcode-Zwang)
-**Verbote:** Keine Telemetrie nach außen.
-
-**Abnahme**
-- **≥ 10 Teilnehmer**, Abbruchquote je Schritt erhoben, drei häufigste Abbruchstellen benannt (T20)
-- O15 und O17 mit Daten unterlegt
+**Acceptance**
+- **D14, D15, S5, S6** run against the **current** Sparrow version and logged (repeat, not ownership)
 
 **Tests:** —
 
 ---
 
-#### WP-74 · Externes Security-Audit
-**Spec:** 5.5 · **Braucht:** WP-40, WP-41, WP-42 · **Zustand:** OFFEN
+#### WP-72 · Verify RECOVERY.md
+**Spec:** 5.5 · **Needs:** WP-46 · **State:** OPEN
 
-**Dateien:** Audit-Bericht (extern), Fix-PRs nach Befund
-**Verbote:** Kritische/hohe Findings nicht mit „später" belassen.
+**Files:** `docs/RECOVERY.md` (corrections after findings only), protocol
+**Prohibited:** Do not assume app knowledge in the test run.
 
-**Abnahme**
-- Scope: `keystore`, `signer`, `verify`, `ffi`, beide Plattformschichten
-- Kritisch und hoch geschlossen
-
-**Tests:** —
-
----
-
-#### WP-75 · Reproducible-Build-Verifikation
-**Spec:** 1.7, 5.5 · **Braucht:** WP-04 · **Zustand:** OFFEN
-
-**Dateien:** Build-Skripte, veröffentlichte Hashes
-**Verbote:** Keine undokumentierte Toolchain-Abweichung.
-
-**Abnahme**
-- ≥ 2 unabhängige Verifizierer, Hashes veröffentlicht
+**Acceptance**
+- Someone without app knowledge completes S5 **using only the document**
 
 **Tests:** —
 
 ---
 
-#### WP-76 · Freigabe-Checkliste
-**Spec:** 5.5 · **Braucht:** WP-70, WP-71, WP-72, WP-73, WP-74, WP-75 · **Zustand:** OFFEN
+#### WP-73 · User test
+**Spec:** 5.5, T20 · **Needs:** WP-61 · **State:** OPEN
 
-**Dateien:** Checklisten-Protokoll zum Release
-**Verbote:** Keinen Punkt per Ausnahme überspringen.
+**Files:** protocol / evaluation (no product-code requirement)
+**Prohibited:** No telemetry outward.
 
-**Abnahme**
-- **Alle 21 Punkte** aus 5.5 abgehakt und belegt
+**Acceptance**
+- **≥ 10 participants**, drop-off rate per step collected, three most common drop-off points named (T20)
+- O15 and O17 backed with data
 
 **Tests:** —
 
 ---
 
-## 4. Was ein WP blockiert
+#### WP-74 · External security audit
+**Spec:** 5.5 · **Needs:** WP-40, WP-41, WP-42 · **State:** OPEN
 
-| Blocker | Betrifft | Auflösung |
+**Files:** Audit report (external), fix PRs after findings
+**Prohibited:** Do not leave critical/high findings with "later".
+
+**Acceptance**
+- Scope: `keystore`, `signer`, `verify`, `ffi`, both platform layers
+- Critical and high closed
+
+**Tests:** —
+
+---
+
+#### WP-75 · Reproducible-build verification
+**Spec:** 1.7, 5.5 · **Needs:** WP-04 · **State:** OPEN
+
+**Files:** Build scripts, published hashes
+**Prohibited:** No undocumented toolchain deviation.
+
+**Acceptance**
+- ≥ 2 independent verifiers, hashes published
+
+**Tests:** —
+
+---
+
+#### WP-76 · Release checklist
+**Spec:** 5.5 · **Needs:** WP-70, WP-71, WP-72, WP-73, WP-74, WP-75 · **State:** OPEN
+
+**Files:** Checklist protocol for the release
+**Prohibited:** Do not skip any criterion by exception.
+
+**Acceptance**
+- **All 21 criteria** from 5.5 checked off and evidenced
+
+**Tests:** —
+
+---
+
+## 4. What blocks a WP
+
+| Blocker | Affects | Resolution |
 |---|---|---|
-| ⟨API-VERIFY⟩ offen | WP-12, WP-13, WP-40 | WP-05 |
-| Anhang B.6 (Coldcard-Primärquelle) | **WP-54** | WP-05 |
-| Anhang B.3 (Kyoto-Peers) | CBF als Default (O3) | WP-05 |
-| O13 (Entropie-Quellen) | WP-30 | Entscheidung vor WP-30 |
-| O6 (Crash-Reporting) | WP-60 | Entscheidung vor WP-60 |
-| Basis-Entscheidung offen | M6 | WP-06 |
-| O14 (BLE-Reihenfolge) | v1.1, nicht v1 | nach WP-54 |
+| ⟨API-VERIFY⟩ open | WP-12, WP-13, WP-40 | WP-05 |
+| Appendix B.6 (Coldcard primary source) | **WP-54** | WP-05 |
+| Appendix B.3 (Kyoto peers) | CBF as default (O3) | WP-05 |
+| O13 (entropy sources) | WP-30 | Decision before WP-30 |
+| O6 (crash reporting) | WP-60 | Decision before WP-60 |
+| Base decision open | M6 | WP-06 |
+| O14 (BLE order) | v1.1, not v1 | after WP-54 |
 
 ---
 
-## 5. Vollständigkeitsnachweis
+## 5. Completeness proof
 
-Die Zuordnung Test-ID → Arbeitspaket steht in der `**Tests:**`-Zeile des jeweiligen WP-Blocks
-in §3. `scripts/check_plan.py` erzwingt:
+The assignment test-ID → work package is in the `**Tests:**` line of each WP block
+in §3. `scripts/check_plan.py` enforces:
 
-- jede in SPECIFICATION.md definierte Test-ID (D/P/S) steht auf **genau einer** `**Tests:**`-Zeile;
-- jede ID auf einer `**Tests:**`-Zeile existiert in der Spec;
-- keine Bereiche, Schrägstriche oder Sammelnotationen.
+- every test ID (D/P/S) defined in SPECIFICATION.md appears on **exactly one** `**Tests:**` line;
+- every ID on a `**Tests:**` line exists in the Spec;
+- no ranges, slashes, or collective notations.
 
-§5.1 und §5.2 bleiben die Nachweise für Entscheidungen und Bedrohungen.
+§5.1 and §5.2 remain the proofs for decisions and threats.
 
-### 5.1 Jede Entscheidung hat ein umsetzendes WP
+### 5.1 Every decision has an implementing WP
 
-| Entscheidung | Inhalt | Umgesetzt in | Nachgewiesen durch |
+| Decision | Content | Implemented in | Proven by |
 |---|---|---|---|
-| **E1** | FFI-Grenze: nur PSBT rein/raus, Callback fürs KEK-Unwrapping | **WP-40** (Fassade + Allowlist + CI-Gate), WP-10 (`SecretBytes`) | `ffi-boundary`, S23 |
-| **E2** | Verifier ohne `miniscript`, eigener Parser | **WP-20**, WP-21 | `cargo-deny [bans]`, D4, D5 |
-| **E3** | Entropie-Konstruktion, Zusatzquellen optional aber vorausgewählt | **WP-30** | D12, D13, S19, S20, P10, P14, P15 |
-| **E3b** | Wortlänge je Schlüssel; C fest 24, A und B wählbar | **WP-30** (Erzeugung), WP-11 (Persistenz), WP-31 (Header), WP-61 (Onboarding), WP-65 (Recovery) | D17, S15, S15b, P13, P16 |
-| **E4** | Argon2id-Profile, Profil-ID im Policy-Record | **WP-35** | D16 |
-| **E5** | B als austauschbarer Signer ab Tag 1 | **WP-33** (Trait), **WP-50** (Transport), WP-51 | S8, S17 |
-| **E6** | Hardware-Signer optional für C, vier Transporte, BIP-388 | **WP-50 … WP-54** | D18, D19, S16–S18, S21, S22 |
-| **E7** | Ein-Gesten-Signatur mit Ausgabegrenze im Rust-Kern | **WP-34** (Grenze), **WP-35** (Passphrase), **WP-43** (eine Geste) | S27, S28, S29–S29j, S30, S31, **S32**, S35, S36 |
+| **E1** | FFI boundary: only PSBT in/out, callback for KEK unwrapping | **WP-40** (facade + allowlist + CI gate), WP-10 (`SecretBytes`) | `ffi-boundary`, S23 |
+| **E2** | Verifier without `miniscript`, own parser | **WP-20**, WP-21 | `cargo-deny [bans]`, D4, D5 |
+| **E3** | Entropy construction, additional sources optional but preselected | **WP-30** | D12, D13, S19, S20, P10, P14, P15 |
+| **E3b** | Word length per key; C fixed 24, A and B choosable | **WP-30** (generation), WP-11 (persistence), WP-31 (header), WP-61 (onboarding), WP-65 (recovery) | D17, S15, S15b, P13, P16 |
+| **E4** | Argon2id profiles, profile ID in policy record | **WP-35** | D16 |
+| **E5** | B as swappable signer from day 1 | **WP-33** (trait), **WP-50** (transport), WP-51 | S8, S17 |
+| **E6** | Hardware signer optional for C, four transports, BIP-388 | **WP-50 … WP-54** | D18, D19, S16–S18, S21, S22 |
+| **E7** | One-gesture signature with spending limit in the Rust core | **WP-34** (limit), **WP-35** (passphrase), **WP-43** (one gesture) | S27, S28, S29–S29j, S30, S31, **S32**, S35, S36 |
 
-### 5.2 Jede Bedrohung wird berührt
+### 5.2 Every threat is touched
 
-22 Bedrohungen (T1–T20, mit T4a/T4b und T5a/T5b). Die Zuordnung wird **nicht** hier gepflegt,
-sondern von `just check-plan` aus SPECIFICATION.md §4.1 und §4.2 erzeugt: Jede Bedrohung muss
-entweder mindestens einen Test nennen oder in §4.2 ausdrücklich als „nicht abgedeckt" geführt
-sein. Fehlt beides, bricht die Prüfung. Aktuell ausdrücklich **nicht abgedeckt**: T4b, T5b,
-T12, T17 sowie die vier weiteren Punkte in §4.2.
+22 threats (T1–T20, with T4a/T4b and T5a/T5b). The mapping is **not** maintained here,
+but produced by `just check-plan` from SPECIFICATION.md §4.1 and §4.2: every threat must
+either name at least one test or be listed in §4.2 explicitly as "not covered".
+If both are missing, the check fails. Currently explicitly **not covered**: T4b, T5b,
+T12, T17 plus the four further points in §4.2.
 
-> **Dieser Abschnitt ist ein Testfall für sich.** Ein Skript in CI prüft, dass jede in
-> SPECIFICATION.md definierte Test-ID genau einem WP zugeordnet ist und dass keine ID
-> zugeordnet ist, die es nicht gibt. Läuft es rot, ist der Plan unvollständig — siehe
+> **This section is a test case in itself.** A script in CI checks that every test ID
+> defined in SPECIFICATION.md is assigned to exactly one WP and that no ID is
+> assigned that does not exist. If it runs red, the plan is incomplete — see
 > TESTING.md §6.

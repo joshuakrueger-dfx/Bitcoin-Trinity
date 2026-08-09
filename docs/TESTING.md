@@ -1,261 +1,261 @@
-# Testumgebung, Coverage und CI
+# Test environment, coverage and CI
 
-**Bezugsdokumente:** [`SPECIFICATION.md`](SPECIFICATION.md) §5 (Teststrategie, Testfälle,
-Freigabekriterien) · [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) (welches WP welchen
-Test schuldet)
-
----
-
-## 1. Der Grundsatz
-
-> **Eigene Assertions belegen, dass der Code tut, was der Autor dachte. Differential Testing
-> belegt, dass er dasselbe tut wie eine unabhängige Referenz. Nur das Zweite ist eine Aussage
-> über Korrektheit.**
-
-Daraus folgt die Rangfolge: **Differential vor Property vor Unit.** Ein Unit-Test, der nur die
-eigene Implementierung gegen die eigene Erwartung hält, zählt für die Freigabe wenig — er
-zählt für die Coverage, und das ist genau der Grund, warum Coverage allein nicht genügt (§3).
+**Reference documents:** [`SPECIFICATION.md`](SPECIFICATION.md) §5 (test strategy, test cases,
+release criteria) · [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) (which WP owes which
+test)
 
 ---
 
-## 2. Testumgebung
+## 1. The principle
 
-### 2.1 Anforderungen
+> **Own assertions show that the code does what the author thought. Differential testing
+> shows that it does the same as an independent reference. Only the second is a statement
+> about correctness.**
+
+From that follows the ranking: **Differential before Property before Unit.** A unit test that only holds
+the own implementation against the own expectation counts little for release — it
+counts for coverage, and that is exactly why coverage alone is not enough (§3).
+
+---
+
+## 2. Test environment
+
+### 2.1 Requirements
 
 | | |
 |---|---|
-| Reproduzierbar | Gleiche Versionen auf jedem Rechner und in CI, per Digest gepinnt |
-| Offline-fähig | Nach dem ersten Pull ohne Netz lauffähig |
-| Deterministisch | Regtest mit festem Startzustand und festen Seeds |
-| Schnell | Voller Regtest-Zyklus < 5 min lokal |
-| Plattformen | Linux **und** macOS (iOS-Entwicklung braucht macOS) |
+| Reproducible | Same versions on every machine and in CI, pinned by digest |
+| Offline-capable | Runnable without network after the first pull |
+| Deterministic | Regtest with fixed starting state and fixed seeds |
+| Fast | Full regtest cycle < 5 min local |
+| Platforms | Linux **and** macOS (iOS development needs macOS) |
 
-### 2.2 Bestandteile
+### 2.2 Components
 
-| Dienst | Version | Zweck |
+| Service | Version | Purpose |
 |---|---|---|
-| **Bitcoin Core** | **30.2** (Regtest + Signet) | Referenz für alle D-Tests, Recovery-Tests S5 |
-| **electrs** | gepinnt | Backend für `ElectrumBackend` (WP-14) |
-| **CBF-Peer** | eigener Core-Node mit `blockfilterindex=1`, `peerblockfilters=1` | Backend für `CbfBackend` (WP-16) |
-| **Sparrow** | aktuell, manuell | D14, D15, S6 — nicht automatisierbar |
-| **Hardware-Bench** | siehe §4 | D18, D19, S16–S18, S21, S22 |
+| **Bitcoin Core** | **30.2** (regtest + signet) | Reference for all D-tests, recovery tests S5 |
+| **electrs** | pinned | Backend for `ElectrumBackend` (WP-14) |
+| **CBF peer** | dedicated Core node with `blockfilterindex=1`, `peerblockfilters=1` | Backend for `CbfBackend` (WP-16) |
+| **Sparrow** | current, manual | D14, D15, S6 — not automatable |
+| **Hardware bench** | see §4 | D18, D19, S16–S18, S21, S22 |
 
-> ### ⚠️ Bitcoin Core 30.0 und 30.1 sind verboten
-> Beide hatten einen Fehler, der beim Migrieren einer unbenannten Legacy-Wallet in einem
-> Custom-Wallet-Verzeichnis bei aktiviertem Pruning **alle** Wallet-Dateien des Knotens löschen
-> konnte; die Binaries wurden am 2026-01-05 zurückgezogen (SPECIFICATION.md §0.3).
-> **Das Startskript prüft `getnetworkinfo.version` und bricht bei 30.0 oder 30.1 hart ab** —
-> nicht als Warnung, sondern als Fehler.
+> ### ⚠️ Bitcoin Core 30.0 and 30.1 are forbidden
+> Both had a bug that when migrating an unnamed legacy wallet in a
+> custom wallet directory with pruning enabled could delete **all** wallet files of the node;
+> the binaries were withdrawn on 2026-01-05 (SPECIFICATION.md §0.3).
+> **The start script checks `getnetworkinfo.version` and hard-aborts on 30.0 or 30.1** —
+> not as a warning, but as an error.
 
-### 2.3 Bedienung
+### 2.3 Operation
 
 ```bash
-just test-env-up        # Core 30.2 regtest + electrs + CBF-Peer, 101 Blöcke, geförderte Wallet
-just test-env-down      # vollständig aufräumen, inkl. Volumes
-just test-env-reset     # Down + Up, deterministisch gleicher Zustand
+just test-env-up        # Core 30.2 regtest + electrs + CBF peer, 101 blocks, funded wallet
+just test-env-down      # full cleanup, incl. volumes
+just test-env-reset     # Down + Up, deterministically same state
 
-just test               # Unit + Property, ohne Netz          (< 2 min)
-just diff-test          # D1–D19 gegen Core 30.2              (< 20 min)
-just signet-test        # S1–S36 auf Regtest und Signet       (< 45 min)
-just fuzz <ziel>        # cargo-fuzz
-just coverage           # Bericht + Gate-Prüfung
-just mutants            # cargo-mutants auf verify und signer
+just test               # Unit + Property, no network          (< 2 min)
+just diff-test          # D1–D19 against Core 30.2              (< 20 min)
+just signet-test        # S1–S36 on regtest and signet       (< 45 min)
+just fuzz <target>      # cargo-fuzz
+just coverage           # report + gate check
+just mutants            # cargo-mutants on verify and signer
 just check-plan         # §6: Test-IDs ↔ WPs ↔ Spec
 ```
 
-### 2.4 Determinismus
+### 2.4 Determinism
 
-| Regel | Umsetzung |
+| Rule | Implementation |
 |---|---|
-| Feste Seeds | Alle Property-Tests laufen mit festem `PROPTEST_RNG_SEED`; ein Fehlschlag ist reproduzierbar |
-| Keine Wanduhr | Zeitabhängige Logik (Fensterzähler, 60-Tage-Erinnerung) bekommt eine injizierte `Clock`; Tests stellen sie **explizit** |
-| Keine Netzwerkzeit | Kein NTP, keine Kursabrufe im Testpfad — der Kurs ist ein Fake mit gesetzten Werten (S29c) |
-| Fester Regtest-Zustand | 101 Blöcke, feste Coinbase-Empfänger, fester Descriptor-Satz aus `tests/vectors/` |
+| Fixed seeds | All property tests run with fixed `PROPTEST_RNG_SEED`; a failure is reproducible |
+| No wall clock | Time-dependent logic (window counters, 60-day reminder) gets an injected `Clock`; tests set it **explicitly** |
+| No network time | No NTP, no rate fetches on the test path — the rate is a fake with set values (S29c) |
+| Fixed regtest state | 101 blocks, fixed coinbase recipients, fixed descriptor set from `tests/vectors/` |
 
 ---
 
-## 3. Coverage-Politik
+## 3. Coverage policy
 
-### 3.1 Der ehrliche Rahmen
+### 3.1 The honest frame
 
-**100 % Zeilen- und Zweigabdeckung wird für die Sicherheitskerne verlangt und ist dort
-erreichbar.** Für zwei Bereiche ist sie es nicht, und das ehrlich zu benennen ist besser, als
-eine Zahl zu erzwingen, die nichts aussagt:
+**100 % line and branch coverage is required for the security cores and is
+reachable there.** For two areas it is not, and naming that honestly is better than
+forcing a number that says nothing:
 
-- **Plattformcode** (Keychain, Secure Enclave, StrongBox, BiometricPrompt) lässt sich ohne
-  echte Geräte nicht vollständig ausführen. Simulatoren bilden Enclave-Verhalten nicht ab.
-- **Hardware-Transporte** brauchen die Geräte aus §4.
+- **Platform code** (Keychain, Secure Enclave, StrongBox, BiometricPrompt) cannot be fully
+  executed without real devices. Simulators do not model enclave behaviour.
+- **Hardware transports** need the devices from §4.
 
-Für beide gilt: **quantifizierte Ausnahme mit Begründung**, nicht stillschweigendes Weglassen.
+For both: **quantified exception with justification**, not silent omission.
 
-**Zweigabdeckung und Toolchain (gemessen 2026-08-09, WP-03):**
+**Branch coverage and toolchain (measured 2026-08-09, WP-03):**
 
-- `cargo llvm-cov --workspace --lcov` (ohne `--branch`) auf Toolchain **1.94.1**: bei leeren
-  Gerüsten bricht der Report mit `no coverage data found` ab (kein instrumentierter Code
-  ausgeführt). Sobald Fachcode und Tests existieren, liefert dieser Pfad Zeilen (`LF`/`LH`),
-  aber **keine** `BRF`/`BRH`-Zeilen.
-- `cargo llvm-cov --workspace --lcov --branch` auf derselben Toolchain: **bricht ab**.
-  `--branch` setzt `-Z coverage-options=branch` und verlangt **nightly**; die gepinnte
-  stabile 1.94.1 lehnt die Option ab (`the option Z is only accepted on the nightly compiler`).
+- `cargo llvm-cov --workspace --lcov` (without `--branch`) on toolchain **1.94.1**: on empty
+  scaffolds the report aborts with `no coverage data found` (no instrumented code
+  executed). Once domain code and tests exist, this path yields lines (`LF`/`LH`),
+  but **no** `BRF`/`BRH` lines.
+- `cargo llvm-cov --workspace --lcov --branch` on the same toolchain: **aborts**.
+  `--branch` sets `-Z coverage-options=branch` and requires **nightly**; the pinned
+  stable 1.94.1 rejects the option (`the option Z is only accepted on the nightly compiler`).
 
-**Benannte Lücke:** Die 100-%-Zweigschwelle für die Sicherheitskerne ist auf der gepinnten
-Toolchain **nicht erhebbar**. Das Gate meldet fehlende Zweigdaten als Befund
-(„Zweigdaten fehlen — lief `cargo llvm-cov` ohne `--branch`?"), statt still 100 % zu
-melden. Die Lücke schließt sich, wenn entweder (a) die gepinnte Toolchain Branch-Coverage
-stabil unterstützt und CI/`just coverage` dann `--branch` setzen, oder (b) eine bewusste
-Toolchain-Entscheidung Branch-Coverage freigibt und in §0.3/WP-00 nachgezogen wird.
-**Keine Zahl behaupten, die nicht gemessen wird.** Bis dahin bleibt die Zeilenschwelle
-durchsetzbar; die Zweigschwelle ist fail-closed auf „Daten fehlen".
+**Named gap:** The 100 % branch threshold for the security cores is **not measurable** on the pinned
+toolchain. The gate reports missing branch data as a finding
+("branch data missing — did `cargo llvm-cov` run without `--branch`?") instead of silently reporting 100 %.
+The gap closes when either (a) the pinned toolchain supports branch coverage
+stably and CI/`just coverage` then set `--branch`, or (b) a deliberate
+toolchain decision enables branch coverage and is updated in §0.3/WP-00.
+**Do not claim a number that is not measured.** Until then the line threshold
+remains enforceable; the branch threshold is fail-closed on "data missing".
 
-> **Und der wichtigere Punkt: Coverage misst Ausführung, nicht Prüfung.** Ein Test, der eine
-> Zeile durchläuft, ohne ihr Ergebnis zu prüfen, zählt voll. Deshalb ist **Mutation Testing**
-> (§3.3) das eigentliche Gate für die Sicherheitskerne — 100 % Coverage mit überlebenden
-> Mutanten ist ein rotes Ergebnis, kein grünes.
+> **And the more important point: coverage measures execution, not checking.** A test that
+> runs a line without checking its result still counts fully. That is why **mutation testing**
+> (§3.3) is the real gate for the security cores — 100 % coverage with surviving
+> mutants is a red result, not a green one.
 
-### 3.2 Schwellen je Crate
+### 3.2 Thresholds per crate
 
-| Crate | Zeilen | Zweige | Werkzeug | Ausnahmen |
+| Crate | Lines | Branches | Tool | Exceptions |
 |---|---|---|---|---|
-| `trinity-types` | **100 %** | **100 %** | llvm-cov | keine |
-| `trinity-entropy` | **100 %** | **100 %** | llvm-cov | keine |
-| `trinity-keystore` | **100 %** | **100 %** | llvm-cov | keine |
-| `trinity-signer` | **100 %** | **100 %** | llvm-cov | keine |
-| `trinity-verify` | **100 %** | **100 %** | llvm-cov | **keine — hier ist keine Ausnahme zulässig** |
-| `trinity-watch` | ≥ 95 % | ≥ 90 % | llvm-cov | BDK-Fehlerpfade, die eine defekte DB voraussetzen |
-| `trinity-chain` | ≥ 90 % | ≥ 85 % | llvm-cov | Netzwerkfehlerpfade je Backend |
-| `trinity-transport` | ≥ 90 % | ≥ 85 % | llvm-cov | gerätespezifische Pfade, siehe §4 |
-| `trinity-export` | **100 %** | ≥ 95 % | llvm-cov | keine |
-| `trinity-ffi` | ≥ 95 % | ≥ 90 % | llvm-cov | uniffi-Generat |
-| iOS-Schicht | ≥ 80 % | — | xccov | Enclave-Pfade — **Gerätetest statt Coverage** |
-| Android-Schicht | ≥ 80 % | — | JaCoCo | StrongBox-Pfade — **Gerätetest statt Coverage** |
-| `app/` (TypeScript) | ≥ 85 % | ≥ 80 % | vitest/c8 | Rendering-Randfälle |
+| `trinity-types` | **100 %** | **100 %** | llvm-cov | none |
+| `trinity-entropy` | **100 %** | **100 %** | llvm-cov | none |
+| `trinity-keystore` | **100 %** | **100 %** | llvm-cov | none |
+| `trinity-signer` | **100 %** | **100 %** | llvm-cov | none |
+| `trinity-verify` | **100 %** | **100 %** | llvm-cov | **none — no exception is allowed here** |
+| `trinity-watch` | ≥ 95 % | ≥ 90 % | llvm-cov | BDK error paths that require a broken DB |
+| `trinity-chain` | ≥ 90 % | ≥ 85 % | llvm-cov | network error paths per backend |
+| `trinity-transport` | ≥ 90 % | ≥ 85 % | llvm-cov | device-specific paths, see §4 |
+| `trinity-export` | **100 %** | ≥ 95 % | llvm-cov | none |
+| `trinity-ffi` | ≥ 95 % | ≥ 90 % | llvm-cov | uniffi generator |
+| iOS layer | ≥ 80 % | — | xccov | Enclave paths — **device test instead of coverage** |
+| Android layer | ≥ 80 % | — | JaCoCo | StrongBox paths — **device test instead of coverage** |
+| `app/` (TypeScript) | ≥ 85 % | ≥ 80 % | vitest/c8 | rendering edge cases |
 
-### 3.3 Mutation Testing — das eigentliche Gate
+### 3.3 Mutation testing — the real gate
 
-`cargo-mutants` gegen `trinity-verify`, `trinity-signer`, `trinity-keystore`,
+`cargo-mutants` against `trinity-verify`, `trinity-signer`, `trinity-keystore`,
 `trinity-entropy`.
 
-**Regel: kein überlebender Mutant.** Überlebt einer, fehlt eine Prüfung — der Mutant wird
-nicht ausgenommen, sondern der Test wird ergänzt. Ausnahmen sind nur zulässig für Mutanten,
-die semantisch äquivalenten Code erzeugen, und brauchen einen Eintrag in
-`mutants-exclusions.toml` **mit Begründung**.
+**Rule: no surviving mutant.** If one survives, a check is missing — the mutant is
+not exempted; the test is extended. Exceptions are only allowed for mutants
+that produce semantically equivalent code, and need an entry in
+`mutants-exclusions.toml` **with justification**.
 
-### 3.4 Ausnahmen-Datei
+### 3.4 Exceptions file
 
-`coverage-exclusions.toml`, ein Eintrag je Ausnahme:
+`coverage-exclusions.toml`, one entry per exception:
 
 ```toml
 [[exclusion]]
 path   = "crates/trinity-chain/src/electrum.rs"
 lines  = "142-158"
-reason = "Verbindungsabbruch mitten im TLS-Handshake; nicht deterministisch simulierbar."
-test   = "Manuell abgedeckt durch S13, Protokoll in tests/manual/S13.md"
+reason = "Connection drop mid TLS handshake; not deterministically simulable."
+test   = "Manually covered by S13, protocol in tests/manual/S13.md"
 owner  = "chain"
 ```
 
-**Ein Eintrag ohne `reason` oder ohne `test` bricht den Build.** Die Datei wird bei jedem
-Release gereviewt; wächst sie, ist das ein Befund, kein Detail.
+**An entry without `reason` or without `test` fails the build.** The file is reviewed at every
+release; if it grows, that is a finding, not a detail.
 
 ---
 
-## 4. Hardware-Testbank
+## 4. Hardware test bench
 
-Ohne echte Geräte ist der `ExternalSigner`-Pfad **nicht** als getestet zu behaupten
+Without real devices the `ExternalSigner` path is **not** to be claimed as tested
 (SPECIFICATION.md §5.4).
 
-| Gerät | Transport | Tests | Phase |
+| Device | Transport | Tests | Phase |
 |---|---|---|---|
 | **Coldcard Q** | QR (BBQr) | D19, S16, S17, S18, S21, S22 | v1 |
-| Keystone oder SeedSigner | QR (UR) | D19 als zweite Quelle | v1 |
+| Keystone or SeedSigner | QR (UR) | D19 as second source | v1 |
 | Coldcard Mk4 | NFC | S26 | v1 |
 | BitBox02 Nova | BLE | — | v1.1 |
 | Ledger Nano X | BLE | — | v1.1 |
 
-**Automatisierung:** Der QR-Pfad wird auf Protokollebene per Frame-Injection getestet
-(deterministisch, in CI) **und** einmal je Release mit einem Kamera-Rig gegen ein echtes
-Gerät. Nur der zweite Lauf belegt das Displayverhalten, auf dem T19 und die BIP-388-Aussage
-aus §2.7.3 beruhen.
+**Automation:** The QR path is tested at protocol level via frame injection
+(deterministic, in CI) **and** once per release with a camera rig against a real
+device. Only the second run evidences the display behaviour on which T19 and the BIP-388 claim
+from §2.7.3 rest.
 
-**Firmware-Protokoll:** Bei jedem Geräte-Firmware-Update laufen D18, D19 und S16–S18 erneut
-(SPECIFICATION.md §5.4). Die geprüfte Firmware-Version wird protokolliert — ohne sie ist ein
-grüner Lauf nicht zuordenbar.
+**Firmware protocol:** On every device firmware update, D18, D19 and S16–S18 run again
+(SPECIFICATION.md §5.4). The checked firmware version is logged — without it a
+green run is not attributable.
 
 ---
 
-## 5. CI-Pipeline
+## 5. CI pipeline
 
 ```mermaid
 flowchart LR
     A["fmt + clippy -D warnings"] --> B["build --locked --offline"]
-    B --> C["unit + property<br/>fester Seed"]
-    C --> D["coverage-Gate"]
+    B --> C["unit + property<br/>fixed seed"]
+    C --> D["coverage gate"]
     D --> E["cargo-deny + audit + vet"]
     E --> F["ffi-boundary"]
     F --> G["check-plan §6"]
-    G -->|"schneller Pfad < 10 min"| H{"PR oder main?"}
+    G -->|"fast path < 10 min"| H{"PR or main?"}
     H -->|PR| I["diff-test D1–D19"]
     H -->|main| J["diff-test + signet S1–S36<br/>+ mutants + repro-build"]
-    I --> K["grün"]
+    I --> K["green"]
     J --> K
 ```
 
-| Stufe | Wann | Bricht bei |
+| Stage | When | Breaks on |
 |---|---|---|
-| `fmt`, `clippy -D warnings` | jeder Push | jeder Warnung |
-| `build --locked --offline` | jeder Push | Netzzugriff oder Lockfile-Drift |
-| Unit + Property | jeder Push | Fehlschlag; Seed wird im Log ausgegeben |
-| Coverage-Gate | jeder Push | Unterschreitung, oder Ausnahme ohne Begründung |
-| `cargo-deny`/`audit`/`vet` | jeder Push | unbekannte Lizenz, Advisory, Duplikat-Crate |
-| `ffi-boundary` | jeder Push | Signaturänderung außerhalb der Allowlist |
-| `check-plan` | jeder Push | Test-ID ohne WP, oder WP mit unbekannter Test-ID |
-| Differential D1–D19 | jeder PR | jeder Divergenz gegen Core 30.2 |
-| Signet S1–S36 | Merge nach `main` | jedem Fehlschlag |
-| `cargo-mutants` | Merge nach `main` | jedem überlebenden Mutanten |
-| Reproducible Build | Merge nach `main` | abweichenden Hashes |
-| Fuzzing 24 h | nächtlich + vor Release | jedem Fund |
+| `fmt`, `clippy -D warnings` | every push | any warning |
+| `build --locked --offline` | every push | network access or lockfile drift |
+| Unit + Property | every push | failure; seed is printed in the log |
+| Coverage gate | every push | under threshold, or exception without justification |
+| `cargo-deny`/`audit`/`vet` | every push | unknown license, advisory, duplicate crate |
+| `ffi-boundary` | every push | signature change outside the allowlist |
+| `check-plan` | every push | test ID without WP, or WP with unknown test ID |
+| Differential D1–D19 | every PR | any divergence against Core 30.2 |
+| Signet S1–S36 | merge to `main` | any failure |
+| `cargo-mutants` | merge to `main` | any surviving mutant |
+| Reproducible build | merge to `main` | differing hashes |
+| Fuzzing 24 h | nightly + before release | any finding |
 
-**Zwei Sonderregeln.** Ein Fehlschlag von **S4** oder **S5** (Recovery mit und ohne diese App)
-blockiert unabhängig von allem anderen — sie haben ein eigenes Veto. Ein Fehlschlag von
-**S23** (FFI-Fassade: kein Secret-Export; `blob_B` nur nach SpendPolicy-Prüfung; keine
-Policy-/Schlüsselexporte ohne `SecretBytes`) bricht die Kompilierung, nicht den Test.
-
----
-
-## 6. Selbstprüfung des Plans
-
-`just check-plan` prüft, dass Spezifikation, Plan und Code zusammenpassen. Es ist ein
-CI-Schritt, kein Hilfsmittel.
-
-| Prüfung | Bricht, wenn |
-|---|---|
-| Jede in SPECIFICATION.md definierte Test-ID (D/P/S) steht auf genau einer `**Tests:**`-Zeile eines WP-Blocks | eine ID fehlt oder doppelt zugeordnet ist |
-| Jede auf `**Tests:**` genannte Test-ID existiert in der Spec | eine ID erfunden wurde |
-| Jede fällige Test-ID (WP auf `FERTIG`) hat eine Testfunktion mit passendem Namen (`d1_…`, `p5_…`, `s15b_…`, `s29h_…` — kleingeschrieben, **ohne** führende Null) | ein Test nur auf dem Papier steht |
-| Jede Bedrohung T1–T20 wird von mindestens einem Test oder einer ausdrücklichen „nicht abgedeckt"-Zeile in §4.2 berührt | eine Bedrohung ohne Behandlung bleibt |
-| Jede Entscheidung E1–E7 hat ein umsetzendes WP | eine Entscheidung nirgends landet |
-| Jeder Abschnittsverweis in den Dokumenten und in `README.md` zeigt auf einen existierenden Abschnitt | ein Verweis tot ist |
-| Keine ID ist doppelt definiert | zwei Definitionen derselben ID existieren |
-| Jeder WP-Block hat die Pflichtfelder; jede referenzierte WP-ID hat einen eigenen Block; Abhängigkeiten existieren und bilden keinen Zyklus | Struktur unvollständig oder zyklisch |
-| Anzahlen (Freigabepunkte §5.5, WP-Blöcke, Crates, externe Crates/`MEASURED`) stimmen mit der Messung überein | Zahl abgeschrieben und veraltet |
-
-> Diese Prüfung hat bei ihrer Einführung bereits einen Fehler gefunden — T19 war doppelt
-> definiert, in §2.7.8 und in §4.1. Genau dafür ist sie da.
+**Two special rules.** A failure of **S4** or **S5** (recovery with and without this app)
+blocks independently of everything else — they have their own veto. A failure of
+**S23** (FFI facade: no secret export; `blob_B` only after SpendPolicy check; no
+policy/key exports without `SecretBytes`) breaks compilation, not the test.
 
 ---
 
-## 7. Was „fertig" heißt
+## 6. Self-check of the plan
 
-Ein WP ist fertig, wenn **alle** seine Testfälle grün sind und das Coverage-Gate seines Crates
-hält. Kein WP wird ohne Tests gemerged, und keine Testschuld wird auf später verschoben —
-die Ausnahmen-Datei aus §3.4 ist der einzige zulässige Ort für Lücken, und jede Zeile darin
-kostet eine Begründung.
+`just check-plan` checks that specification, plan and code fit together. It is a
+CI step, not a helper.
 
-Ein **Release** ist fertig, wenn die 21 Punkte in SPECIFICATION.md §5.5 abgehakt und belegt
-sind. Die vier mit eigenem Veto:
-
-| # | Kriterium |
+| Check | Breaks when |
 |---|---|
-| 4 | **S4 und S5** grün — Recovery mit und ohne diese App |
-| 5b | **S28, S30, S31, S32** grün — die Ausgabegrenze greift und ist nicht ohne Passphrase änderbar |
-| 5c | **S27** grün — genau ein biometrischer Prompt pro Send unterhalb der Grenze |
-| 13 | Externes Audit, kritische und hohe Findings geschlossen |
+| Every test ID (D/P/S) defined in SPECIFICATION.md sits on exactly one `**Tests:**` line of a WP block | an ID is missing or assigned twice |
+| Every test ID named on `**Tests:**` exists in the Spec | an ID was invented |
+| Every due test ID (WP on `DONE`) has a test function with matching name (`d1_…`, `p5_…`, `s15b_…`, `s29h_…` — lowercase, **no** leading zero) | a test exists only on paper |
+| Every threat T1–T20 is touched by at least one test or an explicit "not covered" line in §4.2 | a threat remains untreated |
+| Every decision E1–E7 has an implementing WP | a decision lands nowhere |
+| Every section reference in the documents and in `README.md` points to an existing section | a reference is dead |
+| No ID is defined twice | two definitions of the same ID exist |
+| Every WP block has the required fields; every referenced WP-ID has its own block; dependencies exist and form no cycle | structure incomplete or cyclic |
+| Counts (release criteria §5.5, WP blocks, crates, external crates/`MEASURED`) match the measurement | number copied and stale |
+
+> This check already found an error at introduction — T19 was defined twice,
+> in §2.7.8 and in §4.1. That is exactly what it is for.
+
+---
+
+## 7. What "done" means
+
+A WP is done when **all** of its test cases are green and the coverage gate of its crate
+holds. No WP is merged without tests, and no test debt is deferred —
+the exceptions file from §3.4 is the only allowed place for gaps, and every line in it
+costs a justification.
+
+A **release** is done when the 21 criteria in SPECIFICATION.md §5.5 are checked off and evidenced.
+The four with their own veto:
+
+| # | Criterion |
+|---|---|
+| 4 | **S4 and S5** green — recovery with and without this app |
+| 5b | **S28, S30, S31, S32** green — the spending limit applies and is not changeable without passphrase |
+| 5c | **S27** green — exactly one biometric prompt per send below the limit |
+| 13 | External audit, critical and high findings closed |

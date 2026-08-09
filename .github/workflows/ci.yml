@@ -1,7 +1,7 @@
-# Schneller Pfad (< 10 min) bei jedem Push.
-# Differential D1–D19: bei jedem PR, sobald der Harness existiert (TESTING.md §5).
-# Signet und Mutants: nach main (TESTING.md §5).
-# Aufbau und Begründung: docs/TESTING.md §5
+# Fast path (< 10 min) on every push.
+# Differential D1–D19: on every PR once the harness exists (TESTING.md §5).
+# Signet and mutants: after main (TESTING.md §5).
+# Structure and rationale: docs/TESTING.md §5
 name: CI
 
 on:
@@ -14,7 +14,7 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # --- Schneller Pfad: bricht bei jeder Warnung -------------------------------
+  # --- Fast path: breaks on any warning --------------------------------------
   check:
     name: fmt · clippy · build · docs
     runs-on: ubuntu-latest
@@ -22,26 +22,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.94.1"            # aus rust-toolchain.toml, bewusst exakt
+          toolchain: "1.94.1"            # from rust-toolchain.toml, deliberately exact
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Formatierung
+      - name: Formatting
         run: cargo fmt --all -- --check
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Build (Lockfile bindend)
+      - name: Build (lockfile binding)
         run: cargo build --workspace --locked
 
-      # Prüft die vier Dokumente gegeneinander: jede Test-ID hat genau ein WP,
-      # jede Entscheidung ein umsetzendes Paket, kein toter Abschnittsverweis.
+      # Checks the four documents against each other: every test ID has exactly one WP,
+      # every decision an implementing package, no dead section reference.
       - name: check-plan
         run: python3 scripts/check_plan.py
 
-      # "Jede Abhängigkeit im Signaturpfad ist ein Angriffsvektor auf fremdes Geld."
-      - name: Signaturpfad-Budget
+      # "Every dependency on the signature path is an attack vector on other people's money."
+      - name: Signature-path budget
         run: python3 scripts/dep_budget.py
 
   # --- Tests -----------------------------------------------------------------
@@ -53,12 +53,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.94.1" }
       - uses: Swatinem/rust-cache@v2
-      - name: Tests mit festem Seed
+      - name: Tests with fixed seed
         env:
-          PROPTEST_RNG_SEED: "0x5452494e495459"   # "TRINITY" — reproduzierbare Fehlschläge
+          PROPTEST_RNG_SEED: "0x5452494e495459"   # "TRINITY" — reproducible failures
         run: cargo test --workspace --locked
 
-  # --- Supply Chain ----------------------------------------------------------
+  # --- Supply chain ----------------------------------------------------------
   supply-chain:
     name: deny · audit
     runs-on: ubuntu-latest
@@ -68,18 +68,18 @@ jobs:
         with: { toolchain: "1.94.1" }
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-deny,cargo-audit" }
-      # Lizenz-Allowlist: eine unbekannte Lizenz bricht den Build, statt
-      # durchzurutschen. Freigabekriterium 9b.
+      # License allowlist: an unknown license fails the build instead of
+      # slipping through. Release criterion 9b.
       - run: cargo deny check
       - run: cargo audit --deny warnings
 
-  # --- FFI-Grenze ------------------------------------------------------------
-  # Diese Grenze ist zu wichtig, um sie dem Code-Review zu überlassen.
-  # Skript scripts/check_ffi_boundary.py und Allowlist
-  # crates/trinity-ffi/ffi-allowlist.toml kommen aus WP-40 — der Job gated
-  # bewusst auf die Allowlist und startet erst, wenn beide existieren.
+  # --- FFI boundary ----------------------------------------------------------
+  # This boundary is too important to leave to code review.
+  # Script scripts/check_ffi_boundary.py and allowlist
+  # crates/trinity-ffi/ffi-allowlist.toml come from WP-40 — the job is gated
+  # deliberately on the allowlist and only starts when both exist.
   ffi-boundary:
-    name: FFI-Allowlist
+    name: FFI allowlist
     runs-on: ubuntu-latest
     if: hashFiles('crates/trinity-ffi/ffi-allowlist.toml') != ''
     steps:
@@ -90,7 +90,7 @@ jobs:
 
   # --- Coverage --------------------------------------------------------------
   coverage:
-    name: Coverage-Gate
+    name: Coverage gate
     runs-on: ubuntu-latest
     if: hashFiles('crates/*/src/*.rs') != ''
     steps:
@@ -102,16 +102,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-llvm-cov" }
       - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
-      # Schwellen je Crate aus docs/TESTING.md §3.2; Ausnahmen brauchen
-      # eine Begründung in coverage-exclusions.toml
+      # Thresholds per crate from docs/TESTING.md §3.2; exceptions need
+      # a justification in coverage-exclusions.toml
       - run: python3 scripts/coverage_gate.py lcov.info
 
-  # --- Differential: bei jedem PR, sobald der Harness existiert (TESTING.md §5)
-  # Reaktivierung: WP-23 liefert tests/differential/ und das Cargo-Feature
-  # `differential`. Danach entfällt die hashFiles-Bedingung; die run-Zeile
-  # bleibt unverändert.
+  # --- Differential: on every PR once the harness exists (TESTING.md §5)
+  # Reactivation: WP-23 delivers tests/differential/ and the Cargo feature
+  # `differential`. Then the hashFiles condition goes away; the run line
+  # stays unchanged.
   differential:
-    name: Differential gegen Bitcoin Core 30.2
+    name: Differential against Bitcoin Core 30.2
     runs-on: ubuntu-latest
     needs: [check, test]
     if: hashFiles('tests/differential/**') != ''
@@ -119,19 +119,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.94.1" }
-      - name: Testumgebung hochfahren
+      - name: Start test environment
         run: ./scripts/test-env.sh up
       - name: D1–D19
         run: cargo test --workspace --locked --features differential -- --test-threads=1
       - if: always()
         run: ./scripts/test-env.sh down
 
-  # --- Signet: nach main, sobald der Harness existiert (TESTING.md §5)
-  # Reaktivierung: WP-45 liefert tests/signet-e2e/ und das Cargo-Feature
-  # `signet` (S1–S8/S32). Danach entfällt die hashFiles-Bedingung; die
-  # run-Zeile bleibt unverändert.
+  # --- Signet: after main once the harness exists (TESTING.md §5)
+  # Reactivation: WP-45 delivers tests/signet-e2e/ and the Cargo feature
+  # `signet` (S1–S8/S32). Then the hashFiles condition goes away; the
+  # run line stays unchanged.
   signet:
-    name: Signet-Szenarien S1–S36
+    name: Signet scenarios S1–S36
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && hashFiles('tests/signet-e2e/**') != ''
     needs: [check, test]
@@ -140,8 +140,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with: { toolchain: "1.94.1" }
       - run: ./scripts/test-env.sh up
-      # S4 und S5 (Recovery mit und ohne diese App) haben ein eigenes Veto:
-      # ihr Fehlschlag blockiert unabhängig von allem anderen.
+      # S4 and S5 (recovery with and without this app) have their own veto:
+      # their failure blocks independently of everything else.
       - run: cargo test --workspace --locked --features signet -- --test-threads=1 --ignored
       - if: always()
         run: ./scripts/test-env.sh down
@@ -157,6 +157,6 @@ jobs:
         with: { toolchain: "1.94.1" }
       - uses: taiki-e/install-action@v2
         with: { tool: "cargo-mutants" }
-      # Coverage misst Ausführung, nicht Prüfung. Ein überlebender Mutant heißt:
-      # eine Zeile wird durchlaufen, ihr Ergebnis aber nicht geprüft.
+      # Coverage measures execution, not checking. A surviving mutant means:
+      # a line is run, but its result is not checked.
       - run: cargo mutants -p trinity-verify -p trinity-signer -p trinity-keystore -p trinity-entropy

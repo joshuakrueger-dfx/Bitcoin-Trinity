@@ -1,5 +1,5 @@
-# Ausnahmen von den Coverage-Schwellen (docs/TESTING.md §3.4).
-# Jeder Eintrag braucht 'reason' UND 'test' — fehlt eines, bricht der Build.
-# trinity-verify duldet keine Ausnahme.
+# Exceptions from the coverage thresholds (docs/TESTING.md §3.4).
+# Every entry needs 'reason' AND 'test' — if either is missing, the build fails.
+# trinity-verify allows no exception.
 #
-# Noch keine Einträge — das ist der gewünschte Zustand.
+# No entries yet — that is the desired state.

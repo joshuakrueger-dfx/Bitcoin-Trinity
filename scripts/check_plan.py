@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Prüft Spezifikation, Implementierungsplan und Testcode gegeneinander.
+"""Checks specification, implementation plan, and test code against each other.
 
-Umsetzung von TESTING.md §6. Läuft in CI als eigener Schritt und bricht den Build,
-sobald die Dokumente auseinanderlaufen.
+Implements TESTING.md §6. Runs in CI as its own step and fails the build when
+the documents drift apart.
 
-Grundregel: Eine Lage, die dieses Skript nicht eindeutig auflösen kann, ist ein
-Befund mit Exit 1 — niemals ein stilles Weiterlaufen.
+Rule: any situation this script cannot resolve unambiguously is a finding with
+exit 1 — never silent continuation.
 
-Aufruf:
-    python3 scripts/check_plan.py            # alle Prüfungen
-    python3 scripts/check_plan.py --list     # gefundene IDs auflisten, nichts prüfen
+Usage:
+    python3 scripts/check_plan.py            # all checks
+    python3 scripts/check_plan.py --list     # list found IDs, do not check
 
-Exit 0 = alles konsistent, Exit 1 = mindestens ein Befund.
+Exit 0 = consistent, Exit 1 = at least one finding.
 """
 
 from __future__ import annotations
@@ -34,35 +34,47 @@ TESTING = DOCS / "TESTING.md"
 RECOVERY = DOCS / "RECOVERY.md"
 DEP_BUDGET = ROOT / "scripts" / "dep_budget.py"
 
-# Test-IDs stehen in der Spec als erste Tabellenspalte: | **D7** | ...
+# Test IDs appear in the Spec as the first table column: | **D7** | ...
 ID_DEF = re.compile(r"^\|\s*\*\*([DPSTEO]\d+[a-z]?)\*\*\s*\|", re.M)
-# Durchgestrichene, also erledigte Einträge: | ~~**O15**~~ |
+# Struck-through, i.e. resolved entries: | ~~**O15**~~ |
 ID_DEF_RESOLVED = re.compile(r"^\|\s*~~\*\*([DPSTEO]\d+[a-z]?)\*\*~~\s*\|", re.M)
 ID_USE = re.compile(r"\b([DPS]\d+[a-z]?)\b")
 SECTION_DEF = re.compile(r"^#{2,4}\s+(\d+(?:\.\d+)*)\s", re.M)
-SECTION_REF = re.compile(r"(?:Abschnitt|siehe|§)\s*(\d+\.\d+(?:\.\d+)?)\b")
-# Eigener WP-Block: #### WP-nn · ...
+SECTION_REF = re.compile(r"(?:Section|see|§)\s*(\d+\.\d+(?:\.\d+)?)\b")
+# Dedicated WP block: #### WP-nn · ...
 WP_HEADING = re.compile(r"^####\s+(WP-\d+)\b", re.M)
 WP_USE = re.compile(r"\b(WP-\d+)\b")
-# Testfunktionen: d1_…, p5_…, s15b_…, s29h_… (kleingeschrieben, ohne führende Null)
+# Test functions: d1_…, p5_…, s15b_…, s29h_… (lowercase, no leading zero)
 TEST_FN = re.compile(r"fn\s+([dps]\d+[a-z]?)_[a-z0-9_]+\s*\(", re.I)
 
-VALID_STATES = frozenset({"OFFEN", "BLOCKIERT", "IN ARBEIT", "REVIEW", "FERTIG"})
+VALID_STATES = frozenset({"OPEN", "BLOCKED", "IN PROGRESS", "REVIEW", "DONE"})
 
-# Pflichtfelder im WP-Block (Reihenfolge egal, alle müssen vorkommen)
+# Required fields in a WP block (order irrelevant; all must appear)
 REQUIRED_FIELDS = (
     "**Spec:**",
-    "**Braucht:**",
-    "**Zustand:**",
-    "**Dateien:**",
-    "**Verbote:**",
-    "**Abnahme**",
+    "**Needs:**",
+    "**State:**",
+    "**Files:**",
+    "**Prohibited:**",
+    "**Acceptance**",
     "**Tests:**",
 )
 
+# Former German markers/state values must surface as findings, not be ignored.
+LEFTOVER_GERMAN_MARKERS = (
+    "**Zustand:**",
+    "**Braucht:**",
+    "**Dateien:**",
+    "**Verbote:**",
+    "**Abnahme**",
+)
+LEFTOVER_GERMAN_STATES = frozenset(
+    {"OFFEN", "BLOCKIERT", "IN ARBEIT", "FERTIG"}
+)
+
 TESTS_LINE = re.compile(r"^\*\*Tests:\*\*\s*(.+?)\s*$", re.M)
-STATE_LINE = re.compile(r"\*\*Zustand:\*\*\s*([^\n*]+)")
-BRAUCHT_LINE = re.compile(r"\*\*Braucht:\*\*\s*([^\n*]+)")
+STATE_LINE = re.compile(r"\*\*State:\*\*\s*([^\n*]+)")
+NEEDS_LINE = re.compile(r"\*\*Needs:\*\*\s*([^\n*]+)")
 TEST_ID_TOKEN = re.compile(r"^[DPS]\d+[a-z]?$")
 
 
@@ -82,12 +94,12 @@ class Report:
 
 def read(path: Path) -> str:
     if not path.exists():
-        sys.exit(f"FEHLER: {path.relative_to(ROOT)} fehlt")
+        sys.exit(f"ERROR: {path.relative_to(ROOT)} is missing")
     return path.read_text(encoding="utf-8")
 
 
 def ids_by_kind(text: str, kind: str) -> set[str]:
-    """Alle in `text` definierten IDs einer Sorte, inklusive erledigter."""
+    """All IDs of one kind defined in `text`, including resolved ones."""
     found = set(ID_DEF.findall(text)) | set(ID_DEF_RESOLVED.findall(text))
     return {i for i in found if i[0] == kind}
 
@@ -102,7 +114,7 @@ def sort_ids(ids: set[str]) -> list[str]:
 
 
 def parse_wp_blocks(plan: str) -> dict[str, str]:
-    """WP-ID → voller Blocktext (vom Heading bis vor den nächsten WP-Heading oder ##)."""
+    """WP-ID → full block text (from heading until next WP heading or ##)."""
     blocks: dict[str, str] = {}
     matches = list(WP_HEADING.finditer(plan))
     for i, m in enumerate(matches):
@@ -111,13 +123,13 @@ def parse_wp_blocks(plan: str) -> dict[str, str]:
         if i + 1 < len(matches):
             end = matches[i + 1].start()
         else:
-            # Ende am nächsten ##-Abschnitt der Stufe 1–2, sonst Dateiende
+            # End at the next level-1/2 ## section, else end of file
             rest = plan[m.end():]
             end_m = re.search(r"\n##\s", rest)
             end = m.end() + end_m.start() if end_m else len(plan)
         body = plan[start:end]
         if wp in blocks:
-            # Doppelte Überschrift — wird in check_wp_structure als Befund gemeldet
+            # Duplicate heading — reported in check_wp_structure
             blocks[wp] = blocks[wp] + "\n" + body
         else:
             blocks[wp] = body
@@ -125,11 +137,11 @@ def parse_wp_blocks(plan: str) -> dict[str, str]:
 
 
 def parse_tests_line(line_body: str) -> list[str] | None:
-    """Parst den Inhalt einer **Tests:**-Zeile. None = syntaktisch ungültig."""
+    """Parse the body of a **Tests:** line. None = syntactically invalid."""
     body = line_body.strip()
     if body in ("—", "-", "–"):
         return []
-    # Keine Bereiche, keine Schrägstriche
+    # No ranges, no slashes
     if "–" in body or re.search(r"\d\s*-\s*\d", body) or "/" in body:
         return None
     parts = [p.strip().strip("*") for p in body.split(",")]
@@ -142,17 +154,17 @@ def parse_tests_line(line_body: str) -> list[str] | None:
 
 
 def test_owners_from_blocks(blocks: dict[str, str], rep: Report) -> dict[str, list[str]]:
-    """Test-ID → Liste der WPs, die sie auf **Tests:** tragen."""
+    """Test-ID → list of WPs that list it on **Tests:**."""
     owners: dict[str, list[str]] = defaultdict(list)
     for wp, body in blocks.items():
         m = TESTS_LINE.search(body)
         if not m:
-            continue  # fehlende Zeile → check_wp_structure
+            continue  # missing line → check_wp_structure
         parsed = parse_tests_line(m.group(1))
         if parsed is None:
             rep.fail(
-                f"{wp}: **Tests:**-Zeile ungültig "
-                f"(nur kommaseparierte IDs wie D1, S15b oder —; keine Bereiche/Schrägstriche): "
+                f"{wp}: **Tests:** line invalid "
+                f"(only comma-separated IDs like D1, S15b, or —; no ranges/slashes): "
                 f"{m.group(1)!r}"
             )
             continue
@@ -162,25 +174,30 @@ def test_owners_from_blocks(blocks: dict[str, str], rep: Report) -> dict[str, li
 
 
 def check_unique_definitions(spec: str, rep: Report) -> None:
-    """Keine ID darf zweimal definiert sein — sonst driften die Fassungen auseinander."""
+    """No ID may be defined twice — otherwise the versions drift."""
     counts = Counter(ID_DEF.findall(spec) + ID_DEF_RESOLVED.findall(spec))
     for ident, n in sorted(counts.items()):
-        rep.check(n == 1, f"ID {ident} ist {n}× in SPECIFICATION.md definiert (genau 1× erwartet)")
+        rep.check(
+            n == 1,
+            f"ID {ident} is defined {n}× in SPECIFICATION.md (exactly 1× expected)",
+        )
 
 
 def check_test_ownership(spec: str, blocks: dict[str, str], rep: Report) -> None:
-    """Jede Spec-Test-ID auf genau einer **Tests:**-Zeile; keine erfundenen IDs."""
+    """Every Spec test ID on exactly one **Tests:** line; no invented IDs."""
     spec_ids = ids_by_kind(spec, "D") | ids_by_kind(spec, "P") | ids_by_kind(spec, "S")
     owners = test_owners_from_blocks(blocks, rep)
 
     for ident in sort_ids(spec_ids):
         wps = owners.get(ident, [])
         if len(wps) == 0:
-            rep.fail(f"Test {ident} ist in SPECIFICATION.md definiert, aber keinem WP auf **Tests:** zugeordnet")
+            rep.fail(
+                f"Test {ident} is defined in SPECIFICATION.md but assigned to no WP on **Tests:**"
+            )
         elif len(wps) > 1:
             rep.fail(
-                f"Test {ident} ist {len(wps)}× zugeordnet: {', '.join(sorted(wps))} "
-                f"(genau ein Eigentümer erwartet)"
+                f"Test {ident} is assigned {len(wps)}×: {', '.join(sorted(wps))} "
+                f"(exactly one owner expected)"
             )
         else:
             rep.checks_run += 1
@@ -188,37 +205,40 @@ def check_test_ownership(spec: str, blocks: dict[str, str], rep: Report) -> None
     for ident in sort_ids(set(owners) - spec_ids):
         wps = owners[ident]
         rep.fail(
-            f"Test {ident} steht auf **Tests:** von {', '.join(sorted(wps))}, "
-            f"existiert aber nicht in SPECIFICATION.md"
+            f"Test {ident} appears on **Tests:** of {', '.join(sorted(wps))}, "
+            f"but does not exist in SPECIFICATION.md"
         )
     rep.checks_run += 1
 
 
 def check_decisions_mapped(spec: str, plan: str, rep: Report) -> None:
-    """Jede Entscheidung E… braucht ein umsetzendes Arbeitspaket."""
+    """Every decision E… needs an implementing work package."""
     decisions = ids_by_kind(spec, "E")
     used = set(re.findall(r"\b(E\d[a-z]?)\b", plan))
     for ident in sort_ids(decisions - used):
-        rep.fail(f"Entscheidung {ident} hat kein umsetzendes WP im Implementierungsplan")
+        rep.fail(f"Decision {ident} has no implementing WP in the implementation plan")
     rep.checks_run += 1
 
 
 def check_threats_handled(spec: str, rep: Report) -> None:
-    """Jede Bedrohung wird entweder getestet oder steht ausdrücklich als nicht abgedeckt."""
+    """Every threat is either tested or explicitly listed as not covered."""
     threats = ids_by_kind(spec, "T")
     uncovered_block = spec.split("### 4.2")[-1] if "### 4.2" in spec else ""
     for ident in sort_ids(threats):
-        row = next((ln for ln in spec.splitlines() if re.match(rf"^\|\s*\*\*{ident}\*\*\s*\|", ln)), "")
+        row = next(
+            (ln for ln in spec.splitlines() if re.match(rf"^\|\s*\*\*{ident}\*\*\s*\|", ln)),
+            "",
+        )
         has_test = bool(ID_USE.search(row))
         named_uncovered = ident in uncovered_block
         rep.check(
             has_test or named_uncovered,
-            f"Bedrohung {ident} nennt weder einen Test noch steht sie in §4.2 als nicht abgedeckt",
+            f"Threat {ident} names neither a test nor appears in §4.2 as not covered",
         )
 
 
 def check_sections(rep: Report) -> None:
-    """Kein Abschnittsverweis darf ins Leere zeigen — inkl. README.md."""
+    """No section reference may point into the void — including README.md."""
     spec = read(SPEC)
     defined = set(SECTION_DEF.findall(spec))
     for path in (SPEC, PLAN, TESTING, RECOVERY, README):
@@ -228,39 +248,55 @@ def check_sections(rep: Report) -> None:
         for ref in sorted(set(SECTION_REF.findall(text))):
             if ref in defined:
                 continue
-            rep.fail(f"{path.name}: Verweis auf Abschnitt {ref}, den es in SPECIFICATION.md nicht gibt")
+            rep.fail(
+                f"{path.name}: reference to Section {ref}, "
+                f"which does not exist in SPECIFICATION.md"
+            )
         rep.checks_run += 1
 
 
 def check_wp_structure(plan: str, blocks: dict[str, str], rep: Report) -> None:
-    """Jeder referenzierte WP hat einen eigenen Block; Pflichtfelder und gültiger Zustand."""
+    """Every referenced WP has its own block; required fields and valid state."""
     referenced = set(WP_USE.findall(plan))
     for wp in sorted(referenced - set(blocks)):
-        rep.fail(f"{wp} wird im Plan referenziert, hat aber keinen eigenen ####-Block")
+        rep.fail(f"{wp} is referenced in the plan but has no dedicated #### block")
     rep.checks_run += 1
 
     for wp, body in sorted(blocks.items()):
+        for leftover in LEFTOVER_GERMAN_MARKERS:
+            if leftover in body:
+                rep.fail(
+                    f"{wp}: leftover German marker {leftover} "
+                    f"(expected English field names)"
+                )
+
         for field in REQUIRED_FIELDS:
-            rep.check(field in body, f"{wp}: Pflichtfeld {field} fehlt im WP-Block")
+            rep.check(field in body, f"{wp}: required field {field} missing from WP block")
 
         sm = STATE_LINE.search(body)
         if sm:
             state = sm.group(1).strip()
-            # Zustand kann "BLOCKIERT (Grund)" sein — Basiswort prüfen
+            # State may be "BLOCKED (reason)" — check base word
             base = state.split("(")[0].strip()
-            rep.check(
-                base in VALID_STATES,
-                f"{wp}: **Zustand:** {state!r} ist ungültig "
-                f"(erlaubt: {', '.join(sorted(VALID_STATES))})",
-            )
-        # sonst: fehlendes **Zustand:** bereits oben
+            if base in LEFTOVER_GERMAN_STATES:
+                rep.fail(
+                    f"{wp}: leftover German state value {base!r} "
+                    f"(expected English: {', '.join(sorted(VALID_STATES))})"
+                )
+            else:
+                rep.check(
+                    base in VALID_STATES,
+                    f"{wp}: **State:** {state!r} is invalid "
+                    f"(allowed: {', '.join(sorted(VALID_STATES))})",
+                )
+        # else: missing **State:** already reported above
 
 
 def check_dependencies(blocks: dict[str, str], rep: Report) -> None:
-    """Jede WP-ID in **Braucht:** existiert; kein Zyklus im Abhängigkeitsgraphen."""
+    """Every WP-ID in **Needs:** exists; no cycle in the dependency graph."""
     graph: dict[str, list[str]] = {}
     for wp, body in blocks.items():
-        bm = BRAUCHT_LINE.search(body)
+        bm = NEEDS_LINE.search(body)
         deps: list[str] = []
         if bm:
             raw = bm.group(1).strip()
@@ -268,11 +304,13 @@ def check_dependencies(blocks: dict[str, str], rep: Report) -> None:
                 deps = WP_USE.findall(raw)
                 for dep in deps:
                     if dep not in blocks:
-                        rep.fail(f"{wp}: **Braucht:** nennt {dep}, das keinen eigenen Block hat")
+                        rep.fail(
+                            f"{wp}: **Needs:** names {dep}, which has no dedicated block"
+                        )
         graph[wp] = deps
     rep.checks_run += 1
 
-    # Zyklenerkennung (DFS)
+    # Cycle detection (DFS)
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {wp: WHITE for wp in graph}
     cycle_found: list[str] = []
@@ -297,25 +335,32 @@ def check_dependencies(blocks: dict[str, str], rep: Report) -> None:
         if color[wp] == WHITE:
             dfs(wp, [])
     if cycle_found:
-        rep.fail(f"Zyklus im Abhängigkeitsgraphen: {' → '.join(cycle_found)}")
+        rep.fail(f"Cycle in the dependency graph: {' → '.join(cycle_found)}")
     else:
         rep.checks_run += 1
 
 
 def wp_states(blocks: dict[str, str]) -> dict[str, str]:
-    """Zustand je Arbeitspaket aus den WP-Blöcken."""
+    """State per work package from the WP blocks.
+
+    Missing **State:** is already a structure finding. Unknown values must not
+    silently default to OPEN — callers that need a default for "not yet DONE"
+    use the empty string so comparison with DONE fails closed.
+    """
     states: dict[str, str] = {}
     for wp, body in blocks.items():
         sm = STATE_LINE.search(body)
         if sm:
             states[wp] = sm.group(1).strip().split("(")[0].strip()
         else:
-            states[wp] = "OFFEN"
+            # No silent OPEN default: treat as non-DONE so test-due logic stays
+            # fail-closed; missing field is already reported elsewhere.
+            states[wp] = ""
     return states
 
 
 def test_owners_unique(blocks: dict[str, str]) -> dict[str, str]:
-    """Test-ID → Eigentümer-WP (nur eindeutige; doppelte werden woanders gemeldet)."""
+    """Test-ID → owner WP (unique only; duplicates reported elsewhere)."""
     owners: dict[str, str] = {}
     for wp, body in blocks.items():
         m = TESTS_LINE.search(body)
@@ -331,7 +376,7 @@ def test_owners_unique(blocks: dict[str, str]) -> dict[str, str]:
 
 
 def check_tests_exist(spec: str, blocks: dict[str, str], rep: Report) -> None:
-    """Eine Test-ID braucht eine Testfunktion, sobald ihr WP auf FERTIG steht."""
+    """A test ID needs a test function once its WP is DONE."""
     spec_ids = ids_by_kind(spec, "D") | ids_by_kind(spec, "P") | ids_by_kind(spec, "S")
     states = wp_states(blocks)
     owners = test_owners_unique(blocks)
@@ -341,27 +386,27 @@ def check_tests_exist(spec: str, blocks: dict[str, str], rep: Report) -> None:
     for src in sources:
         implemented |= {m.lower() for m in TEST_FN.findall(src.read_text(encoding="utf-8"))}
 
-    due = {i for i in spec_ids if states.get(owners.get(i, ""), "OFFEN") == "FERTIG"}
+    due = {i for i in spec_ids if states.get(owners.get(i, ""), "") == "DONE"}
     for ident in sort_ids({i for i in due if i.lower() not in implemented}):
         rep.fail(
-            f"Test {ident} fehlt als Testfunktion, obwohl {owners[ident]} auf FERTIG steht "
-            f"(erwartet: fn {ident.lower()}_…)"
+            f"Test {ident} is missing as a test function, although {owners[ident]} is DONE "
+            f"(expected: fn {ident.lower()}_…)"
         )
     rep.checks_run += 1
 
-    done = sum(1 for v in states.values() if v == "FERTIG")
+    done = sum(1 for v in states.values() if v == "DONE")
     print(
-        f"  {done}/{len(states)} WP fertig · {len(due)} Test-IDs fällig · "
-        f"{len(spec_ids) - len(due)} stehen noch aus"
+        f"  {done}/{len(states)} WP done · {len(due)} test IDs due · "
+        f"{len(spec_ids) - len(due)} still pending"
     )
 
 
 def count_release_criteria(spec: str) -> int:
-    """Anzahl der Punkte in SPECIFICATION.md §5.5 (Tabellenzeilen mit Nummer)."""
+    """Number of criteria in SPECIFICATION.md §5.5 (numbered table rows)."""
     if "### 5.5" not in spec:
         return -1
     section = spec.split("### 5.5", 1)[1]
-    # Nächster ##-Abschnitt beendet
+    # Next ## section ends it
     section = re.split(r"\n##\s", section, maxsplit=1)[0]
     rows = re.findall(r"^\|\s*\*?\*?(\d+[a-z]?)\*?\*?\s*\|", section, re.M)
     return len(rows)
@@ -374,19 +419,18 @@ def crates_on_disk() -> list[str]:
 
 
 def crates_in_spec_11(spec: str) -> list[str]:
-    """Crate-Namen aus dem Workspace-Baum in §1.1 (nur unter crates/)."""
-    # Abschnitt 1.1 bis 1.2
+    """Crate names from the workspace tree in §1.1 (only under crates/)."""
     m = re.search(r"### 1\.1\b", spec)
     if not m:
         return []
     rest = spec[m.end():]
     end = re.search(r"\n### 1\.2\b", rest)
     block = rest[: end.start()] if end else rest[:4000]
-    # Nur Zeilen unter crates/…/trinity-* — nicht platform/android/trinity-platform
+    # Only lines under crates/…/trinity-* — not platform/android/trinity-platform
     crates_sec = block
     if "├── crates/" in block:
         crates_sec = block.split("├── crates/", 1)[1]
-        # Plattform-Baum beginnt mit platform/
+        # Platform tree starts with platform/
         if "├── platform/" in crates_sec:
             crates_sec = crates_sec.split("├── platform/", 1)[0]
         elif "└── platform/" in crates_sec:
@@ -395,7 +439,7 @@ def crates_in_spec_11(spec: str) -> list[str]:
 
 
 def measured_external_from_dep_budget() -> int | None:
-    """Liest die Konstante MEASURED aus scripts/dep_budget.py."""
+    """Read the MEASURED constant from scripts/dep_budget.py."""
     if not DEP_BUDGET.exists():
         return None
     text = DEP_BUDGET.read_text(encoding="utf-8")
@@ -406,54 +450,54 @@ def measured_external_from_dep_budget() -> int | None:
 
 
 def check_numbers(spec: str, plan: str, rep: Report) -> None:
-    """Zahlen in den Dokumenten gegen berechnete Werte halten."""
-    # 1) Freigabepunkte §5.5
+    """Hold document numbers against computed values."""
+    # 1) Release criteria §5.5
     n_criteria = count_release_criteria(spec)
     if n_criteria < 0:
-        rep.fail("SPECIFICATION.md: Abschnitt §5.5 nicht gefunden")
+        rep.fail("SPECIFICATION.md: Section §5.5 not found")
     else:
         for path, text, label in (
             (PLAN, plan, "IMPLEMENTATION_PLAN.md"),
             (TESTING, read(TESTING), "TESTING.md"),
         ):
             for m in re.finditer(
-                r"(\d+)\s+Punkte(?:\s+aus\s+(?:SPECIFICATION\.md\s+)?(?:§\s*)?5\.5|.*?5\.5)",
+                r"(\d+)\s+criteria(?:\s+from\s+(?:SPECIFICATION\.md\s+)?(?:§\s*)?5\.5|.*?5\.5)",
                 text,
             ):
                 claimed = int(m.group(1))
                 rep.check(
                     claimed == n_criteria,
-                    f"{label}: nennt {claimed} Punkte zu §5.5, gezählt sind {n_criteria}",
+                    f"{label}: claims {claimed} criteria for §5.5, counted {n_criteria}",
                 )
-            # auch „Alle N Punkte" / „die N Punkte in … 5.5"
-            for m in re.finditer(r"(?:Alle|die)\s+(\d+)\s+Punkte", text):
-                # nur wenn in der Nähe von 5.5
+            # also "All N criteria" / "the N criteria in … 5.5"
+            for m in re.finditer(r"(?:All|all|the)\s+(\d+)\s+criteria", text):
+                # only when near 5.5 / release
                 start = max(0, m.start() - 80)
                 end = min(len(text), m.end() + 80)
                 window = text[start:end]
-                if "5.5" in window or "Freigabe" in window:
+                if "5.5" in window or "release" in window.lower():
                     claimed = int(m.group(1))
                     rep.check(
                         claimed == n_criteria,
-                        f"{label}: nennt {claimed} Punkte (Kontext Freigabe/5.5), "
-                        f"gezählt sind {n_criteria}",
+                        f"{label}: claims {claimed} criteria (release/5.5 context), "
+                        f"counted {n_criteria}",
                     )
         rep.checks_run += 1
 
-    # 2) Anzahl WP-Blöcke vs. Stellen, die sie nennen
+    # 2) Number of WP blocks vs. places that name them
     blocks = parse_wp_blocks(plan)
     n_wp = len(blocks)
     if README.exists():
         readme = read(README)
-        for m in re.finditer(r"(\d+)\s+Arbeitspakete", readme):
+        for m in re.finditer(r"(\d+)\s+work packages", readme):
             claimed = int(m.group(1))
             rep.check(
                 claimed == n_wp,
-                f"README.md: nennt {claimed} Arbeitspakete, gezählt sind {n_wp} WP-Blöcke",
+                f"README.md: claims {claimed} work packages, counted {n_wp} WP blocks",
             )
     rep.checks_run += 1
 
-    # 3) Crates auf Disk vs. §1.1 vs. Stellen mit Crate-Anzahl
+    # 3) Crates on disk vs. §1.1 vs. places with crate counts
     on_disk = crates_on_disk()
     in_spec = crates_in_spec_11(spec)
     n_disk = len(on_disk)
@@ -462,17 +506,19 @@ def check_numbers(spec: str, plan: str, rep: Report) -> None:
         only_spec = sorted(set(in_spec) - set(on_disk))
         parts = []
         if only_disk:
-            parts.append(f"nur auf Disk: {', '.join(only_disk)}")
+            parts.append(f"only on disk: {', '.join(only_disk)}")
         if only_spec:
-            parts.append(f"nur in §1.1: {', '.join(only_spec)}")
-        rep.fail(f"Crate-Liste weicht ab ({'; '.join(parts)}; Disk={n_disk}, §1.1={len(in_spec)})")
+            parts.append(f"only in §1.1: {', '.join(only_spec)}")
+        rep.fail(
+            f"Crate list diverges ({'; '.join(parts)}; disk={n_disk}, §1.1={len(in_spec)})"
+        )
     else:
         rep.checks_run += 1
 
-    # „neun/zehn/N Crates" im Plan und Spec
+    # "nine/ten/N crates" in plan and spec
     word_to_n = {
-        "neun": 9, "zehn": 10, "elf": 11, "zwölf": 12,
-        "acht": 8, "sieben": 7, "sechs": 6,
+        "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+        "eight": 8, "seven": 7, "six": 6,
     }
     for path, text, label in (
         (PLAN, plan, "IMPLEMENTATION_PLAN.md"),
@@ -481,31 +527,33 @@ def check_numbers(spec: str, plan: str, rep: Report) -> None:
     ):
         if not text:
             continue
-        for m in re.finditer(r"\b(\d+)\s+Crates?\b", text):
+        for m in re.finditer(r"\b(\d+)\s+[Cc]rates?\b", text):
             claimed = int(m.group(1))
-            # „22" in trinity-verify-Kontext etc. — nur Workspace-Anzahlen nahe crates/
+            # "22" in trinity-verify context etc. — only workspace counts near crates/
             start = max(0, m.start() - 60)
             window = text[start:m.end() + 40]
-            if re.search(r"workspace|Workspace|1\.1|Gerüst|crates/", window, re.I):
+            if re.search(r"workspace|Workspace|1\.1|scaffold|crates/", window, re.I):
                 rep.check(
                     claimed == n_disk,
-                    f"{label}: nennt {claimed} Crates (Workspace-Kontext), auf Disk sind {n_disk}",
+                    f"{label}: claims {claimed} crates (workspace context), "
+                    f"on disk there are {n_disk}",
                 )
         for word, n in word_to_n.items():
-            for m in re.finditer(rf"\b{word}\s+Crates?\b", text, re.I):
+            for m in re.finditer(rf"\b{word}\s+[Cc]rates?\b", text, re.I):
                 start = max(0, m.start() - 60)
                 window = text[start:m.end() + 40]
-                if re.search(r"workspace|Workspace|1\.1|Gerüst|crates/", window, re.I):
+                if re.search(r"workspace|Workspace|1\.1|scaffold|crates/", window, re.I):
                     rep.check(
                         n == n_disk,
-                        f"{label}: nennt '{word} Crates' (= {n}), auf Disk sind {n_disk}",
+                        f"{label}: claims '{word} crates' (= {n}), "
+                        f"on disk there are {n_disk}",
                     )
     rep.checks_run += 1
 
-    # 4) „N externe Crates" == MEASURED aus dep_budget.py
+    # 4) "N external crates" == MEASURED from dep_budget.py
     measured = measured_external_from_dep_budget()
     if measured is None:
-        rep.fail("scripts/dep_budget.py: Konstante MEASURED fehlt oder ist nicht lesbar")
+        rep.fail("scripts/dep_budget.py: MEASURED constant missing or unreadable")
     else:
         for path, text, label in (
             (SPEC, spec, "SPECIFICATION.md"),
@@ -515,18 +563,19 @@ def check_numbers(spec: str, plan: str, rep: Report) -> None:
         ):
             if not text:
                 continue
-            for m in re.finditer(r"(\d+)\s+externe Crates", text):
+            for m in re.finditer(r"(\d+)\s+external crates", text):
                 claimed = int(m.group(1))
                 rep.check(
                     claimed == measured,
-                    f"{label}: nennt {claimed} externe Crates, MEASURED in dep_budget.py ist {measured}",
+                    f"{label}: claims {claimed} external crates, "
+                    f"MEASURED in dep_budget.py is {measured}",
                 )
         rep.checks_run += 1
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--list", action="store_true", help="gefundene IDs auflisten")
+    parser.add_argument("--list", action="store_true", help="list found IDs")
     args = parser.parse_args()
 
     spec, plan = read(SPEC), read(PLAN)
@@ -535,10 +584,10 @@ def main() -> int:
         for kind, label in (
             ("D", "Differential"),
             ("P", "Property"),
-            ("S", "Szenario"),
-            ("T", "Bedrohung"),
-            ("E", "Entscheidung"),
-            ("O", "Offen"),
+            ("S", "Scenario"),
+            ("T", "Threat"),
+            ("E", "Decision"),
+            ("O", "Open"),
         ):
             found = sort_ids(ids_by_kind(spec, kind))
             print(f"{label:14s} ({len(found):3d}): {', '.join(found)}")
@@ -558,13 +607,13 @@ def main() -> int:
     check_numbers(spec, plan, rep)
 
     if rep.findings:
-        print(f"check-plan: {len(rep.findings)} Befund(e)\n")
+        print(f"check-plan: {len(rep.findings)} finding(s)\n")
         for finding in rep.findings:
             print(f"  ✗ {finding}")
-        print("\nDie Dokumente sind nicht konsistent. Siehe TESTING.md §6.")
+        print("\nThe documents are not consistent. See TESTING.md §6.")
         return 1
 
-    print(f"check-plan: {rep.checks_run} Prüfungen, keine Befunde.")
+    print(f"check-plan: {rep.checks_run} checks, no findings.")
     return 0
 
 

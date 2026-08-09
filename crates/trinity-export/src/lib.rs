@@ -1,5 +1,5 @@
-//! trinity-export — siehe docs/SPECIFICATION.md
+//! trinity-export — see docs/SPECIFICATION.md
 //!
-//! Gerüst aus WP-00. Inhalt folgt im jeweiligen Arbeitspaket.
+//! Scaffold from WP-00. Contents follow in the respective work package.
 
 #![forbid(unsafe_code)]

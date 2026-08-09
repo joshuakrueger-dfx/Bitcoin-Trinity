@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Misst die Abhängigkeitszahl im Signaturpfad und prüft sie gegen die Obergrenze.
+"""Measures the dependency count on the signature path and checks the ceiling.
 
-Umsetzung von SPECIFICATION.md §1.7: "Jede Abhängigkeit im Signaturpfad ist ein
-Angriffsvektor auf fremdes Geld." Die Grenze ist bewusst eng — sie soll bei jeder
-Erweiterung eine bewusste Entscheidung erzwingen, nicht bequem sein.
+Implements SPECIFICATION.md §1.7: "Every dependency on the signature path is an
+attack vector on other people's money." The ceiling is intentionally tight —
+it should force a deliberate decision on every expansion, not be convenient.
 
-Gezählt werden ausschließlich `-e normal` (keine Dev- und Build-Deps) und nur
-externe Crates; die eigenen `trinity-*` zählen nicht mit.
+Only `-e normal` is counted (no dev or build deps) and only external crates;
+the project's own `trinity-*` crates do not count.
 
-    python3 scripts/dep_budget.py           # prüfen
-    python3 scripts/dep_budget.py --list    # Liste ausgeben
+    python3 scripts/dep_budget.py           # check
+    python3 scripts/dep_budget.py --list    # print list
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import re
 import subprocess
 import sys
 
-# Crates, die Schlüsselmaterial sehen oder die Signatur absichern.
+# Crates that see key material or secure the signature.
 SIGNATURE_PATH = [
     "trinity-types",
     "trinity-entropy",
@@ -28,13 +28,13 @@ SIGNATURE_PATH = [
     "trinity-verify",
 ]
 
-# Gemessen am 2026-08-09 mit dem Pinning aus SPECIFICATION.md §0.3 und
-# `cargo tree -e normal` über den Signaturpfad: 40 externe Crates.
-# Eine Abweichung von MEASURED ist eine bewusste Entscheidung, keine Nebenwirkung —
-# MEASURED und die Dokumente sind dann gemeinsam nachzuziehen.
-MEASURED = 40  # Stand 2026-08-09
-# Das Gate liegt knapp darüber, damit eine echte Erweiterung auffällt statt
-# durchzurutschen. Anheben nur mit Begründung im PR.
+# Measured on 2026-08-09 with the pinning from SPECIFICATION.md §0.3 and
+# `cargo tree -e normal` over the signature path: 40 external crates.
+# A deviation from MEASURED is a deliberate decision, not a side effect —
+# MEASURED and the documents must then be updated together.
+MEASURED = 40  # as of 2026-08-09
+# The gate sits just above so a real expansion stands out instead of
+# slipping through. Raise only with justification in the PR.
 BUDGET = 45
 
 
@@ -67,37 +67,37 @@ def main() -> int:
     if args.list:
         for crate in SIGNATURE_PATH:
             print(f"  {crate:22s} {per_crate[crate]:3d}")
-        print(f"\nVereinigung, extern ({len(external)}):")
+        print(f"\nUnion, external ({len(external)}):")
         for name in external:
             print(f"  {name}")
         return 0
 
     n = len(external)
-    print(f"Signaturpfad: {n} externe Crates (MEASURED {MEASURED}, Grenze {BUDGET})")
+    print(f"Signature path: {n} external crates (MEASURED {MEASURED}, budget {BUDGET})")
     for crate in SIGNATURE_PATH:
         print(f"  {crate:22s} {per_crate[crate]:3d}")
 
     findings = []
     if n != MEASURED:
         findings.append(
-            f"Messung {n} weicht von MEASURED={MEASURED} ab — "
-            f"bewusste Änderung? MEASURED und Dokumente gemeinsam nachziehen."
+            f"Measurement {n} differs from MEASURED={MEASURED} — "
+            f"deliberate change? Update MEASURED and documents together."
         )
     if n > BUDGET:
         over = sorted(external)[BUDGET:]
         findings.append(
-            f"Grenze überschritten um {n - BUDGET}. "
-            f"Entweder Abhängigkeit entfernen oder BUDGET mit Begründung im PR anheben. "
-            f"Aktuelle Liste ab Budget: {', '.join(over)}"
+            f"Budget exceeded by {n - BUDGET}. "
+            f"Either remove a dependency or raise BUDGET with justification in the PR. "
+            f"Current list past budget: {', '.join(over)}"
         )
 
     if findings:
-        print(f"\ndep-budget: {len(findings)} Befund(e)\n")
+        print(f"\ndep-budget: {len(findings)} finding(s)\n")
         for f in findings:
             print(f"  ✗ {f}")
         return 1
 
-    print(f"\n✓ Messung = MEASURED ({MEASURED}). {BUDGET - n} Plätze Luft bis Budget.")
+    print(f"\n✓ Measurement = MEASURED ({MEASURED}). {BUDGET - n} slots free until budget.")
     return 0
 
 

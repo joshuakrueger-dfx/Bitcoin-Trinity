@@ -1,109 +1,109 @@
 # BTC Trinity
 
-Bitcoin-only 2-von-3 Multisig-Wallet. Drei gleichberechtigte Schlüssel, kein Timelock, kein
-Zustand, keine Serverdienste, keine laufende Wartung.
+Bitcoin-only 2-of-3 multisig wallet. Three equal keys, no timelock, no
+state, no server services, no ongoing maintenance.
 
-| Schlüssel | Speicherort | Entsperrfaktor | Backup |
+| Key | Storage | Unlock factor | Backup |
 |---|---|---|---|
-| **A** | verschlüsselter Blob, KEK hardware-gebunden (Keychain / Android Keystore), `.biometryCurrentSet` | Biometrie | bewusst keines |
-| **B** | verschlüsselter Blob, KEK hardware-gebunden, `.userPresence` | Biometrie **oder** Gerätepasscode | Wortliste, Pflicht |
-| **C** | Seed auf Papier/Stahl, offline — oder auf einem Hardware-Signer erzeugt | — | ist selbst das Backup |
+| **A** | encrypted blob, KEK hardware-bound (Keychain / Android Keystore), `.biometryCurrentSet` | biometrics | deliberately none |
+| **B** | encrypted blob, KEK hardware-bound, `.userPresence` | biometrics **or** device passcode | word list, mandatory |
+| **C** | seed on paper/steel, offline — or generated on a hardware signer | — | is itself the backup |
 
-> **Die Passphrase entschlüsselt nichts.** Seit Entscheidung E7 geht sie nicht mehr in KEK_B
-> ein — sie **autorisiert** Ausgaben oberhalb der Ausgabegrenze, jede Lockerung der Policy,
-> Export und Schlüsseltausch. Was das kostet und was an ihre Stelle tritt, steht in
-> Abschnitt 2.4 der Spezifikation; die Folge für den Nutzer steht unten unter „Wie es sich
-> anfühlen soll".
+> **The passphrase decrypts nothing.** Since decision E7 it no longer enters KEK_B
+> — it **authorizes** spending above the spending limit, every relaxation of the policy,
+> export, and key rotation. What that costs and what takes its place is in
+> Section 2.4 of the specification; the consequence for the user is below under "How it
+> should feel".
 
-Script: `wsh(sortedmulti(2, ...))` auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), drei unabhängige
-Master-Seeds.
+Script: `wsh(sortedmulti(2, ...))` on BIP-48 paths (`m/48'/0'/0'/2'`), three independent
+master seeds.
 
-## Maßstab
+## Standard
 
-Ziel ist, deutlich sicherer zu sein als das, was der Nutzer vorher hatte — Börse oder
-Single-Sig auf dem Handy. **Nicht**, mit einem Multisig aus drei Hardware-Wallets an drei
-Orten gleichzuziehen. Daraus folgt: Reibung ist eine Kostenposition, keine
-Sicherheitsmaßnahme. Wer das Onboarding abbricht, landet nicht bei einer etwas
-unsichereren Wallet, sondern bleibt dort, wo ein einziger Fehler Totalverlust bedeutet.
+The goal is to be clearly safer than what the user had before — exchange or
+single-sig on the phone. **Not** to match a multisig of three hardware wallets in three
+places. From that: friction is a cost item, not a
+security measure. Anyone who abandons onboarding does not end up with a slightly
+less secure wallet, but stays where a single mistake means total loss.
 
-Abschnitt 0.1 der Spezifikation führt das aus.
+Section 0.1 of the specification spells this out.
 
-## Wie es sich anfühlen soll
+## How it should feel
 
-Ein Sendevorgang kostet **eine Geste**. Eine biometrische Auswertung öffnet A und B; darüber
-liegt eine im Rust-Kern durchgesetzte Ausgabegrenze, oberhalb derer die Passphrase
-unumgehbar wird:
+A send costs **one gesture**. One biometric evaluation opens A and B; above that
+sits a spending limit enforced in the Rust core, above which the passphrase
+becomes unavoidable:
 
-    Ohne Passphrase pro 24 h:  clamp( 20 % des Guthabens , 200 € , 500 € )
+    Without passphrase per 24 h:  clamp( 20 % of balance , €200 , €500 )
 
-In der Praxis: **200 € am Tag ohne Passphrase, bei größerem Guthaben bis zu 500 €.**
+In practice: **€200 per day without passphrase; with larger balance up to €500.**
 
-| Guthaben | ohne Passphrase pro 24 h |
+| Balance | without passphrase per 24 h |
 |---|---|
-| unter 1.000 € | 200 € |
-| 1.000 – 2.500 € | 200 – 500 €, gleitend |
-| über 2.500 € | 500 € |
+| under €1,000 | €200 |
+| €1,000 – €2,500 | €200 – €500, sliding |
+| over €2,500 | €500 |
 
-Keine Grenze pro Transaktion — die bringt nichts, weil ein Dieb einfach stückelt. Sockel und
-Deckel werden beim Einstellen einmalig in Sat umgerechnet; **durchgesetzt wird ausschließlich
-der gespeicherte Sat-Wert**, damit kein Kurs im Signaturpfad steht und die Grenze auch offline
-gilt. Anheben verlangt die Passphrase, senken nicht.
+No per-transaction limit — that achieves nothing, because a thief simply splits. Floor and
+cap are converted to sats once when set; **only the stored sat value is
+enforced**, so no exchange rate sits on the signature path and the limit holds offline
+too. Raising requires the passphrase; lowering does not.
 
-Daraus folgt die Eigenschaft, die ein gängiges Software-Wallet nicht hat:
+From that follows the property a common software wallet does not have:
 
-> Wird dir das entsperrte Telefon entrissen, kommt der Dieb an höchstens 200 € am Tag — bei
-> größeren Beständen an ein Fünftel, aber nie an mehr als 500 €. Für alles darüber braucht er
-> die Passphrase.
-> Du nimmst dein Backup von B, holst C aus dem zweiten Aufbewahrungsort und schiebst den
-> Rest in ein frisches Setup — mit genau den zwei Schlüsseln, die der Dieb nicht hat.
+> If your unlocked phone is snatched, the thief gets at most €200 per day — with
+> larger holdings a fifth, but never more than €500. For everything above that they need
+> the passphrase.
+> You take your backup of B, get C from the second storage place, and move the
+> rest into a fresh setup — with exactly the two keys the thief does not have.
 
-Bei Single-Sig ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.
+With single-sig the same incident is total loss with no course of action.
 
-**Und wenn du die Passphrase vergisst:** kein Geldverlust. Unterhalb der Grenze sendest du
-weiter; für alles darüber gehst du den Weg aus `docs/RECOVERY.md` mit den Wortlisten B und C.
-Damit sie nicht einrostet, fragt die App alle 60 Tage einmal danach — ohne Transaktion,
-verschiebbar.
+**And if you forget the passphrase:** no loss of funds. Below the limit you keep
+sending; for everything above you take the path in `docs/RECOVERY.md` with word lists B and C.
+So it does not go stale, the app asks for it once every 60 days — without a transaction,
+deferrable.
 
 ## Status
 
-Spezifikationsphase abgeschlossen. Meilenstein M0 ist angefangen: Workspace mit zehn
-Crate-Gerüsten, CI-Pipeline und Gate-Skripte stehen; Fachlogik ist noch nicht begonnen
-(WP-00 fertig, WP-01 bis WP-03 in Arbeit, WP-04 und WP-05 offen).
+Specification phase complete. Milestone M0 has started: workspace with ten
+crate scaffolds, CI pipeline and gate scripts are in place; domain logic has not yet begun
+(WP-00 done, WP-01 through WP-03 in progress, WP-04 and WP-05 open).
 
-**→ [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md)** — vollständige technische Spezifikation:
-Modulschnitt, Schlüssel-Lebenszyklus, Signaturfluss, Bedrohungsmodell, Teststrategie,
-UX-Flows, offene Entscheidungen.
+**→ [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md)** — full technical specification:
+module cut, key lifecycle, signature flow, threat model, test strategy,
+UX flows, open decisions.
 
-**→ [`docs/RECOVERY.md`](docs/RECOVERY.md)** — Wiederherstellung **ohne** diese App, mit
-Sparrow und Bitcoin Core. Das ist die eigentliche Versicherung: Sie funktioniert auch dann,
-wenn es dieses Projekt nicht mehr gibt. Die Abläufe darin sind die Ziel-Testfälle S5
-(automatisiert in CI vorgesehen) und S6 (je Release manuell gegen Sparrow). Heute existiert
-noch kein einziger dieser Tests — sie sind Abnahme von WP-46 und WP-71.
+**→ [`docs/RECOVERY.md`](docs/RECOVERY.md)** — recovery **without** this app, with
+Sparrow and Bitcoin Core. That is the real insurance: it works even when
+this project no longer exists. The flows in it are the target test cases S5
+(automated in CI planned) and S6 (manual against Sparrow each release). Today
+none of these tests exist yet — they are acceptance of WP-46 and WP-71.
 
-**→ [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)** — die Arbeitsliste.
-53 Arbeitspakete in 8 Meilensteinen, jedes mit Abhängigkeiten, Spec-Verweis, Abnahmekriterien
-und den Tests, die grün sein müssen. Jedes Paket ist so geschnitten, dass es ohne Rückfragen
-abgearbeitet werden kann.
+**→ [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)** — the work list.
+53 work packages in 8 milestones, each with dependencies, spec reference, acceptance criteria
+and the tests that must be green. Each package is cut so it can be worked
+without follow-up questions.
 
-**→ [`docs/TESTING.md`](docs/TESTING.md)** — Testumgebung, Coverage-Politik, CI-Pipeline.
-100 % Zeilen und Zweige für die Sicherheitskerne, Mutation Testing als eigentliches Gate,
-Ausnahmen nur mit Begründung in einer eingecheckten Datei.
+**→ [`docs/TESTING.md`](docs/TESTING.md)** — test environment, coverage policy, CI pipeline.
+100 % lines and branches for the security cores, mutation testing as the real gate,
+exceptions only with justification in a checked-in file.
 
-Alle vier Dokumente werden von `just check-plan` gegeneinander geprüft: jede Test-ID hat
-genau ein Arbeitspaket, jede Entscheidung hat ein umsetzendes Paket, jeder Abschnittsverweis
-zeigt auf einen existierenden Abschnitt. Läuft das rot, ist der Plan unvollständig.
+All four documents are checked against each other by `just check-plan`: every test ID has
+exactly one work package, every decision has an implementing package, every section reference
+points to an existing section. If that runs red, the plan is incomplete.
 
-Vor Implementierungsbeginn zu klären: die 14 Punkte in Anhang B der Spezifikation — das ist
-WP-05 und blockiert die Meilensteine M1 bis M5.
+Before implementation starts: resolve the 14 points in Appendix B of the specification — that is
+WP-05 and blocks milestones M1 through M5.
 
-## Was dieses Modell nicht abdeckt
+## What this model does not cover
 
-Ausdrücklich und nachlesbar in Abschnitt 4.2 der Spezifikation:
+Explicit and readable in Section 4.2 of the specification:
 
-- **Kompromittiertes Telefon** — A und B liegen auf einem Gerät.
-- **Diebstahl mit beobachteter Passphrase** — Gerät + Passphrase ergeben das Quorum.
-- **Backup-B und C am selben Ort** — die eine Regel, die der Nutzer einhalten muss und die
-  die App nicht prüfen kann.
-- **Nötigung.**
-- **Supply-Chain-Angriff auf die App** — reduziert, nicht ausgeschlossen, solange A und B
-  dieselbe Implementierung teilen.
+- **Compromised phone** — A and B live on one device.
+- **Theft with observed passphrase** — device + passphrase yield the quorum.
+- **Backup B and C in the same place** — the one rule the user must keep and that
+  the app cannot check.
+- **Coercion.**
+- **Supply-chain attack on the app** — reduced, not excluded, as long as A and B
+  share the same implementation.

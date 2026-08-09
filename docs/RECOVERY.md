@@ -1,30 +1,30 @@
-# Wiederherstellung ohne diese App
+# Recovery without this app
 
-**Dieses Dokument ist die eigentliche Versicherung.** Es beschreibt, wie du an deine Bitcoin
-kommst, wenn es diese App nicht mehr gibt, sie nicht mehr startet, dein Telefon weg ist oder
-du ihr schlicht nicht mehr vertraust.
+**This document is the real insurance.** It describes how you get to your bitcoin
+when this app no longer exists, no longer starts, your phone is gone, or
+you simply no longer trust it.
 
-Es setzt **nichts** von dieser App voraus. Alles unten funktioniert mit frei verfügbarer
-Standardsoftware und Werkzeugen, die auch in zehn Jahren noch existieren werden.
+It assumes **nothing** from this app. Everything below works with freely available
+standard software and tools that will still exist in ten years.
 
-> **Ziel: verifiziert gegen jeden Release.** Die Abläufe hier sind die Testfälle S5 (Bitcoin
-> Core, automatisiert in CI vorgesehen) und S6 (Sparrow, je Release manuell verifiziert und
-> dokumentiert — siehe `TESTING.md` §2.2 und SPECIFICATION.md §5.3). Heute ist noch kein
-> Test implementiert; sobald sie laufen, blockiert ein Fehlschlag die Freigabe
-> (`SPECIFICATION.md`, Abschnitt 5.5).
+> **Goal: verified against every release.** The flows here are test cases S5 (Bitcoin
+> Core, automated in CI planned) and S6 (Sparrow, manually verified and
+> documented each release — see `TESTING.md` §2.2 and SPECIFICATION.md §5.3). Today no
+> test is implemented yet; once they run, a failure blocks the release
+> (`SPECIFICATION.md`, Section 5.5).
 
 ---
 
-## 1. Was du brauchst
+## 1. What you need
 
-| | Was | Woher |
+| | What | Where from |
 |---|---|---|
-| **Pflicht** | Der **Descriptor** | Backup-Ausdruck, `descriptor.json`, BSMS-Datei, oder QR auf dem Ausdruck |
-| **Pflicht** | **Zwei** der drei Schlüssel | zwei von: Telefon (A), Wortliste B, Wortliste C |
-| Hilfreich | `word_count` je Schlüssel (24 oder 12) | steht auf dem Ausdruck |
-| Hilfreich | Die `birthday`-Blockhöhe | steht auf dem Ausdruck; ohne sie dauert der Scan länger |
+| **Required** | The **descriptor** | backup printout, `descriptor.json`, BSMS file, or QR on the printout |
+| **Required** | **Two** of the three keys | two of: phone (A), word list B, word list C |
+| Helpful | `word_count` per key (24 or 12) | on the printout |
+| Helpful | The `birthday` block height | on the printout; without it the scan takes longer |
 
-### Der Descriptor sieht so aus
+### The descriptor looks like this
 
 ```
 wsh(sortedmulti(2,
@@ -33,233 +33,232 @@ wsh(sortedmulti(2,
   [c9d0e1f2/48h/0h/0h/2h]xpub6E...C/0/*))#checksum
 ```
 
-Dazu ein zweiter, identischer Descriptor mit `/1/*` statt `/0/*` — das sind die
-Wechselgeld-Adressen. **Du brauchst beide.**
+Plus a second, identical descriptor with `/1/*` instead of `/0/*` — those are the
+change addresses. **You need both.**
 
-> **Kein Descriptor, aber alle drei xpubs mit Origin-Angabe?** Dann kannst du ihn selbst
-> zusammensetzen — genau nach obigem Muster. Die **Reihenfolge der drei Schlüssel ist
-> egal**, weil `sortedmulti` sie nach BIP-67 selbst sortiert. Die Prüfsumme nach `#`
-> berechnet dir Bitcoin Core mit `getdescriptorinfo`.
+> **No descriptor, but all three xpubs with origin?** Then you can assemble it yourself
+> — exactly after the pattern above. The **order of the three keys does not
+> matter**, because `sortedmulti` sorts them itself per BIP-67. The checksum after `#`
+> Bitcoin Core computes for you with `getdescriptorinfo`.
 
-> ### ⚠️ Weder Descriptor noch der dritte xpub vorhanden?
-> Wenn du nur zwei Seeds hast und weder den Descriptor noch den öffentlichen Schlüssel des
-> dritten kennst, ist die Wallet **nicht wiederherstellbar**. Es gibt kein Verfahren, den
-> fehlenden xpub zu erraten — das ist kryptografisch ausgeschlossen, nicht bloß schwierig.
-> **Deshalb liegt der Descriptor auf jedem Backup-Ausdruck.**
+> ### ⚠️ Neither descriptor nor the third xpub present?
+> If you only have two seeds and know neither the descriptor nor the public key of the
+> third, the wallet is **not recoverable**. There is no procedure to
+> guess the missing xpub — that is cryptographically impossible, not merely hard.
+> **That is why the descriptor is on every backup printout.**
 
 ---
 
-## 2. Der schnellste Weg: Sparrow
+## 2. The fastest path: Sparrow
 
-Für die meisten die richtige Wahl — grafisch, kostenlos, quelloffen, für genau diesen Fall
-gebaut.
+For most people the right choice — graphical, free, open source, built for exactly this case.
 
-### 2.1 Wallet anlegen (nur beobachtend, noch ohne Schlüssel)
+### 2.1 Create wallet (watch-only only, no keys yet)
 
-1. Sparrow von [sparrowwallet.com](https://sparrowwallet.com) laden. **Prüfe die Signatur
-   der Datei** — die Anleitung dazu steht auf derselben Seite.
-2. *File → New Wallet*, Namen vergeben.
+1. Download Sparrow from [sparrowwallet.com](https://sparrowwallet.com). **Verify the signature
+   of the file** — the instructions are on the same page.
+2. *File → New Wallet*, assign a name.
 3. Policy Type: **Multi Signature**, Script Type: **Native SegWit (P2WSH)**, Quorum **2 of 3**.
-4. Descriptor einspielen: unter dem Reiter **Descriptor** die Textbox öffnen, den
-   Descriptor hineinkopieren und *Apply* wählen.
-5. Sparrow zeigt jetzt drei Schlüssel mit ihren Fingerprints. **Vergleiche die drei
-   Fingerprints mit deinem Ausdruck.** Stimmen sie nicht, hast du den falschen Descriptor.
-6. Unter *Settings → Server* einen Server wählen — dein eigener Electrum-Server oder Bitcoin
-   Core, falls vorhanden. Sonst ein öffentlicher; siehe Hinweis unten.
-7. Rechtsklick auf die Wallet → *Rescan* ab der Birthday-Höhe. Dein Guthaben erscheint.
+4. Load descriptor: under the **Descriptor** tab open the text box, paste the
+   descriptor and choose *Apply*.
+5. Sparrow now shows three keys with their fingerprints. **Compare the three
+   fingerprints with your printout.** If they do not match, you have the wrong descriptor.
+6. Under *Settings → Server* choose a server — your own Electrum server or Bitcoin
+   Core if available. Otherwise a public one; see the note below.
+7. Right-click the wallet → *Rescan* from the birthday height. Your balance appears.
 
-> **Privatsphäre:** Ein öffentlicher Electrum-Server sieht bei diesem Schritt deine
-> vollständige Wallet — alle Adressen, alle Beträge, deine IP. Für eine einmalige Rettung ist
-> das meist hinnehmbar, für Dauerbetrieb nicht. Wenn du die Wahl hast, nimm einen eigenen
-> Server oder Bitcoin Core.
+> **Privacy:** A public Electrum server sees your
+> full wallet at this step — all addresses, all amounts, your IP. For a one-time rescue that
+> is usually acceptable; for ongoing use it is not. If you have the choice, use your own
+> server or Bitcoin Core.
 
-### 2.2 Alles in eine neue Wallet verschieben
+### 2.2 Move everything into a new wallet
 
-An dieser Stelle **immer sweepen** — die alte Aufstellung gilt nach einem Verlust- oder
-Diebstahlsfall als möglicherweise kompromittiert.
+At this point **always sweep** — after a loss or
+theft the old setup is considered possibly compromised.
 
-1. Neue Ziel-Wallet vorbereiten (frisches Setup in dieser App, eine Hardware-Wallet, oder eine
-   neue Sparrow-Wallet) und eine Empfangsadresse besorgen.
-2. In der wiederhergestellten Wallet: Reiter *Send*, Zieladresse eintragen, **Max** wählen,
-   Gebühr setzen, *Create Transaction*.
-3. *Finalize Transaction for Signing*. Sparrow zeigt jetzt die unsignierte Transaktion.
-4. **Ersten Schlüssel signieren:** Sparrow fragt nach dem Seed. Wortliste eingeben. Es
-   erscheint **eine** von zwei nötigen Signaturen.
-5. **Zweiten Schlüssel signieren:** denselben Weg mit der zweiten Wortliste. Jetzt sind es
-   zwei von zwei.
+1. Prepare a new destination wallet (fresh setup in this app, a hardware wallet, or a
+   new Sparrow wallet) and obtain a receive address.
+2. In the recovered wallet: *Send* tab, enter destination address, choose **Max**,
+   set fee, *Create Transaction*.
+3. *Finalize Transaction for Signing*. Sparrow now shows the unsigned transaction.
+4. **Sign first key:** Sparrow asks for the seed. Enter word list. **One** of two
+   required signatures appears.
+5. **Sign second key:** same path with the second word list. Now there are
+   two of two.
 6. *Broadcast Transaction*.
 
-**Fertig.** Deine Mittel liegen in der neuen Wallet.
+**Done.** Your funds are in the new wallet.
 
-> **Bevor du sendest, prüfe die Zieladresse Zeichen für Zeichen** — mindestens die ersten und
-> letzten acht. Das ist der Moment, in dem Address Poisoning zuschlägt.
+> **Before you send, check the destination address character by character** — at least the first and
+> last eight. That is the moment address poisoning strikes.
 
 ---
 
-## 3. Der Weg ohne grafische Oberfläche: Bitcoin Core
+## 3. The path without a GUI: Bitcoin Core
 
-Nutze diesen Weg, wenn du einen eigenen Node hast, keiner fremden Software vertrauen willst,
-oder Sparrow eines Tages nicht mehr existiert.
+Use this path if you have your own node, do not want to trust third-party software,
+or Sparrow one day no longer exists.
 
-> **Version:** **30.2 oder neuer.** Die Versionen 30.0 und 30.1 hatten einen Fehler, der beim
-> Migrieren älterer Wallets Wallet-Dateien löschen konnte; sie wurden von bitcoincore.org
-> zurückgezogen. Verwende sie nicht.
+> **Version:** **30.2 or newer.** Versions 30.0 and 30.1 had a bug that when
+> migrating older wallets could delete wallet files; they were withdrawn by bitcoincore.org.
+> Do not use them.
 
-### 3.1 Watch-only-Wallet anlegen
+### 3.1 Create watch-only wallet
 
 ```bash
-# Descriptor-Wallet ohne private Schlüssel
-bitcoin-cli createwallet "rettung" true true "" false true true
+# Descriptor wallet without private keys
+bitcoin-cli createwallet "rescue" true true "" false true true
 
-# Prüfsummen berechnen lassen (auch wenn du sie hast — Tippfehler fallen hier auf)
+# Compute checksums (even if you have them — typos show up here)
 bitcoin-cli getdescriptorinfo "wsh(sortedmulti(2,[a1b2c3d4/48h/0h/0h/2h]xpubA/0/*,...))"
 ```
 
 ```bash
-# Beide Descriptoren importieren, Empfangen und Wechselgeld.
-# "timestamp" ist ein Unix-Zeitstempel (Sekunden seit 1970), kein Blockhöhe.
-# Aus der Birthday-Höhe z. B.:
+# Import both descriptors, receive and change.
+# "timestamp" is a Unix timestamp (seconds since 1970), not a block height.
+# From the birthday height e.g.:
 #   bitcoin-cli getblockheader $(bitcoin-cli getblockhash 812345)
-# und das Feld "time" übernehmen — hier als Beispiel 1700000000 (Nov 2023).
-# Alternativen: 0 (Scan ab Genesis) oder "now" (kein historischer Scan).
-bitcoin-cli -rpcwallet=rettung importdescriptors '[
-  {"desc":"wsh(sortedmulti(2,...))#pruefsumme1",
+# and take the "time" field — here as example 1700000000 (Nov 2023).
+# Alternatives: 0 (scan from genesis) or "now" (no historical scan).
+bitcoin-cli -rpcwallet=rescue importdescriptors '[
+  {"desc":"wsh(sortedmulti(2,...))#checksum1",
    "active":true,"internal":false,"range":[0,1000],"timestamp":1700000000},
-  {"desc":"wsh(sortedmulti(2,...))#pruefsumme2",
+  {"desc":"wsh(sortedmulti(2,...))#checksum2",
    "active":true,"internal":true, "range":[0,1000],"timestamp":1700000000}
 ]'
 ```
 
-`importdescriptors` erwartet im Feld `timestamp` einen **Unix-Zeitstempel** (oder `0` bzw.
-`"now"`). Die Birthday-Angabe auf dem Backup-Ausdruck ist dagegen eine **Blockhöhe**.
-Um aus der Höhe den Zeitstempel zu bekommen: `getblockhash <höhe>` und danach
-`getblockheader` bzw. `getblockstats` — Feld `time`. Im Zweifel `0`: Core scannt ab Genesis,
-das dauert länger, findet aber alles.
+`importdescriptors` expects in the `timestamp` field a **Unix timestamp** (or `0` or
+`"now"`). The birthday on the backup printout is instead a **block height**.
+To get the timestamp from the height: `getblockhash <height>` and then
+`getblockheader` or `getblockstats` — field `time`. When in doubt `0`: Core scans from genesis,
+it takes longer but finds everything.
 
 ```bash
-# Kontrolle: stimmen die Adressen mit dem überein, was du erwartest?
-bitcoin-cli deriveaddresses "wsh(sortedmulti(2,...))#pruefsumme1" "[0,5]"
+# Check: do the addresses match what you expect?
+bitcoin-cli deriveaddresses "wsh(sortedmulti(2,...))#checksum1" "[0,5]"
 
-# Zusätzlicher Rescan ab Blockhöhe (hier die Birthday-Höhe, nicht der Zeitstempel)
-bitcoin-cli -rpcwallet=rettung rescanblockchain 812345
-bitcoin-cli -rpcwallet=rettung getbalances
+# Additional rescan from block height (here the birthday height, not the timestamp)
+bitcoin-cli -rpcwallet=rescue rescanblockchain 812345
+bitcoin-cli -rpcwallet=rescue getbalances
 ```
 
-### 3.2 Transaktion bauen
+### 3.2 Build transaction
 
 ```bash
-bitcoin-cli -rpcwallet=rettung walletcreatefundedpsbt \
-  '[]' '[{"bc1q...zieladresse":0.0}]' 0 \
+bitcoin-cli -rpcwallet=rescue walletcreatefundedpsbt \
+  '[]' '[{"bc1q...destination":0.0}]' 0 \
   '{"subtractFeeFromOutputs":[0],"fee_rate":15}'
 ```
 
-Ergebnis ist ein PSBT in Base64. **Prüfe es, bevor du signierst:**
+Result is a PSBT in Base64. **Check it before you sign:**
 
 ```bash
 bitcoin-cli decodepsbt "cHNidP8B..."
 bitcoin-cli analyzepsbt "cHNidP8B..."
 ```
 
-Kontrolliere: Geht der Betrag an die richtige Adresse? Ist die Gebühr plausibel? Gibt es
-unerwartete Outputs?
+Verify: Does the amount go to the right address? Is the fee plausible? Are there
+unexpected outputs?
 
-### 3.3 Mit beiden Schlüsseln signieren
+### 3.3 Sign with both keys
 
-Signieren ohne die privaten Schlüssel dauerhaft anzulegen — jeder Schlüssel in einer eigenen
-Wegwerf-Wallet:
+Sign without permanently creating the private keys — each key in its own
+throwaway wallet:
 
 ```bash
-# Erster Schlüssel
+# First key
 bitcoin-cli createwallet "signer1" false false "" false true true
 bitcoin-cli -rpcwallet=signer1 importdescriptors '[{
-  "desc":"wsh(sortedmulti(2,[fpA/48h/0h/0h/2h]XPRIV_A/0/*,[fpB/...]xpubB/0/*,[fpC/...]xpubC/0/*))#pruefsumme",
+  "desc":"wsh(sortedmulti(2,[fpA/48h/0h/0h/2h]XPRIV_A/0/*,[fpB/...]xpubB/0/*,[fpC/...]xpubC/0/*))#checksum",
   "active":false,"range":[0,1000],"timestamp":0}]'
 bitcoin-cli -rpcwallet=signer1 walletprocesspsbt "cHNidP8B..."
 
-# Zweiter Schlüssel, mit dem Ergebnis aus dem vorigen Schritt
+# Second key, with the result from the previous step
 bitcoin-cli createwallet "signer2" false false "" false true true
-# ... derselbe Descriptor, aber XPRIV_C statt xpubC
-bitcoin-cli -rpcwallet=signer2 walletprocesspsbt "<psbt-aus-schritt-1>"
+# ... same descriptor, but XPRIV_C instead of xpubC
+bitcoin-cli -rpcwallet=signer2 walletprocesspsbt "<psbt-from-step-1>"
 ```
 
-Den `xprv` bekommst du aus deiner Wortliste mit einem BIP-39/BIP-32-Werkzeug — Sparrow zeigt
-ihn unter *Tools → Wallet Import*, offline nutzbar.
+You get the `xprv` from your word list with a BIP-39/BIP-32 tool — Sparrow shows
+it under *Tools → Wallet Import*, usable offline.
 
 ```bash
-# Abschließen und senden
-bitcoin-cli finalizepsbt "<psbt-mit-zwei-signaturen>"
-bitcoin-cli testmempoolaccept '["<rohe-transaktion-hex>"]'   # zuerst prüfen!
-bitcoin-cli sendrawtransaction "<rohe-transaktion-hex>"
+# Finalize and send
+bitcoin-cli finalizepsbt "<psbt-with-two-signatures>"
+bitcoin-cli testmempoolaccept '["<raw-transaction-hex>"]'   # check first!
+bitcoin-cli sendrawtransaction "<raw-transaction-hex>"
 ```
 
 ```bash
-# Aufräumen: die Wegwerf-Wallets mit den privaten Schlüsseln entfernen
+# Clean up: remove the throwaway wallets with the private keys
 bitcoin-cli unloadwallet "signer1" && bitcoin-cli unloadwallet "signer2"
-# und die Wallet-Verzeichnisse anschließend löschen
+# and then delete the wallet directories
 ```
 
 ---
 
-## 4. Häufige Fälle
+## 4. Common cases
 
-### Telefon weg, Backups von B und C vorhanden
-Der Normalfall. Weg nach Abschnitt 2 oder 3, mit den Wortlisten B und C. Das Telefon wird
-nicht gebraucht.
+### Phone gone, backups of B and C present
+The normal case. Path per Section 2 or 3, with word lists B and C. The phone is
+not needed.
 
-### Telefon vorhanden, ein Backup verloren
-Solange die App läuft, hast du A und B auf dem Gerät. Sende alles in ein frisches Setup,
-**bevor** noch etwas passiert — ein zweiter Verlust wäre dann endgültig.
+### Phone present, one backup lost
+As long as the app runs, you have A and B on the device. Send everything into a fresh setup
+**before** anything else happens — a second loss would then be final.
 
-### Neuer Fingerabdruck registriert, App meldet Schlüssel A als verloren
-Erwartetes Verhalten, kein Fehler: A hängt am Biometrie-Enrollment und wird bei Änderung
-zerstört. **B lebt weiter** — sie liegt in einer Zugriffsklasse, die auch der Gerätepasscode
-öffnet. Du hast also B auf dem Gerät und C auf Papier, also das Quorum, und kannst direkt in
-ein frisches Setup migrieren, ohne die Wortliste von B zu brauchen.
+### New fingerprint registered, app reports key A as lost
+Expected behaviour, not a bug: A is tied to the biometrics enrollment and is destroyed on change.
+**B still lives** — it sits in an access class that the device passcode also
+opens. So you have B on the device and C on paper, i.e. the quorum, and can migrate directly into
+a fresh setup without needing B's word list.
 
-### Passphrase vergessen
-**Kein Geldverlust.** Die Passphrase verschlüsselt keinen Schlüssel; sie autorisiert nur
-Ausgaben oberhalb der Tagesgrenze und Änderungen an dieser Grenze. Unterhalb der Grenze kannst
-du weiter senden. Willst du alles bewegen: Weg nach Abschnitt 2 oder 3 mit den Wortlisten B
-und C.
+### Passphrase forgotten
+**No loss of funds.** The passphrase does not encrypt any key; it only authorizes
+spending above the daily limit and changes to that limit. Below the limit you can
+keep sending. Want to move everything: path per Section 2 or 3 with word lists B
+and C.
 
-### Ein Schlüssel ist in fremde Hände geraten
-Ein Schlüssel allein kann nichts. Aber handle zügig: Erzeuge ein **vollständig neues** Setup
-mit drei frischen Schlüsseln und verschiebe alles dorthin, signiert mit den beiden Schlüsseln,
-die der Angreifer nicht hat. **Tausche nicht nur den einen Schlüssel im bestehenden
-Descriptor** — sonst braucht der Angreifer nur noch einen weiteren.
+### One key has fallen into other hands
+One key alone can do nothing. But act promptly: create a **completely new** setup
+with three fresh keys and move everything there, signed with the two keys
+the attacker does not have. **Do not only replace the one key in the existing
+descriptor** — otherwise the attacker only needs one more.
 
-### Telefon gestohlen, entsperrt, Passphrase unbekannt
-Der Dieb kommt an höchstens die Tagesgrenze (Standard: 200 €, bei größeren Beständen bis
-500 €). **Hole sofort den Rest weg**: Wortlisten B und C, Weg nach Abschnitt 2, alles in ein
-frisches Setup. Du hast die zwei Schlüssel, die er nicht hat.
-
----
-
-## 5. Prüfe das, bevor du es brauchst
-
-Der einzige Backup-Plan, der zählt, ist der ausprobierte. Empfehlung: einmal nach der
-Einrichtung und danach einmal im Jahr.
-
-**Testlauf ohne Risiko:**
-
-1. Descriptor in Sparrow importieren, ohne Schlüssel (Abschnitt 2.1).
-2. Prüfen, ob die ersten Empfangsadressen mit denen in der App übereinstimmen. Tun sie das,
-   ist dein Descriptor korrekt und lesbar.
-3. Einen kleinen Betrag an eine dieser Adressen senden.
-4. Ihn mit B und C wieder herausholen — ohne das Telefon anzufassen.
-
-Klappt das, funktioniert deine Wiederherstellung. Klappt es nicht, findest du es zu einem
-Zeitpunkt heraus, an dem es nur Zeit kostet.
+### Phone stolen, unlocked, passphrase unknown
+The thief gets at most the daily limit (default: €200, with larger holdings up to
+€500). **Move the rest immediately**: word lists B and C, path per Section 2, everything into a
+fresh setup. You have the two keys they do not have.
 
 ---
 
-## 6. Merksätze
+## 5. Check this before you need it
 
-1. **Der Descriptor ist genauso wichtig wie die Schlüssel.** Der häufigste Totalverlust bei
-   Multisig ist nicht der verlorene Schlüssel, sondern der verlorene Descriptor.
-2. **Backup von B und Backup von C nie am selben Ort.** Zwei Schlüssel an einem Ort sind das
-   Quorum — ein Einbruch wäre dann ein Totalverlust, ganz ohne Kryptografie.
-3. **Der Descriptor ist nicht geheim.** Er enthält nur öffentliche Schlüssel. Lege ihn ruhig
-   mehrfach ab, auch digital, auch in einer Cloud.
-4. **Nach jedem Verlustfall sweepen, nicht weiterbenutzen.**
-5. **Zieladresse immer Zeichen für Zeichen prüfen** — mindestens erste und letzte acht.
+The only backup plan that counts is the one you have tried. Recommendation: once after
+setup and then once a year.
+
+**Risk-free dry run:**
+
+1. Import descriptor into Sparrow without keys (Section 2.1).
+2. Check whether the first receive addresses match those in the app. If they do,
+   your descriptor is correct and readable.
+3. Send a small amount to one of those addresses.
+4. Take it out again with B and C — without touching the phone.
+
+If that works, your recovery works. If it does not, you find out at a
+time when it only costs time.
+
+---
+
+## 6. Maxims
+
+1. **The descriptor is as important as the keys.** The most common total loss with
+   multisig is not the lost key, but the lost descriptor.
+2. **Backup of B and backup of C never in the same place.** Two keys in one place are the
+   quorum — a break-in would then be total loss, without any cryptography.
+3. **The descriptor is not secret.** It contains only public keys. Store it freely
+   multiple times, including digitally, including in a cloud.
+4. **After every loss event, sweep, do not keep using.**
+5. **Always check the destination address character by character** — at least first and last eight.

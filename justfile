@@ -1,12 +1,12 @@
-# BTC Trinity — Aufgaben. Siehe docs/TESTING.md.
+# BTC Trinity — tasks. See docs/TESTING.md.
 
 default:
     @just --list
 
-# --- Prüfungen, die in CI bei jedem Push laufen ---
+# --- Checks that run in CI on every push ---
 
 check: fmt-check clippy build check-plan dep-budget
-    @echo "✓ Schneller Pfad grün"
+    @echo "✓ Fast path green"
 
 fmt:
     cargo fmt --all
@@ -23,11 +23,11 @@ build:
 test:
     cargo test --workspace --locked
 
-# Konsistenz der vier Dokumente gegeneinander (TESTING.md §6)
+# Consistency of the four documents against each other (TESTING.md §6)
 check-plan:
     python3 scripts/check_plan.py
 
-# Abhängigkeitsbudget im Signaturpfad (SPECIFICATION.md §1.7)
+# Dependency budget on the signature path (SPECIFICATION.md §1.7)
 dep-budget:
     python3 scripts/dep_budget.py
 
@@ -37,7 +37,7 @@ deny:
 audit:
     cargo audit
 
-# --- Testumgebung (WP-02) ---
+# --- Test environment (WP-02) ---
 
 test-env-up:
     ./scripts/test-env.sh up
@@ -48,7 +48,7 @@ test-env-down:
 test-env-reset:
     ./scripts/test-env.sh reset
 
-# --- Schwere Läufe ---
+# --- Heavy runs ---
 
 diff-test:
     cargo test --workspace --locked --features differential -- --test-threads=1

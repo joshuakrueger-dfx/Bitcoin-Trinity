@@ -1,273 +1,273 @@
-# BTC Trinity — Technische Spezifikation
+# BTC Trinity — Technical Specification
 
-**Bitcoin-only 2-von-3 Multisig-Wallet, drei gleichberechtigte Schlüssel, kein Zustand, keine Dienste.**
+**Bitcoin-only 2-of-3 multisig wallet, three equal keys, no state, no services.**
 
 | | |
 |---|---|
-| Dokumentversion | 1.0-draft |
-| Recherchestand | 2026-08-08 |
-| Status | Spezifikation zur Review — **keine Freigabe zur Implementierung, bevor Abschnitt 7 entschieden ist** |
-| Gestrichen (nicht in Scope) | Timelock-Recovery, Watchtower, Betriebsmodi, Miniscript-Policies jenseits `sortedmulti`, Monetarisierung |
+| Document version | 1.0-draft |
+| Research cutoff | 2026-08-08 |
+| Status | Specification for review — **no release for implementation until Section 7 is decided** |
+| Dropped (out of scope) | Timelock recovery, watchtower, operating modes, miniscript policies beyond `sortedmulti`, monetization |
 
 ---
 
 ## 0. Executive Summary
 
-### Die Architektur in sechs Sätzen
+### The architecture in six sentences
 
-1. Ein Rust-Kern (rust-bitcoin / BDK, über uniffi eingebunden) hält **alles Geheime**; die Schnittstelle zur UI-Schicht ist ausschließlich **PSBT rein → PSBT raus**, und weder Seed noch xpriv noch Passphrase überqueren jemals die JS-Bridge.
-2. Die Wallet ist ein `wsh(sortedmulti(2, A, B, C))` über **drei unabhängig erzeugte Master-Seeds** auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), von denen A und B als hardware-gebundene, verschlüsselte Blobs auf dem Telefon liegen (A: biometrischer Zugriff, B: Hardware-Key ⊕ Argon2id-Passphrase) und C als Papier-/Stahl-Backup offline bleibt.
-3. Ein Sendevorgang kostet den Nutzer im Regelfall **eine Geste**: Eine biometrische Auswertung öffnet A und B, und darüber liegt eine **im Rust-Kern durchgesetzte Ausgabegrenze** (Default: `clamp(20 % des Guthabens, 200 €, 500 €)` je 24 h, durchgesetzt auf gespeicherten Sat-Werten), oberhalb derer die Passphrase unumgehbar wird — das macht aus dem klassischen „entrissenes Handy = alles weg" ein „bis zur Quote weg, Rest mit Backup-B plus C rettbar".
-4. Der Code ist in einen **Watch-only-Kern ohne jeden Schlüsselzugriff** (Descriptor, Adressen, UTXOs, PSBT-Bau, Chain-Anbindung) und ein **Signing-Modul** getrennt — der Großteil der App ist damit ohne Schlüsselmaterial testbar und der Sparrow-/Core-Export fällt als Nebenprodukt an.
-5. Vor jeder Signatur prüft ein **vom Builder unabhängiges `verify`-Modul** das PSBT gegen den gespeicherten Descriptor neu — Change-Zugehörigkeit, Ableitungspfade, Gebührenplausibilität — weil die gefälschte Change-Adresse der eine reale Angriffsvektor ist, der nach allen anderen Maßnahmen übrig bleibt.
-6. Korrektheit wird nicht durch eigene Assertions behauptet, sondern durch **Differential Testing gegen Bitcoin Core 30.2** (`deriveaddresses`, `walletprocesspsbt`) und einen **Signet-Recovery-Durchlauf in CI** belegt.
+1. A Rust core (rust-bitcoin / BDK, bound via uniffi) holds **everything secret**; the interface to the UI layer is exclusively **PSBT in → PSBT out**, and neither seed nor xpriv nor passphrase ever crosses the JS bridge.
+2. The wallet is a `wsh(sortedmulti(2, A, B, C))` over **three independently generated master seeds** on BIP-48 paths (`m/48'/0'/0'/2'`), of which A and B sit as hardware-bound, encrypted blobs on the phone (A: biometric access, B: hardware key ⊕ Argon2id passphrase) and C remains offline as a paper/steel backup.
+3. A send costs the user, in the normal case, **one gesture**: one biometric evaluation opens A and B, and above that sits a **spending limit enforced in the Rust core** (default: `clamp(20 % of balance, €200, €500)` per 24 h, enforced on stored sat values), above which the passphrase becomes unavoidable — turning the classic "snatched phone = everything gone" into "up to the share gone, remainder recoverable with backup-B plus C".
+4. The code is split into a **watch-only core with no key access at all** (descriptor, addresses, UTXOs, PSBT construction, chain connectivity) and a **signing module** — so most of the app is testable without key material, and Sparrow/Core export falls out as a byproduct.
+5. Before every signature, a **`verify` module independent of the builder** re-checks the PSBT against the stored descriptor — change membership, derivation paths, fee plausibility — because a forged change address is the one real attack vector that remains after every other measure.
+6. Correctness is not claimed by own assertions, but evidenced by **differential testing against Bitcoin Core 30.2** (`deriveaddresses`, `walletprocesspsbt`) and a **Signet recovery run in CI**.
 
-### Die drei größten Risiken
+### The three largest risks
 
-| # | Risiko | Warum es das größte ist | Was die Architektur dagegen tut | Restrisiko |
+| # | Risk | Why it is the largest | What the architecture does against it | Residual risk |
 |---|---|---|---|---|
-| **R1** | **Kompromittiertes Telefon** | A und B liegen auf demselben Gerät. Wer nativen Code im App-Kontext ausführt, hat nach einer Biometrie-Freigabe beide Schlüssel und umgeht auch die Ausgabegrenze. Kein Multisig-Schema repariert das — bei einem Single-Sig-Wallet auf demselben Telefon ist die Lage allerdings identisch. | Rust-Kern statt JS-Heap (kein Seed in Crash-Dumps), Passphrase nie als String, `zeroize`, hardware-gebundene KEKs, Verifier vor Signatur. | **Nicht abgedeckt.** Ein Angreifer mit Codeausführung im Prozess *zur Zeit einer Signatur* gewinnt. Einzige echte Gegenmaßnahme: B auf externe Hardware verlagern (Abschnitt 6.6). |
-| **R2** | **Eine Implementierung für zwei Schlüssel** | A und B teilen RNG, Bibliothek, Build und Update-Kanal. Ein RNG-Bug oder ein Supply-Chain-Angriff trifft beide gleichzeitig — das Quorum hat faktisch **eine** Implementierung, nicht zwei. Der Coldcard-Vorfall vom Juli 2026 (Abschnitt 2.1) ist der Beleg, dass genau das passiert. | Nachweisbare Entropie (extern nachrechenbar), Würfel-Option, C zwingend außerhalb der A/B-Session erzeugt, reproducible builds, `cargo vendor`, gepinnte Deps, PSBT-Pfad zu Fremd-Hardware ab v1. | **Teilweise.** C ist die einzige echte Implementierungsdiversität — und C allein kann nichts. Bis B auf Fremd-Hardware liegt, bleibt das Quorum implementierungsseitig 1-von-1. |
-| **R3** | **Descriptor-Verlust / falsche Backup-Verteilung** | Der häufigste Multisig-Totalverlust ist nicht der verlorene Schlüssel, sondern der verlorene Descriptor. Der zweithäufigste ist Backup-B und C in derselben Schublade — dann ist ein Einbruch ein Totalverlust ohne jede Kryptografie. | Descriptor als Pflichtbestandteil jedes Backup-Ausdrucks, erzwungener Backup-Nachweis im Onboarding, explizite Ortstrennungs-Abfrage, BSMS-Export (BIP-129), dokumentierte Recovery ohne diese App. | **Verhalten des Nutzers.** Die App kann die räumliche Trennung weder prüfen noch erzwingen. Nur UX-Verankerung und Wiederholung. |
+| **R1** | **Compromised phone** | A and B sit on the same device. Whoever runs native code in the app context has, after a biometric unlock, both keys and also bypasses the spending limit. No multisig scheme fixes that — on a single-sig wallet on the same phone the situation is identical. | Rust core instead of JS heap (no seed in crash dumps), passphrase never as String, `zeroize`, hardware-bound KEKs, verifier before signature. | **Not covered.** An attacker with code execution in the process *at the time of a signature* wins. Only real countermeasure: move B to external hardware (Section 6.6). |
+| **R2** | **One implementation for two keys** | A and B share RNG, library, build, and update channel. An RNG bug or a supply-chain attack hits both at once — the quorum has factually **one** implementation, not two. The Coldcard incident of July 2026 (Section 2.1) is the evidence that exactly this happens. | Evidenced entropy (externally re-computable), dice option, C must be generated outside the A/B session, reproducible builds, `cargo vendor`, pinned deps, PSBT path to foreign hardware from v1. | **Partial.** C is the only real implementation diversity — and C alone can do nothing. Until B sits on foreign hardware, the quorum remains implementation-side 1-of-1. |
+| **R3** | **Descriptor loss / wrong backup distribution** | The most common multisig total loss is not the lost key, but the lost descriptor. The second most common is backup-B and C in the same drawer — then a break-in is a total loss without any cryptography. | Descriptor as mandatory part of every backup printout, enforced backup evidence in onboarding, explicit location-separation prompt, BSMS export (BIP-129), documented recovery without this app. | **User behavior.** The app can neither check nor enforce physical separation. Only UX anchoring and repetition. |
 
-### Entscheidungen, die vor der ersten Zeile Code stehen müssen
+### Decisions that must stand before the first line of code
 
-Diese sechs sind nachträglich nicht oder nur unter Neuaufbau korrigierbar. Details und Empfehlungen in **Abschnitt 7**.
+These six cannot be corrected later, or only by rebuilding. Details and recommendations in **Section 7**.
 
-| # | Entscheidung | Warum jetzt | Empfehlung |
+| # | Decision | Why now | Recommendation |
 |---|---|---|---|
-| **E1** | Lage der FFI-Vertrauensgrenze: nur `PSBT ⟶ PSBT` + Callback-Interface für KEK-Unwrapping | Wird die Grenze später gezogen, sind Seeds längst durch JS-Heaps gewandert. Praktisch nicht nachrüstbar. | **Verbindlich festschreiben** (Abschnitt 1.3), CI-Lint gegen verbotene FFI-Typen. |
-| **E2** | Verifier baut auf eigenem, minimalem Descriptor-Parser statt auf `miniscript` | Wenn der Verifier dieselbe Bibliothek nutzt wie der Builder, bestätigt sich ein Bug selbst. Später umzubauen heißt: den Verifier neu schreiben. | Eigener ~250-Zeilen-Parser für genau die Grammatik `wsh(sortedmulti(2,…))`, eigene BIP-32-Ableitung; geteilt bleiben nur secp256k1 und Hashes (Abschnitt 1.5). |
-| **E3** | Entropie-Konstruktion und Anzeigbarkeit der Roh-Entropie | Ein Seed, der unter falscher Konstruktion entstanden ist, wird durch kein Update repariert (Coldcard 2026). Das Format muss ab dem allerersten erzeugten Seed stehen. | ✅ **Entschieden.** `entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = zusatz_bytes)[0..L]`, Roh-Entropie anzeigbar, BIP-39-Ableitung extern nachrechenbar. **Zusatzentropie ist durchgehend optional** — auch für C (Abschnitt 2.2). |
-| **E3b** | Wortlänge: 24 Wörter (256 bit) vs. 12 (128 bit) | Bestimmt Backup-Format, Stahlplatten-Kauf, Onboarding-UX und Stichproben-Design. | ✅ **Entschieden: pro Schlüssel.** **C fest 24**; **A und B wählbar** 12 oder 24, Default 24. B ist wählbar, weil eine Fixierung Randbedingung 2 (A/B-Symmetrie) verletzen würde — Begründung in 2.2.3. Nach dem Onboarding unveränderlich. |
-| **E4** | Argon2id-Parameter und deren Speicherung im Blob-Header | Ein späterer Parameterwechsel erzwingt Re-Encryption aller Blobs und einen Migrationspfad. | ✅ **Entschieden.** `m = 262144 KiB (256 MiB), t = 3, p = 4`, Fallback-Profil `m = 65536 KiB, t = 6, p = 4` auf Geräten < 4 GB RAM, automatische Wahl; Profil-ID **im Blob-Header** (Abschnitt 2.4). |
-| **E5** | B ist ab v1 ein austauschbarer Signer hinter derselben PSBT-Schnittstelle | Wenn `sign_with_b` intern an den lokalen Keystore gekoppelt wird, ist der Wechsel auf Fremd-Hardware eine Architekturänderung statt eines Drop-in. | ✅ **Entschieden.** `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` mit `LocalSigner` und `ExternalSigner` ab Tag 1; der `ExternalSigner`-Pfad muss in v1 real getestet sein (Abschnitt 2.7, 6.6). |
-| **E7** | **Ein-Gesten-Signatur mit Ausgabegrenze im Rust-Kern** | Ob A und B mit derselben Geste aufgehen, bestimmt das Blob-Format, die Plattform-Flags und die gesamte Signatur-Choreografie. Nachträglich ist das ein Umbau beider Keystores. | ✅ **Entschieden.** Eine biometrische Auswertung öffnet A **und** B; darüber liegt eine im Rust-Kern durchgesetzte Betrags- und Zeitfenstergrenze, oberhalb derer die Passphrase verlangt wird. Ein Sendevorgang kostet damit **eine Geste**. Vollständige Herleitung, Kosten und Gegenrechnung in Abschnitt 3.6. |
-| **E6** | Hardware-Signer als optionale Quelle für C bei der Wallet-Erstellung | Die Transport-Abstraktion und die BIP-388-Registrierung müssen im Datenmodell stehen, bevor der erste Descriptor erzeugt wird — sonst ist ein Hardware-C nachträglich ein neues Setup. | ✅ **Entschieden.** C wahlweise in-App oder auf einem angebundenen Hardware-Signer erzeugt (nur xpub importiert) — **optional, aber empfohlen**. Vier Transporte hinter einem Trait; **QR und NFC in v1, BLE für BitBox02 Nova und Ledger in v1.1**. **Coldcard ist implementiert und getestet, in der UI aber zunächst ausgegraut** — freigeschaltet durch eine Firmware-Prüfung am Gerät (Abschnitt 2.7.9). |
+| **E1** | Location of the FFI trust boundary: only `PSBT ⟶ PSBT` + callback interface for KEK unwrapping | If the boundary is drawn later, seeds have long since wandered through JS heaps. Practically not retrofit-able. | **Write it as binding** (Section 1.3), CI lint against forbidden FFI types. |
+| **E2** | Verifier builds on its own minimal descriptor parser instead of `miniscript` | If the verifier uses the same library as the builder, a bug confirms itself. Rebuilding later means rewriting the verifier. | Own ~250-line parser for exactly the grammar `wsh(sortedmulti(2,…))`, own BIP-32 derivation; shared remain only secp256k1 and hashes (Section 1.5). |
+| **E3** | Entropy construction and displayability of raw entropy | A seed born under wrong construction is not repaired by any update (Coldcard 2026). The format must stand from the very first generated seed. | ✅ **Decided.** `entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = zusatz_bytes)[0..L]`, raw entropy displayable, BIP-39 derivation externally re-computable. **Additional entropy is optional throughout** — also for C (Section 2.2). |
+| **E3b** | Word length: 24 words (256 bit) vs. 12 (128 bit) | Determines backup format, steel-plate purchase, onboarding UX, and sample-quiz design. | ✅ **Decided: per key.** **C fixed 24**; **A and B choosable** 12 or 24, default 24. B is choosable because fixing it would violate constraint 2 (A/B symmetry) — rationale in 2.2.3. Immutable after onboarding. |
+| **E4** | Argon2id parameters and their storage in the blob header | A later parameter change forces re-encryption of all blobs and a migration path. | ✅ **Decided.** `m = 262144 KiB (256 MiB), t = 3, p = 4`, fallback profile `m = 65536 KiB, t = 6, p = 4` on devices < 4 GB RAM, automatic choice; profile ID **in the blob header** (Section 2.4). |
+| **E5** | B is from v1 a swappable signer behind the same PSBT interface | If `sign_with_b` is internally coupled to the local keystore, the switch to foreign hardware is an architecture change instead of a drop-in. | ✅ **Decided.** `trait Signer { fn sign(&self, psbt: Psbt) -> Result<Psbt>; }` with `LocalSigner` and `ExternalSigner` from day 1; the `ExternalSigner` path must be real-tested in v1 (Section 2.7, 6.6). |
+| **E7** | **One-gesture signature with spending limit in the Rust core** | Whether A and B unlock with the same gesture determines the blob format, the platform flags, and the entire signature choreography. Retrofitting that is a rebuild of both keystores. | ✅ **Decided.** One biometric evaluation opens A **and** B; above that sits an amount and time-window limit enforced in the Rust core, above which the passphrase is required. A send thus costs **one gesture**. Full derivation, costs, and counter-check in Section 3.6. |
+| **E6** | Hardware signer as optional source for C at wallet creation | The transport abstraction and BIP-388 registration must be in the data model before the first descriptor is generated — otherwise a hardware-C is a new setup after the fact. | ✅ **Decided.** C optionally generated in-app or on a connected hardware signer (only xpub imported) — **optional, but recommended**. Four transports behind one trait; **QR and NFC in v1, BLE for BitBox02 Nova and Ledger in v1.1**. **Coldcard is implemented and tested, but initially greyed out in the UI** — unlocked by a firmware check on the device (Section 2.7.9). |
 
-> **Ein vierter Punkt, der keine Sicherheitslücke ist und trotzdem hierher gehört:** Der Maßstab dieses Produkts ist die Aufstellung, aus der der Nutzer kommt — Börse oder Single-Sig — **nicht** ein Multisig aus drei Hardware-Wallets an drei Orten. Damit wird Reibung zu einer Kostenposition im Bedrohungsmodell (T20): Wer das Onboarding abbricht, bleibt dort, wo ein einziger Fehler Totalverlust bedeutet. Abschnitt 0.1 führt das aus und begründet daraus vier Entscheidungen, die sonst wie Nachlässigkeit aussähen.
+> **A fourth point that is not a security hole and still belongs here:** The yardstick of this product is the setup the user comes from — exchange or single-sig — **not** a multisig of three hardware wallets in three places. That turns friction into a cost line in the threat model (T20): whoever abandons onboarding stays where a single failure means total loss. Section 0.1 develops that and from it justifies four decisions that would otherwise look like negligence.
 
-> **Zwei Annahmen, die dieses Dokument durchzieht und die vor Implementierungsbeginn bestätigt werden müssen:**
-> **(A1)** Zielplattformen sind iOS ≥ 16 und Android ≥ 10 (API 29). Darunter fehlen `kSecAccessControlBiometryCurrentSet`-Semantiken bzw. `setUnlockedDeviceRequired` in verlässlicher Form.
-> **(A2)** Die UI-Schicht ist React Native. Wäre sie nativ (SwiftUI/Compose), entfiele Anforderung 1 nicht — sie würde nur billiger.
+> **Two assumptions that run through this document and that must be confirmed before implementation starts:**
+> **(A1)** Target platforms are iOS ≥ 16 and Android ≥ 10 (API 29). Below that, `kSecAccessControlBiometryCurrentSet` semantics and `setUnlockedDeviceRequired` are missing in reliable form.
+> **(A2)** The UI layer is React Native. Were it native (SwiftUI/Compose), requirement 1 would not go away — it would only become cheaper.
 
 ---
 
-## 0.1 Positionierung — der Maßstab
+## 0.1 Positioning — the yardstick
 
-**Das Ziel ist, deutlich sicherer zu sein als das, was der Nutzer vorher hatte. Nicht, mit einem Multisig aus drei Hardware-Wallets an drei Orten gleichzuziehen.** Diese Festlegung steht hier, weil sie jede Abwägung im Rest des Dokuments bestimmt.
+**The goal is to be clearly safer than what the user had before. Not to match a multisig of three hardware wallets in three places.** This commitment stands here because it determines every trade-off in the rest of the document.
 
-### Woran gemessen wird
+### What is measured against
 
-| Ausgangslage | Was dort schiefgeht | BTC Trinity dagegen |
+| Starting position | What goes wrong there | BTC Trinity against that |
 |---|---|---|
-| **Börse / Custodial** | Insolvenz, Hack, Einfrieren, Beschlagnahme. Der Nutzer besitzt nichts, er hat eine Forderung. | ✅ Eigenverwahrung, drei Schlüssel, kein Dritter im Signaturpfad |
-| **Single-Sig auf dem Handy** | Ein Seed-Leak = alles weg. Geräteverlust ohne Backup = alles weg. Ein Schlüssel, ein Fehler, Totalverlust. | ✅ Zwei von drei nötig; Geräteverlust, Backup-Verlust und Einzelschlüssel-Leak sind abgedeckt |
-| **Single-Sig Hardware-Wallet** | Ein Seed, ein Backup, **eine Implementierung**. Der Coldcard-Vorfall traf genau diese Aufstellung: ≈594 BTC aus ≈500 Single-Sig-Wallets. Diebstahl von Gerät und Backup = Totalverlust. | ✅ Kein einzelner Schlüssel und kein einzelnes Backup reicht dem Angreifer |
-| **3× Hardware-Wallet, 3 Orte, 3 Hersteller** | Der Referenzstandard. Deckt zusätzlich das kompromittierte Telefon ab. | ❌ **Da halten wir nicht mit** — und wollen es nicht. Siehe unten. |
+| **Exchange / custodial** | Insolvency, hack, freeze, seizure. The user owns nothing; they have a claim. | ✅ Self-custody, three keys, no third party in the signature path |
+| **Single-sig on the phone** | One seed leak = everything gone. Device loss without backup = everything gone. One key, one failure, total loss. | ✅ Two of three needed; device loss, backup loss, and single-key leak are covered |
+| **Single-sig hardware wallet** | One seed, one backup, **one implementation**. The Coldcard incident hit exactly this setup: ≈594 BTC from ≈500 single-sig wallets. Theft of device and backup = total loss. | ✅ No single key and no single backup is enough for the attacker |
+| **3× hardware wallet, 3 places, 3 vendors** | The reference standard. Additionally covers the compromised phone. | ❌ **We do not match that** — and do not aim to. See below. |
 
-### Was das konkret heißt
+### What that means concretely
 
-**Wir gewinnen nicht durch mehr Sicherheit pro Transaktion, sondern durch mehr Nutzer, die überhaupt aus der schlechteren Aufstellung herauskommen.** Das 3×-Hardware-Multisig ist auf dem Papier überlegen, aber es kostet ~500 €, einen Nachmittag Einrichtung, drei Aufbewahrungsorte und die Bereitschaft, mit Descriptoren umzugehen. Wer das nicht macht, bleibt auf Single-Sig — und ist damit schlechter dran als mit allem, was hier spezifiziert ist.
+**We do not win through more security per transaction, but through more users who leave the worse setup at all.** The 3×-hardware multisig is superior on paper, but it costs ~€500, an afternoon of setup, three storage locations, and the willingness to deal with descriptors. Whoever does not do that stays on single-sig — and is then worse off than with everything specified here.
 
-Der praktische Abstand ist außerdem kleiner, als die Tabelle suggeriert: **Der häufigste Totalverlust bei Multisig ist nicht der kompromittierte Schlüssel, sondern der verlorene Descriptor oder ein Backup, das nie korrekt angelegt wurde.** Ein Setup mit erzwungenem Backup-Nachweis, gedrucktem Descriptor und getestetem Recovery-Pfad (Abschnitt 5, S4/S5) kann in der Praxis besser abschneiden als ein theoretisch stärkeres Setup, das der Nutzer falsch aufsetzt.
+The practical gap is also smaller than the table suggests: **The most common total loss in multisig is not the compromised key, but the lost descriptor or a backup that was never correctly created.** A setup with enforced backup evidence, printed descriptor, and tested recovery path (Section 5, S4/S5) can in practice outperform a theoretically stronger setup that the user sets up wrong.
 
-### Das Designprinzip, das daraus folgt
+### The design principle that follows
 
-> **Reibung ist eine Sicherheitskosten-Position, keine Sicherheitsmaßnahme.** Jede zusätzliche Hürde, die die Abbruchwahrscheinlichkeit erhöht, muss mehr Risiko beseitigen, als sie durch Nichtnutzung erzeugt. Denn der Nutzer, der abbricht, landet nicht bei einer etwas unsichereren Wallet — er bleibt bei der Börse oder bei Single-Sig.
+> **Friction is a security cost item, not a security measure.** Every additional hurdle that raises the abandonment probability must remove more risk than it creates through non-use. Because the user who abandons does not land at a slightly less safe wallet — they stay at the exchange or at single-sig.
 
-Das ist die Begründung für vier Entscheidungen, die sonst wie Nachlässigkeit aussähen:
+That is the justification for four decisions that would otherwise look like negligence:
 
-| Entscheidung | Warum sie unter diesem Maßstab richtig ist |
+| Decision | Why it is right under this yardstick |
 |---|---|
-| **Zusatzentropie optional** (E3) | 99 Würfelwürfe als Pflicht kosten mehr Nutzer, als der abgedeckte RNG-Fehlerfall wert ist. Vorausgewählt mit „Überspringen" holt den Großteil des Nutzens zum Bruchteil der Reibung (2.2.1). |
-| **Wortlänge wählbar** (E3b) | 3 × 24 Wörter abzuschreiben ist die häufigste Abbruchstelle im Onboarding jeder Multisig-Wallet. 12 Wörter sind bei 128 bit **kein** realer Sicherheitsverlust gegen Brute-Force (2.2.3). |
-| **Hardware optional** (E6) | Ein Pflicht-Gerätekauf im Onboarding halbiert die Abschlussquote. Empfohlen und vorbereitet, aber nicht Voraussetzung. |
-| **Passphrase-Bedienbarkeit** (6.2.1) | ~45 Sekunden pro Sendevorgang treiben Nutzer zurück zur Börse. 10–15 Sekunden nicht. Deshalb Autovervollständigung und vorgezogene KDF statt einer schwächeren Passphrase. |
+| **Additional entropy optional** (E3) | 99 dice rolls as mandatory cost more users than the covered RNG-failure case is worth. Pre-selected with "Skip" captures most of the benefit at a fraction of the friction (2.2.1). |
+| **Word length choosable** (E3b) | Writing down 3 × 24 words is the most common abandonment point in the onboarding of every multisig wallet. 12 words at 128 bit are **not** a real security loss against brute-force (2.2.3). |
+| **Hardware optional** (E6) | A mandatory device purchase in onboarding halves the completion rate. Recommended and prepared, but not a prerequisite. |
+| **Passphrase usability** (6.2.1) | ~45 seconds per send drives users back to the exchange. 10–15 seconds does not. Hence autocomplete and prefetched KDF instead of a weaker passphrase. |
 
-### Woher die Sicherheit tatsächlich kommt
+### Where the security actually comes from
 
-Ein verbreitetes Missverständnis wäre, den gesamten Gewinn beim Quorum zu verbuchen. Tatsächlich kommt ein großer Teil aus Dingen, die den Nutzer **null Aufwand** kosten und die gängige Software-Wallets schlicht nicht tun:
+A common misunderstanding would be to book the entire gain to the quorum. In fact a large part comes from things that cost the user **zero effort** and that common software wallets simply do not do:
 
-| Gewinn | Nutzeraufwand | Was ein typisches Software-Wallet stattdessen tut |
+| Gain | User effort | What a typical software wallet does instead |
 |---|---|---|
-| **Kein Backup allein genügt** — wer B's Wortliste findet, hat 1 von 3 | einmalig zwei Orte wählen | Ein Backup = alles. Fotografiert, gefunden, verbrannt → Totalverlust |
-| **Kein Einzelschlüssel-Leak ist fatal** | keiner | Ein Seed. Ein Leak. Ende. |
-| **Kein Seed im JS-Heap** (Abschnitt 1.1) | keiner | React-Native-Wallets halten Seeds routinemäßig als JS-String — unlöschbar bis Prozessende, in Crash-Dumps enthalten |
-| **Unabhängiger Verifier gegen Change-Adress-Manipulation** (1.5) | keiner | Praktisch kein Consumer-Wallet prüft Change unabhängig vom Builder |
-| **Deterministische Nonces, nachrechenbare Entropie, reproducible builds** (2.2, 3.4, 1.7) | keiner | Genau die Klasse Fehler, die bei Coldcard ≈594 BTC gekostet hat |
-| **Recovery ohne diese App dokumentiert und in CI getestet** (S5/S6) | keiner | „Vertrauen Sie darauf, dass es die App in fünf Jahren noch gibt" |
-| **Ausgabegrenze gegen Diebstahl des entsperrten Geräts** (3.6) | einmalig eine Zahl | Entrissenes entsperrtes Handy = 100 % weg |
+| **No backup alone is enough** — whoever finds B's word list has 1 of 3 | once, choose two places | One backup = everything. Photographed, found, burned → total loss |
+| **No single-key leak is fatal** | none | One seed. One leak. Done. |
+| **No seed in the JS heap** (Section 1.1) | none | React-Native wallets routinely hold seeds as JS strings — un-erasable until process end, included in crash dumps |
+| **Independent verifier against change-address manipulation** (1.5) | none | Practically no consumer wallet checks change independently of the builder |
+| **Deterministic nonces, re-computable entropy, reproducible builds** (2.2, 3.4, 1.7) | none | Exactly the class of bugs that cost Coldcard ≈594 BTC |
+| **Recovery without this app documented and tested in CI** (S5/S6) | none | "Trust that the app still exists in five years" |
+| **Spending limit against theft of the unlocked device** (3.6) | once, one number | Snatched unlocked phone = 100 % gone |
 
-**Sechs der sieben Zeilen kosten den Nutzer nichts.** Das ist der eigentliche Inhalt von „exorbitant sicherer bei minimalem Mehraufwand" — nicht das Quorum allein, sondern das Quorum plus sauber gemachte Grundlagen.
+**Six of the seven rows cost the user nothing.** That is the real content of "exorbitantly safer at minimal extra effort" — not the quorum alone, but the quorum plus cleanly done fundamentals.
 
-### Wo das Prinzip endet
+### Where the principle ends
 
-Reibung reduzieren heißt **nicht**, Sicherheitseigenschaften aufzugeben, die den Abstand zur Ausgangslage überhaupt herstellen. Zwei Dinge bleiben deshalb hart, obwohl sie Reibung kosten:
+Reducing friction does **not** mean giving up security properties that create the distance from the starting position in the first place. Two things therefore stay hard, even though they cost friction:
 
-1. **Der Backup-Nachweis für B und C ist blockierend** (6.1). Ohne ihn ist ein verlorenes Telefon Totalverlust — dann wären wir nicht besser als Single-Sig, sondern nur komplizierter. Das ist der eine Punkt, an dem Abbruch besser ist als Durchwinken.
-2. **Die Ausgabegrenze lässt sich nicht ohne Passphrase ändern** (3.6). Sie ist das, was aus „entrissenes Handy = alles weg" ein „entrissenes Handy = ein Teil weg, Rest rettbar" macht. Wäre sie mit derselben Geste abschaltbar, die auch signiert, wäre sie wertlos.
-3. **Die Grenze wird im Rust-Kern durchgesetzt, nicht in der UI** (3.6). Ein Limit, das die JS-Schicht prüft, ist gegen den wahrscheinlichsten Angriffsweg — eine kompromittierte npm-Abhängigkeit — wirkungslos.
+1. **The backup evidence for B and C is blocking** (6.1). Without it, a lost phone is total loss — then we would not be better than single-sig, only more complicated. That is the one point where abandonment is better than waving through.
+2. **The spending limit cannot be changed without the passphrase** (3.6). It is what turns "snatched phone = everything gone" into "snatched phone = a portion gone, remainder recoverable". If it were disableable with the same gesture that also signs, it would be worthless.
+3. **The limit is enforced in the Rust core, not in the UI** (3.6). A limit that the JS layer checks is ineffective against the most likely attack path — a compromised npm dependency.
 
 ---
 
-## 0.2 Geltungsbereich, Nicht-Ziele, ehrliche Grenzen
+## 0.2 Scope, non-goals, honest limits
 
-### In Scope
-Erzeugung und Verwahrung dreier Schlüssel; Watch-only-Betrieb; PSBT-Bau, -Verifikation, -Signatur, -Finalisierung, -Broadcast; Backup und Recovery; Schlüsseltausch; Teststrategie; UX-Flows.
+### In scope
+Generation and custody of three keys; watch-only operation; PSBT construction, verification, signature, finalization, broadcast; backup and recovery; key rotation; test strategy; UX flows.
 
-### Nicht-Ziele
-Timelocks, Zeitschlösser, Erbschaftsregelungen, Watchtower, Serverdienste, Gebührenmodelle, Betriebsmodi, Multi-Account-Verwaltung, Coinjoin, Lightning, Altcoins, Fiat-Anbindung.
+### Non-goals
+Timelocks, time locks, inheritance schemes, watchtower, server services, fee models, operating modes, multi-account management, coinjoin, Lightning, altcoins, fiat rails.
 
-### Ehrliche Grenzen — explizit und unverhandelbar zu kommunizieren
+### Honest limits — to communicate explicitly and non-negotiably
 
-| Grenze | Konsequenz |
+| Limit | Consequence |
 |---|---|
-| **Zwei von drei Schlüsseln liegen auf einem Gerät.** | Ein kompromittiertes Telefon ist **kein** abgedeckter Fall. Das Modell schützt gegen Geräteverlust, Diebstahl, Backup-Verlust und Einzelschlüssel-Leak — nicht gegen Codeausführung im App-Kontext. |
-| **A liegt nicht in der Secure Enclave.** | Die SE beherrscht ausschließlich NIST-P-256; Bitcoin braucht secp256k1. A ist ein verschlüsselter Blob, dessen Schlüsselverschlüsselungsschlüssel (KEK) hardware-gebunden ist. **Biometrie ist eine Zugriffsschranke, kein kryptografischer Faktor** — sie geht nicht in Schlüsselmaterial ein. |
-| **A und B stammen aus derselben Codebasis.** | Gleicher RNG, gleiche Bibliothek, gleicher Update-Kanal. Ein Implementierungsfehler trifft beide gleichzeitig. Das Quorum hat faktisch eine Implementierung. Der PSBT-Pfad zu Fremd-Hardware ist die Antwort darauf und muss ab v1 existieren, nicht ab v2. |
-| **Die Passphrase schützt nur die Gerätekopie von B.** | Das externe Backup von B ist die BIP-39-Wortliste auf Papier — sie ist **nicht** passphrasegeschützt. Wer Backup-B und C findet, braucht keine Passphrase. Deshalb trägt die räumliche Trennung (Randbedingung 3) das gesamte Modell. Nutzer, die glauben, ihre Passphrase schütze das Papier-Backup, sind falsch informiert; das ist im Onboarding zu adressieren. |
-| **`sortedmulti` verbirgt nicht, welcher Schlüssel signiert hat.** | Die Witness zeigt öffentlich, welche zwei der drei Pubkeys signiert haben. Kein Datenschutzproblem für Fremde ohne Descriptor, aber gegenüber jemandem mit dem Descriptor (z.B. dem Watch-only-Server) ist das Signaturmuster sichtbar. |
-| **Watch-only-Backends sehen etwas.** | Siehe Privacy-Tabelle in Abschnitt 1.6. Kein Backend ist ohne Leak; die Größenordnungen unterscheiden sich um Faktoren, nicht um Grade. |
+| **Two of three keys sit on one device.** | A compromised phone is **not** a covered case. The model protects against device loss, theft, backup loss, and single-key leak — not against code execution in the app context. |
+| **A does not sit in the Secure Enclave.** | The SE only supports NIST-P-256; Bitcoin needs secp256k1. A is an encrypted blob whose key-encryption key (KEK) is hardware-bound. **Biometrics is an access barrier, not a cryptographic factor** — it does not enter key material. |
+| **A and B come from the same codebase.** | Same RNG, same library, same update channel. An implementation bug hits both at once. The quorum has factually one implementation. The PSBT path to foreign hardware is the answer and must exist from v1, not from v2. |
+| **The passphrase protects only the device copy of B.** | The external backup of B is the BIP-39 word list on paper — it is **not** passphrase-protected. Whoever finds backup-B and C needs no passphrase. That is why spatial separation (constraint 3) carries the entire model. Users who believe their passphrase protects the paper backup are misinformed; that must be addressed in onboarding. |
+| **`sortedmulti` does not hide which key signed.** | The witness shows publicly which two of the three pubkeys signed. No privacy problem for strangers without the descriptor, but against someone with the descriptor (e.g. the watch-only server) the signature pattern is visible. |
+| **Watch-only backends see something.** | See privacy table in Section 1.6. No backend is without leak; the magnitudes differ by factors, not by degrees. |
 
 ---
 
-## 0.3 Recherchestand: verifizierte Versionen und Belege
+## 0.3 Research status: verified versions and evidence
 
-Alle Versionsstände unten wurden am **2026-08-08** direkt gegen `crates.io/api/v1` abgefragt, nicht aus dem Gedächtnis geschrieben. Auflösung der Abhängigkeitsbäume ebenfalls über die Registry-API.
+All version states below were queried on **2026-08-08** directly against `crates.io/api/v1`, not written from memory. Dependency-tree resolution likewise via the registry API.
 
-### Der real auflösende Rust-Stack
+### The actually resolving Rust stack
 
-> **Wichtiger Befund — „neueste Version" ist hier die falsche Regel.** `bdk_wallet 3.1.0` deklariert `miniscript ^12.3.5` und `bitcoin ^0.32.8`. Die neuesten Registry-Versionen sind `miniscript 13.1.0` und `secp256k1 0.31.1` — beide sind **nicht** im BDK-Baum. Wer `secp256k1 = "0.31"` oder `miniscript = "13"` direkt in die `Cargo.toml` schreibt, bekommt zwei parallel gelinkte Kopien von libsecp256k1 und inkompatible Typen an den Modulgrenzen. Die Pins unten sind die tatsächlich koexistierenden Versionen.
+> **Important finding — "latest version" is the wrong rule here.** `bdk_wallet 3.1.0` declares `miniscript ^12.3.5` and `bitcoin ^0.32.8`. The newest registry versions are `miniscript 13.1.0` and `secp256k1 0.31.1` — both are **not** in the BDK tree. Whoever writes `secp256k1 = "0.31"` or `miniscript = "13"` directly into `Cargo.toml` gets two parallel linked copies of libsecp256k1 and incompatible types at module boundaries. The pins below are the versions that actually coexist.
 
-| Crate | Pin | Registry-Stand | Rolle |
+| Crate | Pin | Registry state | Role |
 |---|---|---|---|
-| `bdk_wallet` | `=3.1.0` | 3.1.0 (2026-06-14) | Watch-only-Kern, TxBuilder, Descriptor-Wallet |
-| `bdk_chain` | `=0.23.3` | 0.23.3 (2026-03-26) | Chain-Datenstrukturen |
-| `bdk_core` | `=0.6.3` | 0.6.3 (2026-03-26) | Kernprimitive |
-| `bitcoin` | `=0.32.11` | 0.32.11 (2026-07-22) | rust-bitcoin; `0.33.0-beta` **nicht** verwenden |
-| `miniscript` | `=12.3.7` | 12.3.7 (2026-05-27) | **nicht 13.1.0** — BDK 3.1.0 fordert `^12.3.5` |
-| `secp256k1` | *transitiv* `0.29.1` | 0.29.1 (2024-09-06) | via `bitcoin 0.32` (`^0.29.0`); **nicht direkt deklarieren** |
-| `bip39` | `=2.2.2` | 2.2.2 (2025-12-04) | Mnemonic; über BDK-Feature `keys-bip39` |
-| `zeroize` | `=1.9.0` | 1.9.0 (2026-06-12) | Secret-Löschung, `ZeroizeOnDrop` |
-| `argon2` | `=0.5.3` | 0.5.3 stabil; `0.6.0-rc.8` (2026-03-22) | KDF für B. **RC nicht in den Signaturpfad.** |
-| `getrandom` | `=0.4.3` | 0.4.3 (2026-06-17) | OS-CSPRNG-Zugriff |
-| `uniffi` | `=0.32.0` | 0.32.0 (2026-06-30) | FFI-Generierung Swift/Kotlin |
+| `bdk_wallet` | `=3.1.0` | 3.1.0 (2026-06-14) | Watch-only core, TxBuilder, descriptor wallet |
+| `bdk_chain` | `=0.23.3` | 0.23.3 (2026-03-26) | Chain data structures |
+| `bdk_core` | `=0.6.3` | 0.6.3 (2026-03-26) | Core primitives |
+| `bitcoin` | `=0.32.11` | 0.32.11 (2026-07-22) | rust-bitcoin; do **not** use `0.33.0-beta` |
+| `miniscript` | `=12.3.7` | 12.3.7 (2026-05-27) | **not 13.1.0** — BDK 3.1.0 requires `^12.3.5` |
+| `secp256k1` | *transitive* `0.29.1` | 0.29.1 (2024-09-06) | via `bitcoin 0.32` (`^0.29.0`); **do not declare directly** |
+| `bip39` | `=2.2.2` | 2.2.2 (2025-12-04) | Mnemonic; via BDK feature `keys-bip39` |
+| `zeroize` | `=1.9.0` | 1.9.0 (2026-06-12) | Secret wiping, `ZeroizeOnDrop` |
+| `argon2` | `=0.5.3` | 0.5.3 stable; `0.6.0-rc.8` (2026-03-22) | KDF for B. **RC not in the signature path.** |
+| `getrandom` | `=0.4.3` | 0.4.3 (2026-06-17) | OS-CSPRNG access |
+| `uniffi` | `=0.32.0` | 0.32.0 (2026-06-30) | FFI generation Swift/Kotlin |
 | `bdk_electrum` | `=0.24.0` | 0.24.0 (2026-05-08) | → `electrum-client 0.25.0` |
 | `bdk_bitcoind_rpc` | `=0.22.0` | 0.22.0 (2025-09-12) | → `bitcoincore-rpc 0.19.0` |
 | `bdk_kyoto` | `=0.17.0` | 0.17.0 (2026-05-12) | → `bip157 0.6.3` (2026-07-21), BIP-157/158 |
-| `bbqr` | `=0.5.0` | 0.5.0 (2026-07-16) | BBQr-Animated-QR — Hardware-Transport v1 |
-| `ur` | `=0.5.2` | 0.5.2 (2026-07-29) | Uniform Resources — Hardware-Transport v1 |
-| `bitbox-api` | `=0.13.0` | 0.13.0 (2026-07-18) | BitBox02 — **v1.1**, BLE-Abdeckung offen (Anhang B.8) |
-| `ledger-transport`, `ledger-apdu` | `=0.11.0` | 0.11.0 (2024-05-09) | Ledger — **v1.1**, nur generisch; **kein** App-Level-Crate für die Bitcoin-App |
-| ~~`hwi`~~ | **nicht verwenden** | 0.10.0 (2024-09-13) | Wrapper um Python-HWI, braucht eine Python-Laufzeit → **auf Mobilgeräten unbrauchbar** |
+| `bbqr` | `=0.5.0` | 0.5.0 (2026-07-16) | BBQr animated QR — hardware transport v1 |
+| `ur` | `=0.5.2` | 0.5.2 (2026-07-29) | Uniform Resources — hardware transport v1 |
+| `bitbox-api` | `=0.13.0` | 0.13.0 (2026-07-18) | BitBox02 — **v1.1**, BLE coverage open (Appendix B.8) |
+| `ledger-transport`, `ledger-apdu` | `=0.11.0` | 0.11.0 (2024-05-09) | Ledger — **v1.1**, only generic; **no** app-level crate for the Bitcoin app |
+| ~~`hwi`~~ | **do not use** | 0.10.0 (2024-09-13) | Wrapper around Python HWI, needs a Python runtime → **unusable on mobile** |
 
-**Kompatibilitätsprüfung:** `bdk_electrum 0.24.0` fordert `bdk_core ^0.6.1`, `bdk_bitcoind_rpc 0.22.0` fordert `bdk_core ^0.6.1` und `bitcoin ^0.32.0`, `bdk_kyoto 0.17.0` fordert `bdk_wallet ^3`. Alle drei koexistieren mit dem obigen Pinning. ✔
+**Compatibility check:** `bdk_electrum 0.24.0` requires `bdk_core ^0.6.1`, `bdk_bitcoind_rpc 0.22.0` requires `bdk_core ^0.6.1` and `bitcoin ^0.32.0`, `bdk_kyoto 0.17.0` requires `bdk_wallet ^3`. All three coexist with the pinning above. ✔
 
-### Externe Referenzen und Vorfälle
+### External references and incidents
 
-| Sachverhalt | Stand | Quelle / Belegqualität |
+| Fact | State | Source / evidence quality |
 |---|---|---|
-| **Coldcard-Entropie-Vorfall** | Advisory 2026-07-30, erweitert 2026-08-01. Mk2/Mk3 Firmware 4.0.0/4.0.1–4.1.9; Mk4/Mk5 vor 5.6.0; Q vor 1.5.0Q; Edge 6.6.0X / 6.6.0QX. Effektive Entropie ≈ 72 bit (Mk4/Mk5/Q), ≈ 40 bit (Mk3) statt 128 bit. Ein Angreifer räumte ≈ 594 BTC (≈ 38 Mio USD) aus ≈ 500 Single-Sig-Wallets in ≈ 25 Minuten. Firmware-Update repariert **keinen** bereits erzeugten Seed. Seeds mit ≥ 50 privaten Würfelwürfen blieben geschützt. | ⚠️ **Sekundärquellen.** `blog.coinkite.com` ist aus der Recherche-Umgebung per Egress-Proxy blockiert; die Primäradvisory (`/coldcard-mk3-seed-generation-warning/`, `/entropy-technical-backgrounder/`) konnte **nicht direkt gelesen** werden. Versionsnummern vor Verwendung im Nutzertext gegen die Primärquelle verifizieren. |
-| **Bitcoin Core Referenzversion** | **30.2** verwenden. 30.0 und 30.1 hatten einen Wallet-Migrations-Bug, der beim Migrieren einer unbenannten Legacy-BDB-Wallet in einem Custom-Wallet-Verzeichnis bei aktiviertem Pruning **alle** Wallet-Dateien des Knotens löschen konnte; Binaries wurden am 2026-01-05 von bitcoincore.org zurückgezogen. | bitcoincore.org Advisory 2026-01-05; Release-Notes 30.2 |
-| **Argon2id-Parameter** | RFC 9106 Option 1: `m=2 GiB, t=1, p=4`. Option 2 (speicherbeschränkt): `m=64 MiB, t=3, p=4`. OWASP-Minimum: `m=19 MiB, t=2, p=1`. | RFC 9106; OWASP Password Storage Cheat Sheet |
-| **iOS Keychain** | `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`: nur bei gesetztem Passcode, **nie** in iCloud- oder lokalem Backup; Entfernen des Passcodes **löscht** die Items. `kSecAccessControlBiometryCurrentSet`: bindet an den aktuellen Biometrie-Enrollment-Satz; Neuregistrierung invalidiert. | Apple Developer Documentation |
-| **Android Keystore** | `setIsStrongBoxBacked(true)` (dedizierter Sicherheitschip, z.B. Titan M2); `setInvalidatedByBiometricEnrollment(true)` invalidiert bei Änderung der Biometrie-Registrierung; `setUnlockedDeviceRequired(true)` verbietet Nutzung bei gesperrtem Gerät. | Android Developers / AOSP Keystore Features |
-| **Descriptor-Interop** | Sparrow übersetzt `wsh(multi(...))` beim Import nach `wsh(sortedmulti(...))`; BIP-48-Unterstützung impliziert BIP-67-Sortierung. BSMS (BIP-129) seit Sparrow v1.7.3; Coldcard als Signer und Coordinator. | bips.dev/129, Sparrow-Release-Notes, Coldcard-Doku |
-| **BIP-388 Wallet Policies** | Externe Signer — **Ledger, BitBox02 und Jade** — nutzen für Multisig BIP-388, um Descriptor-Policies auf dem Gerät anzuzeigen und zu beschränken. Im Ledger-Bitcoin-App implementiert **seit Version 2.1.0**. Nach registrierter und auf dem Gerät bestätigter Policy verhält sich die Multisig-Signatur für den Nutzer wie eine Single-Sig-Signatur. | bips.dev/388, Ledger-Doku |
-| **iOS-USB-Beschränkung** | Zugriff auf beliebige USB-HID-Geräte ist Apps auf iOS/iPadOS **nicht möglich**; HIDDriverKit und die IOKit-HID-APIs stehen dort nicht zur Verfügung, und Kommunikation mit USB-C-Zubehör ohne MFi-Zertifizierung ist ausgeschlossen. Gleiches gilt für serielles Bluetooth außerhalb der von iOS unterstützten Profile. | Apple Developer Forums (mehrere Threads), Apple MFi-Programm-FAQ |
-| **BitBox02 Nova / Whisper** | Nutzt BLE für iOS, weil USB-Kommunikation dort stark eingeschränkt ist. Dedizierter Bluetooth-Chip **DA14531** mit eigener, quelloffener Firmware (reproduzierbar bei Bezug einer SDK-Datei des Herstellers), **ohne** Zugriff auf den Flash des Haupt-MCU und ohne Kenntnis von Wallet-Geheimnissen. **Zwei Verschlüsselungsschichten:** die höchsten Sicherheitsstufen des BLE-Standards (authentifiziert und verschlüsselt nach dem Pairing) **plus** die native Ende-zu-Ende-Verschlüsselung der BitBox-Firmware vom Haupt-MCU bis zur App darüber. Pairing-Code-Bestätigung auf dem Gerät; Bluetooth per BitBoxApp über USB abschaltbar, dann Funk vollständig aus. | ⚠️ **Sekundärquellen** — `blog.bitbox.swiss` war aus der Recherche-Umgebung nicht abrufbar. Details des Schlüsselaustauschs (Noise? welches AEAD?) **nicht verifiziert**, siehe Anhang B.13. |
-| **BBQr** | Animiertes QR-Protokoll von Coinkite, offene Spezifikation. Zieldateitypen PSBT (BIP-174) und fertige Transaktionen; jedes Frame trägt Dateityp, Gesamtzahl und Index. Multisig-PSBTs liegen typisch bei **5–20 KB** und brauchen daher mehrere Frames. Coldcard unterstützt PSBT v0 (BIP-174) und v2 (BIP-370). | bbqr.org, Coldcard-Doku |
-| **bdk-ffi** | 3.0.0 (Juni 2026): produktionsreife Bindings für Kotlin/JVM, Swift, Python. React-Native- und Dart-Bindings 2026 in Integrationstests. | ⚠️ Sekundärquelle (Blogaggregation); `github.com/bitcoindevkit/bdk-ffi` war in dieser Session nicht abrufbar. |
-| **Address Poisoning 2026** | Industrialisiert: Bots erzeugen Lookalike-Adressen mit identischen Anfangs- und Endzeichen und platzieren Dust in der Historie des Opfers. Ein einzelner Angreifer-Contract erreichte ≈ 3 Mio Dust-Transfers an > 1 Mio Adressen für ≈ 5.175 USD. Fortgeschrittene Varianten beobachten den Mempool auf Test-Transaktionen und vergiften unmittelbar danach. | Chainalysis, Blockaid, Branchenberichte 2026 |
+| **Coldcard entropy incident** | Advisory 2026-07-30, extended 2026-08-01. Mk2/Mk3 firmware 4.0.0/4.0.1–4.1.9; Mk4/Mk5 before 5.6.0; Q before 1.5.0Q; Edge 6.6.0X / 6.6.0QX. Effective entropy ≈ 72 bit (Mk4/Mk5/Q), ≈ 40 bit (Mk3) instead of 128 bit. An attacker cleared ≈ 594 BTC (≈ 38 M USD) from ≈ 500 single-sig wallets in ≈ 25 minutes. Firmware update repairs **no** already generated seed. Seeds with ≥ 50 private dice rolls stayed protected. | ⚠️ **Secondary sources.** `blog.coinkite.com` is blocked from the research environment via egress proxy; the primary advisory (`/coldcard-mk3-seed-generation-warning/`, `/entropy-technical-backgrounder/`) could **not be read directly**. Version numbers must be verified against the primary source before use in user-facing text. |
+| **Bitcoin Core reference version** | Use **30.2**. 30.0 and 30.1 had a wallet-migration bug that, when migrating an unnamed legacy BDB wallet in a custom wallet directory with pruning enabled, could delete **all** wallet files of the node; binaries were withdrawn from bitcoincore.org on 2026-01-05. | bitcoincore.org advisory 2026-01-05; release notes 30.2 |
+| **Argon2id parameters** | RFC 9106 option 1: `m=2 GiB, t=1, p=4`. Option 2 (memory-constrained): `m=64 MiB, t=3, p=4`. OWASP minimum: `m=19 MiB, t=2, p=1`. | RFC 9106; OWASP Password Storage Cheat Sheet |
+| **iOS Keychain** | `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly`: only with passcode set, **never** in iCloud or local backup; removing the passcode **deletes** the items. `kSecAccessControlBiometryCurrentSet`: binds to the current biometric enrollment set; re-enrollment invalidates. | Apple Developer Documentation |
+| **Android Keystore** | `setIsStrongBoxBacked(true)` (dedicated security chip, e.g. Titan M2); `setInvalidatedByBiometricEnrollment(true)` invalidates on biometric enrollment change; `setUnlockedDeviceRequired(true)` forbids use while device is locked. | Android Developers / AOSP Keystore Features |
+| **Descriptor interop** | Sparrow translates `wsh(multi(...))` on import to `wsh(sortedmulti(...))`; BIP-48 support implies BIP-67 sorting. BSMS (BIP-129) since Sparrow v1.7.3; Coldcard as signer and coordinator. | bips.dev/129, Sparrow release notes, Coldcard docs |
+| **BIP-388 wallet policies** | External signers — **Ledger, BitBox02, and Jade** — use BIP-388 for multisig to display and constrain descriptor policies on the device. Implemented in the Ledger Bitcoin app **since version 2.1.0**. After a registered and on-device confirmed policy, multisig signing behaves for the user like single-sig signing. | bips.dev/388, Ledger docs |
+| **iOS USB restriction** | Access to arbitrary USB-HID devices is **not possible** for apps on iOS/iPadOS; HIDDriverKit and the IOKit HID APIs are not available there, and communication with USB-C accessories without MFi certification is excluded. Same for serial Bluetooth outside profiles supported by iOS. | Apple Developer Forums (several threads), Apple MFi program FAQ |
+| **BitBox02 Nova / Whisper** | Uses BLE for iOS because USB communication there is heavily restricted. Dedicated Bluetooth chip **DA14531** with its own open-source firmware (reproducible when obtaining a vendor SDK file), **without** access to the main MCU flash and without knowledge of wallet secrets. **Two encryption layers:** the highest security levels of the BLE standard (authenticated and encrypted after pairing) **plus** the native end-to-end encryption of the BitBox firmware from main MCU to the app above. Pairing-code confirmation on device; Bluetooth disableable via BitBoxApp over USB, then radio fully off. | ⚠️ **Secondary sources** — `blog.bitbox.swiss` was not reachable from the research environment. Details of key exchange (Noise? which AEAD?) **not verified**, see Appendix B.13. |
+| **BBQr** | Animated QR protocol by Coinkite, open specification. Target file types PSBT (BIP-174) and finished transactions; each frame carries file type, total count, and index. Multisig PSBTs typically sit at **5–20 KB** and therefore need multiple frames. Coldcard supports PSBT v0 (BIP-174) and v2 (BIP-370). | bbqr.org, Coldcard docs |
+| **bdk-ffi** | 3.0.0 (June 2026): production-ready bindings for Kotlin/JVM, Swift, Python. React-Native and Dart bindings 2026 in integration tests. | ⚠️ Secondary source (blog aggregation); `github.com/bitcoindevkit/bdk-ffi` was not reachable in this session. |
+| **Address poisoning 2026** | Industrialized: bots generate lookalike addresses with identical start and end characters and place dust in the victim's history. A single attacker contract reached ≈ 3 M dust transfers to > 1 M addresses for ≈ 5,175 USD. Advanced variants watch the mempool for test transactions and poison immediately after. | Chainalysis, Blockaid, industry reports 2026 |
 
-### Bekannte Lücken dieser Recherche
+### Known gaps of this research
 
-Ehrlich benannt statt gefüllt:
+Named honestly rather than filled:
 
-1. **`docs.rs` war per Egress-Proxy blockiert.** Konkrete Methodensignaturen von `bdk_wallet::Wallet` und `TxBuilder` in 3.1.0 (Coin-Selection-Enum, `finish()`, `sign_with_signers`, `reveal_next_address`, Persistenz-API) sind in diesem Dokument **absichtlich nicht erfunden**. Sie sind mit `⟨API-VERIFY⟩` markiert und müssen in der ersten Implementierungswoche gegen die Doku fixiert werden.
-2. **Coldcard-Primäradvisory nicht direkt gelesen** (siehe oben). Für Marketing- oder Nutzertexte ungeeignet, bis verifiziert.
-3. **Kyotos Peer-Auswahl beim Blockdownload** — ob ein Match-Block von einem *anderen* Peer als der Filter-Peer geladen wird, konnte nicht belegt werden. Das ist für die Privacy-Aussage in 1.6 relevant und **muss im Quellcode von `bip157 0.6.3` nachgelesen werden**, bevor CBF als „privater Default" beworben wird.
-4. **`secp256k1 0.29.1` ist vom 2024-09-06** und damit deutlich älter als der übrige Stack. Ob es dafür relevante Advisories gibt, wurde nicht geprüft. `cargo audit` gegen den vollen Lockfile ist Teil des Definition-of-Done (Abschnitt 5.5), nicht dieses Dokuments.
+1. **`docs.rs` was blocked by egress proxy.** Concrete method signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0 (coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API) are **intentionally not invented** in this document. They are marked with `⟨API-VERIFY⟩` and must be fixed against the docs in the first implementation week.
+2. **Coldcard primary advisory not read directly** (see above). Unsuitable for marketing or user text until verified.
+3. **Kyoto peer selection on block download** — whether a match block is loaded from a *different* peer than the filter peer could not be evidenced. That is relevant for the privacy claim in 1.6 and **must be read in the source of `bip157 0.6.3`** before CBF is advertised as a "private default".
+4. **`secp256k1 0.29.1` is from 2024-09-06** and thus clearly older than the rest of the stack. Whether relevant advisories exist for it was not checked. `cargo audit` against the full lockfile is part of the definition of done (Section 5.5), not of this document.
 
 ---
 
-## 1. Modulschnitt und Datenfluss
+## 1. Module cut and data flow
 
-### 1.1 Repo-Struktur
+### 1.1 Repo structure
 
 ```
 btc-trinity/
-├── Cargo.toml                     # Workspace, resolver = "2", [workspace.dependencies] mit '='-Pins
-├── Cargo.lock                     # eingecheckt, verpflichtend
-├── rust-toolchain.toml            # exakte Toolchain-Version, kein "stable"
-├── vendor/                        # cargo vendor, eingecheckt; .cargo/config.toml zeigt hierauf
-├── deny.toml                      # cargo-deny: Lizenzen, Advisories, Duplikate
+├── Cargo.toml                     # Workspace, resolver = "2", [workspace.dependencies] with '=' pins
+├── Cargo.lock                     # checked in, mandatory
+├── rust-toolchain.toml            # exact toolchain version, no "stable"
+├── vendor/                        # cargo vendor, checked in; .cargo/config.toml points here
+├── deny.toml                      # cargo-deny: licenses, advisories, duplicates
 │
 ├── crates/
-│   ├── trinity-types/             # ⬜ Kerntypen: Descriptor-String, PsbtB64, Fingerprint,
-│   │                              #    KeySlot{A,B,C}, Network. Keine I/O, keine Secrets.
-│   ├── trinity-entropy/           # 🟥 Entropie-Erzeugung, Würfel, BIP-39-Ableitung
-│   ├── trinity-keystore/          # 🟥 Blob-Format, AEAD, Argon2id, KEK-Handling, zeroize
-│   ├── trinity-signer/            # 🟥 Signer-Trait, LocalSigner, ExternalSigner-Adapter
+│   ├── trinity-types/             # ⬜ core types: Descriptor string, PsbtB64, Fingerprint,
+│   │                              #    KeySlot{A,B,C}, Network. No I/O, no secrets.
+│   ├── trinity-entropy/           # 🟥 entropy generation, dice, BIP-39 derivation
+│   ├── trinity-keystore/          # 🟥 blob format, AEAD, Argon2id, KEK handling, zeroize
+│   ├── trinity-signer/            # 🟥 Signer trait, LocalSigner, ExternalSigner adapter
 │   ├── trinity-transport/         # ⬜ PsbtTransport: QR (bbqr/ur), NFC, BLE, USB.
-│   │                              #    Sieht nur PSBTs, xpubs, BIP-388-Policies.
-│   ├── trinity-verify/            # ⬜ UNABHÄNGIGER PSBT-Verifier. Darf `miniscript` NICHT nutzen.
-│   ├── trinity-watch/             # ⬜ BDK-Wallet, Descriptor-Persistenz, TxBuilder, Adressen
-│   ├── trinity-chain/             # ⬜ ChainBackend-Trait + Electrum / Core-RPC / CBF
-│   ├── trinity-export/            # ⬜ Sparrow-JSON, BSMS (BIP-129), Core-`importdescriptors`,
-│   │                              #    Backup-PDF/Druckansicht
-│   └── trinity-ffi/               # 🟨 uniffi-Fassade. EINZIGER Crate mit #[uniffi::export].
+│   │                              #    Sees only PSBTs, xpubs, BIP-388 policies.
+│   ├── trinity-verify/            # ⬜ INDEPENDENT PSBT verifier. Must NOT use `miniscript`.
+│   ├── trinity-watch/             # ⬜ BDK wallet, descriptor persistence, TxBuilder, addresses
+│   ├── trinity-chain/             # ⬜ ChainBackend trait + Electrum / Core-RPC / CBF
+│   ├── trinity-export/            # ⬜ Sparrow JSON, BSMS (BIP-129), Core `importdescriptors`,
+│   │                              #    backup PDF/print view
+│   └── trinity-ffi/               # 🟨 uniffi facade. ONLY crate with #[uniffi::export].
 │
 ├── platform/
 │   ├── ios/TrinityPlatform/       # Swift: Keychain, SecAccessControl, LAContext,
-│   │                              #    PassphraseField (kein String!), PlatformKeyStore-Impl
+│   │                              #    PassphraseField (no String!), PlatformKeyStore impl
 │   └── android/trinity-platform/  # Kotlin: KeyStore, BiometricPrompt, StrongBox,
-│                                  #    PassphraseField (CharArray/ByteArray), PlatformKeyStore-Impl
+│                                  #    PassphraseField (CharArray/ByteArray), PlatformKeyStore impl
 │
-├── app/                           # React Native / TypeScript. Sieht ausschließlich PSBTs,
-│                                  #    Adressen, Beträge, Descriptor. Nie ein Secret.
+├── app/                           # React Native / TypeScript. Sees exclusively PSBTs,
+│                                  #    addresses, amounts, descriptor. Never a secret.
 │
 ├── tests/
-│   ├── differential/              # gegen Bitcoin Core 30.2 (regtest)
+│   ├── differential/              # against Bitcoin Core 30.2 (regtest)
 │   ├── property/                  # proptest
-│   ├── vectors/                   # eingefrorene Testvektoren, inkl. BIP-48/67-Fälle
-│   └── signet-e2e/                # vollständiger Recovery-Durchlauf, läuft in CI
+│   ├── vectors/                   # frozen test vectors, incl. BIP-48/67 cases
+│   └── signet-e2e/                # full recovery run, runs in CI
 │
 └── docs/
-    ├── SPECIFICATION.md           # dieses Dokument
-    └── RECOVERY.md                # Wiederherstellung ohne diese App (Sparrow, Bitcoin Core)
+    ├── SPECIFICATION.md           # this document
+    └── RECOVERY.md                # recovery without this app (Sparrow, Bitcoin Core)
 ```
 
-**Legende:** 🟥 sieht Schlüsselmaterial · 🟨 Vertrauensgrenze · ⬜ nie Schlüsselmaterial
+**Legend:** 🟥 sees key material · 🟨 trust boundary · ⬜ never key material
 
-### 1.2 Verantwortlichkeiten und Abhängigkeitsrichtung
+### 1.2 Responsibilities and dependency direction
 
 ```mermaid
 flowchart TB
     subgraph JS["app/ — React Native (TypeScript)"]
-        UI["UI, Navigation, Adressbuch<br/>sieht: PSBT-b64, Adressen, Beträge, Descriptor"]
+        UI["UI, navigation, address book<br/>sees: PSBT-b64, addresses, amounts, descriptor"]
     end
 
     subgraph NAT["platform/ — Swift / Kotlin"]
-        PF["PassphraseField<br/>Data / ByteArray — niemals String"]
+        PF["PassphraseField<br/>Data / ByteArray — never String"]
         PKS["PlatformKeyStore<br/>Keychain / Android Keystore"]
-        BIO["Biometrie-Prompt<br/>LAContext / BiometricPrompt"]
+        BIO["Biometric prompt<br/>LAContext / BiometricPrompt"]
     end
 
     subgraph FFI["trinity-ffi — uniffi 0.32.0"]
-        FACADE["TrinityCore<br/>PSBT rein → PSBT raus"]
+        FACADE["TrinityCore<br/>PSBT in → PSBT out"]
     end
 
-    subgraph SECRET["Vertrauenszone — Rust, Secrets"]
+    subgraph SECRET["Trust zone — Rust, secrets"]
         ENT["trinity-entropy"]
         KS["trinity-keystore"]
         SIG["trinity-signer"]
     end
 
-    subgraph CLEAN["Rust, ohne Secrets"]
+    subgraph CLEAN["Rust, without secrets"]
         WATCH["trinity-watch (BDK)"]
-        VER["trinity-verify<br/>eigener Parser"]
+        VER["trinity-verify<br/>own parser"]
         CHAIN["trinity-chain"]
         EXP["trinity-export"]
     end
@@ -280,10 +280,10 @@ flowchart TB
     FACADE --> EXP
     SIG --> KS
     KS -->|"Callback: unwrap_kek()"| PKS
-    PKS -.->|"erzwingt"| BIO
+    PKS -.->|"enforces"| BIO
     ENT --> KS
     WATCH --> CHAIN
-    SIG -.->|"prüft VOR Signatur"| VER
+    SIG -.->|"checks BEFORE signature"| VER
 
     style SECRET fill:#3a1010,stroke:#c0392b,stroke-width:3px,color:#fff
     style FFI fill:#3a3010,stroke:#d4a017,stroke-width:3px,color:#fff
@@ -292,31 +292,31 @@ flowchart TB
     style NAT fill:#2a1030,stroke:#8e44ad,color:#fff
 ```
 
-**Regel:** Abhängigkeiten zeigen nie von `CLEAN` nach `SECRET`. `trinity-verify` hängt weder von `trinity-signer` noch von `trinity-keystore` noch von `miniscript` ab — durchgesetzt per `cargo-deny` `[bans]` und CI-Check.
+**Rule:** Dependencies never point from `CLEAN` to `SECRET`. `trinity-verify` depends neither on `trinity-signer` nor on `trinity-keystore` nor on `miniscript` — enforced via `cargo-deny` `[bans]` and CI check.
 
-### 1.3 Die Vertrauensgrenze — exakt (Entscheidung E1)
+### 1.3 The trust boundary — exact (Decision E1)
 
-Der Crate `trinity-ffi` ist der **einzige** mit `#[uniffi::export]`. Alles, was diese Grenze überquert, steht hier vollständig:
+The crate `trinity-ffi` is the **only** one with `#[uniffi::export]`. Everything that crosses this boundary is listed here completely:
 
-#### Erlaubte Typen über die Grenze
+#### Allowed types across the boundary
 
-| Typ | Richtung | Inhalt |
+| Type | Direction | Content |
 |---|---|---|
-| `String` (PSBT base64) | ⇄ | PSBT nach BIP-174. Enthält xpubs und Ableitungspfade, **nie** privates Material. |
-| `String` (Descriptor) | ⇄ | `wsh(sortedmulti(2,…))` mit Origin-Info und Checksum. |
-| `String` (Adresse, txid, tx hex) | ⇄ | Öffentlich. |
-| `u64` (Satoshi), `u32` (Höhe, Index) | ⇄ | Öffentlich. |
-| `SecretBytes` | **nur ⟶ Rust** | UTF-8-Bytes der Passphrase, Würfelwürfe oder Recovery-Wortliste. Custom uniffi-Typ, siehe unten. Nie aus JS. |
-| `Arc<dyn PlatformKeyStore>` | Callback ⟵ Rust | Rust ruft die Plattform. Nicht umgekehrt. |
-| Structs aus `trinity-types` | ⇄ | Reine Wertetypen ohne Secrets (`Balance`, `AddressInfo`, `PsbtVerdict`, `SendRequest`). |
+| `String` (PSBT base64) | ⇄ | PSBT per BIP-174. Contains xpubs and derivation paths, **never** private material. |
+| `String` (descriptor) | ⇄ | `wsh(sortedmulti(2,…))` with origin info and checksum. |
+| `String` (address, txid, tx hex) | ⇄ | Public. |
+| `u64` (satoshi), `u32` (height, index) | ⇄ | Public. |
+| `SecretBytes` | **only ⟶ Rust** | UTF-8 bytes of the passphrase, dice rolls, or recovery word list. Custom uniffi type, see below. Never from JS. |
+| `Arc<dyn PlatformKeyStore>` | Callback ⟵ Rust | Rust calls the platform. Not the reverse. |
+| Structs from `trinity-types` | ⇄ | Pure value types without secrets (`Balance`, `AddressInfo`, `PsbtVerdict`, `SendRequest`). |
 
-#### Verbotene Typen über die Grenze — CI-erzwungen
+#### Forbidden types across the boundary — CI-enforced
 
-`Mnemonic`, `Xpriv`, `SecretKey`, `[u8; 32]`-Entropie, `Seed`, jeder Typ aus `trinity-keystore` außer `KeySlot`, und **jeder `String`, der Geheimes tragen könnte**.
+`Mnemonic`, `Xpriv`, `SecretKey`, `[u8; 32]` entropy, `Seed`, every type from `trinity-keystore` except `KeySlot`, and **every `String` that could carry secrets**.
 
-> **CI-Gate `ffi-boundary`:** Ein Skript parst alle `#[uniffi::export]`-Signaturen in `trinity-ffi` und vergleicht sie gegen eine eingecheckte Allowlist (`crates/trinity-ffi/ffi-allowlist.toml`). Jede neue oder geänderte Signatur bricht den Build, bis die Allowlist bewusst angepasst wird. Diese Grenze ist zu wichtig, um sie Code-Review zu überlassen.
+> **CI gate `ffi-boundary`:** A script parses all `#[uniffi::export]` signatures in `trinity-ffi` and compares them against a checked-in allowlist (`crates/trinity-ffi/ffi-allowlist.toml`). Every new or changed signature breaks the build until the allowlist is deliberately adjusted. This boundary is too important to leave to code review.
 
-#### `SecretBytes` — warum ein eigener Typ
+#### `SecretBytes` — why a custom type
 
 ```rust
 // crates/trinity-types/src/secret.rs
@@ -325,81 +325,81 @@ pub struct SecretBytes(zeroize::Zeroizing<Vec<u8>>);
 
 #[uniffi::export]
 impl SecretBytes {
-    /// Nimmt Bytes von der Plattformschicht entgegen. NIEMALS aus JS aufrufen.
+    /// Accepts bytes from the platform layer. NEVER call from JS.
     #[uniffi::constructor]
     pub fn from_platform(bytes: Vec<u8>) -> Arc<Self> { /* … */ }
-    /// Länge zur UI-Rückmeldung — der einzige lesende Zugriff über FFI.
+    /// Length for UI feedback — the only reading access over FFI.
     pub fn len(&self) -> u32 { /* … */ }
 }
 // Drop ⇒ zeroize
 ```
 
-**Was dieser Typ leistet und was nicht — ehrlich:**
+**What this type does and does not — honestly:**
 
-- ✔ Der Inhalt ist über FFI **nicht auslesbar**; nur `len()` ist exportiert.
-- ✔ Auf der Rust-Seite wird beim Drop zuverlässig genullt.
-- ⚠️ **uniffi kopiert `Vec<u8>` durch einen `RustBuffer`.** Diese Zwischenkopie muss explizit genullt werden, sonst ist die Passphrase noch im FFI-Puffer. Die Nullung ist im Konstruktor durchzuführen; **⟨API-VERIFY⟩** ob uniffi 0.32.0 hierfür einen Hook bietet oder ob der Puffer manuell über `RustBuffer::destroy` behandelt werden muss.
-- ⚠️ **Die Plattform-Kopie muss die Plattform nullen.** Swift-`String` und Kotlin-`String` sind — wie JS-Strings — unveränderlich und nicht überschreibbar. **Die Passphrase darf auch in Swift und Kotlin nie als `String` existieren.**
-  - iOS: `UITextField` mit eigenem `UIKeyInput`-Delegate, Zeichen direkt in ein `UnsafeMutableRawBufferPointer`; Löschung per `memset_s`. Kein `.text`-Zugriff, kein SwiftUI-`@State private var pass: String`.
-  - Android: `EditText` mit `getText().getChars(...)` in ein `CharArray`, Umwandlung in `ByteArray`, danach `Arrays.fill(chars, '\u0000')` und `ByteArray.fill(0)`. Kein `.toString()`.
-- ❌ **Nicht geleistet:** Schutz gegen Swapping, Speicher-Snapshots des Betriebssystems oder einen Debugger im Prozess. `mlock`/`memlock` ist auf iOS für Apps nicht verfügbar; auf Android nur eingeschränkt. **Diese Lücke bleibt offen und ist nicht schließbar.**
+- ✔ The content is **not readable** over FFI; only `len()` is exported.
+- ✔ On the Rust side, drop zeros reliably.
+- ⚠️ **uniffi copies `Vec<u8>` through a `RustBuffer`.** This intermediate copy must be explicitly zeroed, otherwise the passphrase remains in the FFI buffer. Zeroing is done in the constructor; **⟨API-VERIFY⟩** whether uniffi 0.32.0 offers a hook for this or whether the buffer must be handled manually via `RustBuffer::destroy`.
+- ⚠️ **The platform copy must be zeroed by the platform.** Swift `String` and Kotlin `String` are — like JS strings — immutable and not overwritable. **The passphrase must never exist as a `String` in Swift or Kotlin either.**
+  - iOS: `UITextField` with custom `UIKeyInput` delegate, characters directly into an `UnsafeMutableRawBufferPointer`; wipe via `memset_s`. No `.text` access, no SwiftUI `@State private var pass: String`.
+  - Android: `EditText` with `getText().getChars(...)` into a `CharArray`, conversion to `ByteArray`, then `Arrays.fill(chars, '\u0000')` and `ByteArray.fill(0)`. No `.toString()`.
+- ❌ **Not achieved:** protection against swapping, OS memory snapshots, or a debugger in the process. `mlock`/`memlock` is not available for apps on iOS; on Android only limited. **This gap remains open and is not closable.**
 
-#### Die exportierte Fassade
+#### The exported facade
 
 ```rust
-// crates/trinity-ffi/src/lib.rs — vollständige exportierte Oberfläche
+// crates/trinity-ffi/src/lib.rs — full exported surface
 
 #[derive(uniffi::Object)]
-pub struct TrinityCore { /* Wallet, Backend, Keystore-Handles */ }
+pub struct TrinityCore { /* Wallet, Backend, Keystore handles */ }
 
 #[uniffi::export]
 impl TrinityCore {
     // ── Watch-only ─────────────────────────────────────────────────
     pub fn descriptor(&self) -> String;
     pub fn balance(&self) -> Balance;
-    pub fn reveal_next_address(&self) -> AddressInfo;              // ⟨API-VERIFY⟩ BDK-3.1-Signatur
+    pub fn reveal_next_address(&self) -> AddressInfo;              // ⟨API-VERIFY⟩ BDK-3.1 signature
     pub fn list_transactions(&self) -> Vec<TxSummary>;
     pub fn sync(&self) -> Result<SyncReport, ChainError>;
 
-    // ── PSBT-Bau ───────────────────────────────────────────────────
+    // ── PSBT construction ──────────────────────────────────────────
     pub fn build_psbt(&self, req: SendRequest) -> Result<String, TxError>;
 
-    // ── Verifikation (unabhängig vom Builder) ──────────────────────
+    // ── Verification (independent of the builder) ──────────────────
     pub fn verify_psbt(&self, psbt_b64: String) -> Result<PsbtVerdict, VerifyError>;
 
-    // ── Signatur: PSBT rein → PSBT raus ────────────────────────────
-    /// Ein Aufruf, eine Geste. Prüft SpendPolicy, verifiziert vor jeder der beiden
-    /// Signaturen und gibt das zweifach signierte PSBT zurück.
-    /// `pass` ist Pflicht oberhalb der Ausgabegrenze, bei Policy-Änderungen,
-    /// bei Export und bei der ersten Nutzung nach Installation (§3.6.3).
-    /// Warum ein Aufruf und nicht zwei: Mit zwei exportierten Aufrufen läge die
-    /// JS-Schicht zwischen den Signaturen, und genau ein biometrischer Prompt
-    /// pro Sendevorgang (S27) wäre nicht mehr garantierbar. `sign_a`/`sign_b`
-    /// bleiben crate-intern in trinity-signer.
+    // ── Signature: PSBT in → PSBT out ──────────────────────────────
+    /// One call, one gesture. Checks SpendPolicy, verifies before each of the two
+    /// signatures, and returns the doubly signed PSBT.
+    /// `pass` is required above the spending limit, on policy changes,
+    /// on export, and on first use after installation (§3.6.3).
+    /// Why one call and not two: with two exported calls the JS layer would sit
+    /// between the signatures, and exactly one biometric prompt
+    /// per send (S27) would no longer be guaranteeable. `sign_a`/`sign_b`
+    /// remain crate-internal in trinity-signer.
     pub fn sign_ab(&self, psbt_b64: String, pass: Option<Arc<SecretBytes>>)
         -> Result<String, SignError>;
 
-    /// Recovery-Pfad (§6.4): signiert mit einem aus einer Wortliste abgeleiteten
-    /// Schlüssel. Die Wörter kommen als SecretBytes aus der NATIVEN Schicht,
-    /// nie aus JS, werden nie persistiert und nach der Signatur genullt.
+    /// Recovery path (§6.4): signs with a key derived from a word list.
+    /// The words come as SecretBytes from the NATIVE layer,
+    /// never from JS, are never persisted, and are zeroed after the signature.
     pub fn sign_with_recovery_key(&self, psbt_b64: String, slot: KeySlot,
                                   words: Arc<SecretBytes>) -> Result<String, SignError>;
 
-    // ── Abschluss ──────────────────────────────────────────────────
+    // ── Completion ─────────────────────────────────────────────────
     pub fn finalize(&self, psbt_b64: String) -> Result<String, FinalizeError>;   // → tx hex
     pub fn broadcast(&self, tx_hex: String) -> Result<String, ChainError>;       // → txid
 
-    // ── Onboarding / Export ────────────────────────────────────────
+    // ── Onboarding / export ────────────────────────────────────────
     /// SetupConfig { word_count: 24|12, c_source: InApp|Hardware, extra_entropy: Vec<ExtraSource> }
-    /// word_count und c_source sind nach begin_setup unveränderlich (E3b, E6).
+    /// word_count and c_source are immutable after begin_setup (E3b, E6).
     pub fn begin_setup(&self, cfg: SetupConfig) -> Result<SetupHandle, SetupError>;
-    pub fn quiz_challenge(&self, slot: KeySlot) -> Vec<u32>;        // Wortindizes, nicht Wörter
+    pub fn quiz_challenge(&self, slot: KeySlot) -> Vec<u32>;        // word indices, not words
     pub fn quiz_answer(&self, slot: KeySlot, answers: Vec<String>) -> QuizResult;
 
-    // ── Hardware-Signer (Abschnitt 2.7) ────────────────────────────
+    // ── Hardware signer (Section 2.7) ──────────────────────────────
     pub fn hw_discover(&self, kind: TransportKind) -> Result<Vec<DeviceRef>, TransportError>;
     pub fn hw_import_xpub(&self, dev: DeviceRef, slot: KeySlot)
-        -> Result<XpubWithOrigin, TransportError>;               // Bestätigung auf Gerätedisplay
+        -> Result<XpubWithOrigin, TransportError>;               // confirmation on device display
     pub fn hw_register_policy(&self, dev: DeviceRef) -> Result<String, TransportError>; // PolicyId
     pub fn hw_sign(&self, dev: DeviceRef, psbt_b64: String) -> Result<String, TransportError>;
     pub fn export_bsms(&self) -> String;
@@ -407,11 +407,11 @@ impl TrinityCore {
     pub fn export_core_importdescriptors(&self) -> String;
 }
 
-/// Rust ruft die Plattform — nicht umgekehrt. Kein JS im Pfad.
+/// Rust calls the platform — not the reverse. No JS in the path.
 #[uniffi::export(with_foreign)]
 pub trait PlatformKeyStore: Send + Sync {
-    /// Entpackt den KEK. iOS: SE-ECIES-Unwrap. Android: Keystore-AES-GCM-Unwrap.
-    /// Löst plattformseitig Biometrie (Slot A) bzw. Passcode (Slot B) aus.
+    /// Unwraps the KEK. iOS: SE-ECIES unwrap. Android: Keystore AES-GCM unwrap.
+    /// Triggers platform-side biometrics (slot A) or passcode (slot B).
     fn unwrap_kek(&self, slot: KeySlot, wrapped: Vec<u8>) -> Result<Vec<u8>, PlatformError>;
     fn wrap_kek(&self, slot: KeySlot, plain: Vec<u8>) -> Result<Vec<u8>, PlatformError>;
     fn provision(&self, slot: KeySlot, policy: SlotPolicy) -> Result<(), PlatformError>;
@@ -419,35 +419,35 @@ pub trait PlatformKeyStore: Send + Sync {
 }
 ```
 
-**Was über diese Grenze *nicht* geht und warum das die zentrale Aussage ist:** Es gibt keine exportierte Funktion, die einen Seed, ein Mnemonic oder einen xpriv zurückgibt. Auch nicht für „Backup anzeigen" — der Backup-Screen wird **nativ** gerendert (Abschnitt 6.1), aus Daten, die der Rust-Kern über einen Callback direkt in eine plattformseitige, nicht-`String`-Darstellung schreibt. Der JS-Heap sieht die Wörter nie.
+**What does *not* cross this boundary and why that is the central claim:** There is no exported function that returns a seed, a mnemonic, or an xpriv. Not even for "show backup" — the backup screen is rendered **natively** (Section 6.1), from data that the Rust core writes via a callback directly into a platform-side non-`String` representation. The JS heap never sees the words.
 
-### 1.4 Datenfluss: was liegt wo
+### 1.4 Data flow: what sits where
 
-| Datum | Ort | Verschlüsselt | Backup | JS sichtbar |
+| Datum | Location | Encrypted | Backup | JS visible |
 |---|---|---|---|---|
-| Seed A (32 B Entropie) | `blob_A` im App-Sandbox-Dateisystem | ✔ XChaCha20-Poly1305 | **nein** (bewusst) | nein |
-| Seed B (32 B Entropie) | `blob_B` im App-Sandbox-Dateisystem | ✔ XChaCha20-Poly1305 | Papier (Pflicht) | nein |
-| Seed C | ausschließlich Papier/Stahl | — | Papier (Pflicht) | nein |
-| KEK A | iOS: SE-gewrappt · Android: Keystore-gewrappt | ✔ hardwaregebunden | nein | nein |
-| KEK B | Keystore-/SE-gewrappt, `.userPresence` | ✔ hardwaregebunden | nein | nein |
-| Passphrase-Verifier `H` | Policy-Record, `SHA-256(Argon2id(pass))` | nein — Hash, kein Schlüssel | nein | nein |
-| `SpendPolicy` + Fensterzähler | verschlüsselter Kernzustand | ✔ | nein | nur Anzeigewerte |
-| xpubs A/B/C + Origin | `descriptor.json`, Klartext | nein | Papier + Cloud erlaubt | **ja** |
-| Descriptor | `descriptor.json`, Klartext | nein | **Papier, Pflicht** | **ja** |
-| UTXO-Set, Adressindex, Tx-Historie | SQLite (`bdk_chain` rusqlite) | nein | optional | ja |
-| PSBTs | flüchtig | nein | — | **ja** |
+| Seed A (32 B entropy) | `blob_A` in app-sandbox filesystem | ✔ XChaCha20-Poly1305 | **no** (deliberate) | no |
+| Seed B (32 B entropy) | `blob_B` in app-sandbox filesystem | ✔ XChaCha20-Poly1305 | paper (mandatory) | no |
+| Seed C | exclusively paper/steel | — | paper (mandatory) | no |
+| KEK A | iOS: SE-wrapped · Android: Keystore-wrapped | ✔ hardware-bound | no | no |
+| KEK B | Keystore/SE-wrapped, `.userPresence` | ✔ hardware-bound | no | no |
+| Passphrase verifier `H` | policy record, `SHA-256(Argon2id(pass))` | no — hash, not a key | no | no |
+| `SpendPolicy` + window counter | encrypted core state | ✔ | no | display values only |
+| xpubs A/B/C + origin | `descriptor.json`, plaintext | no | paper + cloud allowed | **yes** |
+| Descriptor | `descriptor.json`, plaintext | no | **paper, mandatory** | **yes** |
+| UTXO set, address index, tx history | SQLite (`bdk_chain` rusqlite) | no | optional | yes |
+| PSBTs | ephemeral | no | — | **yes** |
 
-> **Warum blob_A bewusst kein Backup hat:** A ist der Schlüssel, dessen Verlust das System aushalten *muss* (Geräteverlust → B + C). Ein Backup von A würde die Anzahl der Orte erhöhen, an denen Schlüsselmaterial existiert, ohne die Sicherheitsaussage zu verbessern. Das ist eine bewusste Entscheidung, kein Versäumnis — und im Onboarding so zu erklären.
+> **Why blob_A deliberately has no backup:** A is the key whose loss the system *must* tolerate (device loss → B + C). A backup of A would increase the number of places where key material exists without improving the security claim. That is a deliberate decision, not an omission — and must be explained as such in onboarding.
 
-> **Privacy-Hinweis zum JS-Heap:** PSBTs und der Descriptor enthalten xpubs. Ein Angreifer mit JS-Zugriff kennt damit alle Adressen der Wallet, vergangene wie künftige — aber kann nichts ausgeben. Da der Descriptor ohnehin in der Watch-only-DB liegt, ist das **kein** zusätzlicher Leak durch die JS-Schicht. Erwähnt, damit es niemand für eine Lücke hält.
+> **Privacy note on the JS heap:** PSBTs and the descriptor contain xpubs. An attacker with JS access thus knows all addresses of the wallet, past and future — but can spend nothing. Since the descriptor already sits in the watch-only DB, this is **not** an additional leak through the JS layer. Mentioned so nobody mistakes it for a hole.
 
-### 1.5 `trinity-verify` — Unabhängigkeit vom Builder (Entscheidung E2)
+### 1.5 `trinity-verify` — independence from the builder (Decision E2)
 
-**Das Problem:** Wenn `miniscript` den Descriptor sowohl beim Bauen als auch beim Prüfen parst, bestätigt ein Parser-Bug sich selbst. Der Verifier wäre eine Tautologie.
+**The problem:** If `miniscript` parses the descriptor both when building and when checking, a parser bug confirms itself. The verifier would be a tautology.
 
-**Die Lösung — und ihre exakte Reichweite:**
+**The solution — and its exact reach:**
 
-`trinity-verify` implementiert einen **eigenen, minimalen Parser** für genau eine Grammatik:
+`trinity-verify` implements an **own, minimal parser** for exactly one grammar:
 
 ```
 descriptor := "wsh(" sortedmulti ")" "#" checksum
@@ -455,51 +455,51 @@ sortedmulti := "sortedmulti(" k "," keyexpr ("," keyexpr){2} ")"
 keyexpr := "[" fingerprint "/" origin_path "]" xpub "/" derivation
 ```
 
-Alles andere ist ein **harter Fehler**, kein Fallback. Der Parser akzeptiert weder `multi`, noch `sh(wsh(…))`, noch `tr(…)`, noch andere k/n. Der Wertebereich ist so klein, dass ~250 Zeilen genügen und vollständige Testabdeckung realistisch ist.
+Everything else is a **hard error**, not a fallback. The parser accepts neither `multi`, nor `sh(wsh(…))`, nor `tr(…)`, nor other k/n. The value domain is so small that ~250 lines suffice and full test coverage is realistic.
 
-Der Verifier leitet **selbst** ab:
+The verifier derives **itself**:
 
 ```rust
-// crates/trinity-verify/src/lib.rs — keine miniscript-Abhängigkeit
+// crates/trinity-verify/src/lib.rs — no miniscript dependency
 pub fn verify(psbt: &Psbt, descriptor: &str, policy: &VerifyPolicy) -> Result<PsbtVerdict, VerifyError> {
-    let d = parse_trinity_descriptor(descriptor)?;   // eigener Parser
-    // eigene BIP-32-CKDpub, eigene BIP-67-Sortierung, eigener witnessScript-Bau
+    let d = parse_trinity_descriptor(descriptor)?;   // own parser
+    // own BIP-32 CKDpub, own BIP-67 sorting, own witnessScript construction
     // ...
 }
 ```
 
-**Prüfliste — jeder Punkt ist eine harte Ablehnung, kein Warnhinweis:**
+**Check list — every item is a hard rejection, not a warning:**
 
-| # | Prüfung | Wogegen |
+| # | Check | Against |
 |---|---|---|
-| V1 | Descriptor-Checksum (BIP-380) valide | Übertragungsfehler, manipulierter Descriptor-String |
-| V2 | Jeder Input-`witness_utxo.script_pubkey` ist `OP_0 <sha256(witnessScript)>` und der witnessScript ist unabhängig aus dem Descriptor rekonstruiert | Fremde Inputs, falsches Skript |
-| V3 | Für **jeden** Output: entweder in `policy.declared_recipients` **oder** eine aus dem Descriptor unabhängig abgeleitete Change-Adresse im aktuellen Gap-Fenster | **Gefälschte Change-Adresse** — der zentrale Angriff |
-| V4 | Für jede Change-Ableitung: `bip32_derivation` enthält alle drei Fingerprints, Pfade sind `m/48'/0'/0'/2'/1/i`, und die daraus abgeleiteten Pubkeys ergeben nach BIP-67-Sortierung genau den witnessScript des Outputs | Manipulierte Ableitungspfade, untergeschobene Keys |
-| V5 | `fee = Σ inputs − Σ outputs`, `fee > 0`, `fee ≤ policy.max_absolute_fee` **und** `feerate ≤ policy.max_feerate` | Fee-Sniping-Angriff, „Gebühr frisst Wallet" |
-| V6 | Summe an Nicht-Change-Outputs == vom Nutzer bestätigter Betrag, bitgenau | Betragsmanipulation zwischen Bestätigung und Signatur |
-| V7 | Keine Inputs, die nicht in der Watch-only-UTXO-Liste stehen | Untergeschobene Fremd-Inputs |
-| V8 | `PSBT_GLOBAL_UNSIGNED_TX` ist konsistent zu allen Input/Output-Maps; keine unbekannten Proprietary-Felder | PSBT-Feld-Verwirrung |
-| V9 | Alle Inputs haben `witness_utxo`; kein `non_witness_utxo`-only | Fee-Manipulation über fehlende Betragsinformation |
-| V10 | Nach Signatur: die eigene Signatur ist **low-s** und deterministisch reproduzierbar | Nonce-Fehler (siehe 3.4) |
+| V1 | Descriptor checksum (BIP-380) valid | Transmission errors, manipulated descriptor string |
+| V2 | Every input `witness_utxo.script_pubkey` is `OP_0 <sha256(witnessScript)>` and the witnessScript is independently reconstructed from the descriptor | Foreign inputs, wrong script |
+| V3 | For **every** output: either in `policy.declared_recipients` **or** a change address independently derived from the descriptor in the current gap window | **Forged change address** — the central attack |
+| V4 | For every change derivation: `bip32_derivation` contains all three fingerprints, paths are `m/48'/0'/0'/2'/1/i`, and the pubkeys derived from them yield after BIP-67 sorting exactly the witnessScript of the output | Manipulated derivation paths, substituted keys |
+| V5 | `fee = Σ inputs − Σ outputs`, `fee > 0`, `fee ≤ policy.max_absolute_fee` **and** `feerate ≤ policy.max_feerate` | Fee-sniping attack, "fee eats wallet" |
+| V6 | Sum of non-change outputs == amount confirmed by the user, bit-exact | Amount manipulation between confirmation and signature |
+| V7 | No inputs that are not in the watch-only UTXO list | Substituted foreign inputs |
+| V8 | `PSBT_GLOBAL_UNSIGNED_TX` is consistent with all input/output maps; no unknown proprietary fields | PSBT field confusion |
+| V9 | All inputs have `witness_utxo`; no `non_witness_utxo`-only | Fee manipulation via missing amount information |
+| V10 | After signature: own signature is **low-s** and deterministically reproducible | Nonce failure (see 3.4) |
 
-**Wo die Unabhängigkeit endet — explizit:**
+**Where independence ends — explicitly:**
 
-| Schicht | Builder | Verifier | Unabhängig? |
+| Layer | Builder | Verifier | Independent? |
 |---|---|---|---|
-| Descriptor-Parsing | `miniscript 12.3.7` | eigener Parser | ✔ **ja** |
-| BIP-32-Ableitung | `bitcoin::bip32` | eigene CKDpub-Implementierung | ✔ **ja** |
-| BIP-67-Sortierung | `miniscript` | eigene Sortierung | ✔ **ja** |
-| Skript-Konstruktion | `miniscript` | eigener Builder | ✔ **ja** |
-| PSBT-Deserialisierung | `bitcoin::psbt` | `bitcoin::psbt` | ❌ geteilt |
-| SHA-256 / RIPEMD-160 | `bitcoin_hashes` | `bitcoin_hashes` | ❌ geteilt |
-| EC-Punktarithmetik | `secp256k1 0.29.1` | `secp256k1 0.29.1` | ❌ geteilt |
+| Descriptor parsing | `miniscript 12.3.7` | own parser | ✔ **yes** |
+| BIP-32 derivation | `bitcoin::bip32` | own CKDpub implementation | ✔ **yes** |
+| BIP-67 sorting | `miniscript` | own sorting | ✔ **yes** |
+| Script construction | `miniscript` | own builder | ✔ **yes** |
+| PSBT deserialization | `bitcoin::psbt` | `bitcoin::psbt` | ❌ shared |
+| SHA-256 / RIPEMD-160 | `bitcoin_hashes` | `bitcoin_hashes` | ❌ shared |
+| EC point arithmetic | `secp256k1 0.29.1` | `secp256k1 0.29.1` | ❌ shared |
 
-Die geteilte Kryptografie **nicht** zu teilen hieße, secp256k1 oder SHA-256 selbst zu schreiben. Das ist verboten (Randbedingung: keine eigene Kryptografie) und wäre schlechter. Die dritte Meinung für diese Schicht kommt aus dem Differential Testing gegen Bitcoin Core (Abschnitt 5.1) — offline, in CI, nicht zur Laufzeit.
+Not sharing the shared cryptography would mean writing secp256k1 or SHA-256 yourself. That is forbidden (constraint: no custom cryptography) and would be worse. The third opinion for this layer comes from differential testing against Bitcoin Core (Section 5.1) — offline, in CI, not at runtime.
 
-**Wo der Verifier läuft:** In `sign_ab` (exportiert) vor jedem der beiden crate-internen Signaturschritte, **vor** jedem Zugriff auf Schlüsselmaterial. Zusätzlich exportiert über `verify_psbt`, damit die UI vor der Bestätigung anzeigen kann, was signiert würde. Ein Fehlschlag bricht ab, bevor der KEK überhaupt angefordert wird — die Biometrie-Abfrage erscheint gar nicht erst.
+**Where the verifier runs:** In `sign_ab` (exported) before each of the two crate-internal signature steps, **before** any access to key material. Additionally exported via `verify_psbt`, so the UI can show before confirmation what would be signed. A failure aborts before the KEK is even requested — the biometric prompt never appears.
 
-### 1.6 `trinity-chain` — austauschbare Anbindung
+### 1.6 `trinity-chain` — swappable connectivity
 
 ```rust
 // crates/trinity-chain/src/lib.rs
@@ -509,239 +509,239 @@ pub trait ChainBackend: Send + Sync {
     fn broadcast(&self, tx: &Transaction) -> Result<Txid, ChainError>;
     fn fee_estimates(&self) -> Result<FeeEstimates, ChainError>;
     fn tip_height(&self) -> Result<u32, ChainError>;
-    fn privacy_profile(&self) -> PrivacyProfile;    // für die UI-Anzeige, s.u.
+    fn privacy_profile(&self) -> PrivacyProfile;    // for UI display, see below
 }
 ```
 
-| Impl | Crates | Konfiguration |
+| Impl | Crates | Configuration |
 |---|---|---|
-| `ElectrumBackend` | `bdk_electrum 0.24.0` → `electrum-client 0.25.0` | Host, Port, TLS-Pin, optional SOCKS5 (Tor) |
-| `CoreRpcBackend` | `bdk_bitcoind_rpc 0.22.0` → `bitcoincore-rpc 0.19.0` | RPC-URL, Cookie oder User/Pass; getestet gegen **Core 30.2** |
-| `CbfBackend` | `bdk_kyoto 0.17.0` → `bip157 0.6.3` | Peer-Liste oder DNS-Seeds, optional feste Peers, optional Tor |
+| `ElectrumBackend` | `bdk_electrum 0.24.0` → `electrum-client 0.25.0` | Host, port, TLS pin, optional SOCKS5 (Tor) |
+| `CoreRpcBackend` | `bdk_bitcoind_rpc 0.22.0` → `bitcoincore-rpc 0.19.0` | RPC URL, cookie or user/pass; tested against **Core 30.2** |
+| `CbfBackend` | `bdk_kyoto 0.17.0` → `bip157 0.6.3` | Peer list or DNS seeds, optional fixed peers, optional Tor |
 
-**Kein Default-Server des Herstellers.** Es gibt keinen von uns betriebenen Electrum- oder Esplora-Endpunkt. Der Default ist CBF; wer einen Server will, trägt ihn selbst ein.
+**No vendor default server.** There is no Electrum or Esplora endpoint we operate. The default is CBF; whoever wants a server enters it themselves.
 
-#### Was ein Backend im Standardfall sieht — ehrlich
+#### What a backend sees in the standard case — honestly
 
-| Backend | Der Gegenüber lernt | Größenordnung |
+| Backend | The counterparty learns | Magnitude |
 |---|---|---|
-| **Electrum, eigener Server** | Alle scriptPubKeys, den vollständigen Wallet-Graphen, jeden Saldo, jede Sync-Zeit, die IP. | Nur der eigene Hoster/VPS-Anbieter — bei Betrieb zu Hause: niemand außerhalb. |
-| **Electrum, fremder Server** | Dasselbe, aber für einen Dritten. **Die Wallet ist gegenüber diesem Server vollständig deanonymisiert.** | ⚠️ Muss in der UI unmissverständlich stehen, nicht in einer Hilfeseite. |
-| **Bitcoin Core RPC, eigener Node** | Nichts über den Node hinaus. Der Node selbst leakt beim P2P-Verkehr keine Wallet-Information (kein Bloom-Filter). | Beste Option, wenn ein Node existiert. |
-| **CBF (BIP-157/158)** | Peers lernen: eine IP lädt Header und Filter (verrät **nichts** über die Wallet) und lädt anschließend **bestimmte Blöcke vollständig** (verrät: „in diesem Block ist wahrscheinlich eine für mich relevante Transaktion"). Über viele Blöcke hinweg ist das ein statistischer Leak. | Deutlich besser als Electrum, **nicht** null. |
-| **Broadcast** | Der Peer/Server, der die Transaktion zuerst sieht, kann sie mit der IP verknüpfen. | Getrennt zu behandeln, s.u. |
+| **Electrum, own server** | All scriptPubKeys, the full wallet graph, every balance, every sync time, the IP. | Only own hoster/VPS provider — when run at home: nobody outside. |
+| **Electrum, third-party server** | The same, but for a third party. **The wallet is fully deanonymized toward this server.** | ⚠️ Must stand unmistakeably in the UI, not on a help page. |
+| **Bitcoin Core RPC, own node** | Nothing beyond the node. The node itself leaks no wallet information on P2P traffic (no bloom filter). | Best option when a node exists. |
+| **CBF (BIP-157/158)** | Peers learn: an IP loads headers and filters (reveals **nothing** about the wallet) and then loads **certain blocks fully** (reveals: "in this block there is likely a transaction relevant to me"). Across many blocks that is a statistical leak. | Clearly better than Electrum, **not** zero. |
+| **Broadcast** | The peer/server that first sees the transaction can link it to the IP. | To be treated separately, see below. |
 
-**Zwei daraus folgende Anforderungen:**
+**Two requirements that follow:**
 
-1. **Broadcast über einen anderen Weg als Sync.** Wer über Electrum synct und über denselben Server broadcastet, liefert die stärkste mögliche Verknüpfung. Der `broadcast`-Aufruf muss ein eigenes, unabhängig konfigurierbares Backend nutzen dürfen (Default: CBF-Peers oder Tor).
-2. **Der CBF-Privacy-Anspruch ist zu belegen, bevor er behauptet wird.** Ob `bip157 0.6.3` Match-Blöcke von einem *anderen* Peer lädt als demjenigen, der die Filter lieferte, ist offen (Abschnitt 0.3, Lücke 3). Ohne diesen Nachweis darf die UI CBF nicht als „privat" labeln, sondern nur als „privater als ein fremder Electrum-Server".
+1. **Broadcast over a different path than sync.** Whoever syncs via Electrum and broadcasts via the same server delivers the strongest possible linkage. The `broadcast` call must be allowed to use its own independently configurable backend (default: CBF peers or Tor).
+2. **The CBF privacy claim must be evidenced before it is asserted.** Whether `bip157 0.6.3` loads match blocks from a *different* peer than the one that supplied the filters is open (Section 0.3, gap 3). Without that evidence the UI may not label CBF as "private", only as "more private than a third-party Electrum server".
 
-### 1.7 Abhängigkeitsminimierung und Supply Chain (Anforderung 10)
+### 1.7 Dependency minimization and supply chain (Requirement 10)
 
-| Maßnahme | Konkret |
+| Measure | Concrete |
 |---|---|
-| Exakte Pins | `=`-Versionen im `[workspace.dependencies]`, nicht `^`. `Cargo.lock` eingecheckt. |
-| Vendoring | `cargo vendor` nach `vendor/`, eingecheckt, `.cargo/config.toml` mit `replace-with = "vendored-sources"`. Der Build zieht **nichts** aus dem Netz. |
-| Toolchain-Pin | `rust-toolchain.toml` mit exakter Version + Komponenten-Hashes. Kein `stable`. |
-| Reproducible Builds | Deterministische `--remap-path-prefix`, `SOURCE_DATE_EPOCH`, Build im Container mit gepinntem Digest. Verifikation durch mindestens zwei unabhängige Builder vor jedem Release. |
-| Audit-Gates | `cargo-deny` (Advisories, Lizenzen, **Duplikat-Crates**, `[bans]` für `miniscript` in `trinity-verify`), `cargo-audit` gegen den gesamten Lockfile, `cargo-vet` für Review-Status der Deps. |
-| **Lizenzen ohne Gebühren** | Allowlist statt Denylist in `cargo-deny [licenses]`; eine unbekannte Lizenz bricht den Build. **Am 2026-08-08 gegen den realen Baum ausgeführt und grün.** Es gibt **keine** Komponente mit Nutzungsgebühr, kein kommerzielles SDK, keinen Dienst mit laufenden Kosten — laufende Kosten erzwängen eine Serverabhängigkeit, die der Auftrag ausschließt. Die Unterscheidung, auf die es dabei ankommt, steht unten. |
+| Exact pins | `=` versions in `[workspace.dependencies]`, not `^`. `Cargo.lock` checked in. |
+| Vendoring | `cargo vendor` into `vendor/`, checked in, `.cargo/config.toml` with `replace-with = "vendored-sources"`. The build pulls **nothing** from the network. |
+| Toolchain pin | `rust-toolchain.toml` with exact version + component hashes. No `stable`. |
+| Reproducible builds | Deterministic `--remap-path-prefix`, `SOURCE_DATE_EPOCH`, build in container with pinned digest. Verification by at least two independent builders before every release. |
+| Audit gates | `cargo-deny` (advisories, licenses, **duplicate crates**, `[bans]` for `miniscript` in `trinity-verify`), `cargo-audit` against the full lockfile, `cargo-vet` for review status of deps. |
+| **Licenses without fees** | Allowlist instead of denylist in `cargo-deny [licenses]`; an unknown license breaks the build. **Run against the real tree on 2026-08-08 and green.** There is **no** component with a usage fee, no commercial SDK, no service with ongoing costs — ongoing costs would force a server dependency the brief excludes. The distinction that matters is below. |
 
-> **Copyleft ist nicht gleich Copyleft — die Prüfung hat das erzwungen.** Der erste Lauf von `cargo deny` scheiterte an **uniffi, das unter MPL-2.0 steht** — und uniffi trägt Entscheidung E1, die FFI-Vertrauensgrenze. Ein pauschales „kein Copyleft" hätte damit die Architektur unmöglich gemacht. Die belastbare Regel:
+> **Copyleft is not all equal — the check forced that.** The first run of `cargo deny` failed on **uniffi, which is under MPL-2.0** — and uniffi carries Decision E1, the FFI trust boundary. A blanket "no copyleft" would have made the architecture impossible. The durable rule:
 >
-> | Klasse | Beispiele | Wirkung | Zulassung |
+> | Class | Examples | Effect | Admission |
 > |---|---|---|---|
-> | **Datei-Copyleft** | MPL-2.0 (`uniffi`) | Wer eine abgedeckte **Datei** ändert, veröffentlicht diese Datei. Greift **nicht** auf die übrige Anwendung durch. Keine Gebühr. | ✅ **zugelassen** |
-> | **Projekt-Copyleft** | GPL-*, AGPL-*, SSPL, BUSL | Erfasst die gesamte Anwendung bzw. verlangt Quelloffenlegung beim Betrieb. | ❌ **ausgeschlossen**, ohne Einzelfallprüfung |
-> | Kommerziell / gebührenpflichtig | jedes SDK mit Lizenzkosten | laufende Kosten | ❌ **ausgeschlossen** |
+> | **File copyleft** | MPL-2.0 (`uniffi`) | Whoever changes a covered **file** publishes that file. Does **not** reach into the rest of the application. No fee. | ✅ **admitted** |
+> | **Project copyleft** | GPL-*, AGPL-*, SSPL, BUSL | Captures the entire application or requires source disclosure when operating. | ❌ **excluded**, without case-by-case review |
+> | Commercial / fee-bearing | every SDK with license costs | ongoing costs | ❌ **excluded** |
 >
-> **Konsequenz für die Umsetzung:** Solange uniffi *verwendet* und nicht *geändert* wird, entsteht keine Verpflichtung. Wird je eine uniffi-Datei gepatcht, ist genau diese Datei zu veröffentlichen — das ist im PR zu vermerken, und ein Fork von uniffi braucht eine ausdrückliche Entscheidung. Im `deny.toml` steht diese Begründung an der Allowlist selbst, damit sie nicht verloren geht.
+> **Consequence for implementation:** As long as uniffi is *used* and not *changed*, no obligation arises. If any uniffi file is patched, exactly that file must be published — to be noted in the PR, and a fork of uniffi needs an explicit decision. In `deny.toml` this rationale sits on the allowlist itself so it is not lost.
 >
-> Weitere durch die Prüfung aufgedeckte, unproblematische Lizenzen im Baum: `CC0-1.0` (rust-bitcoin, secp256k1, miniscript — Public-Domain-Widmung), `MITNFA`, `BlueOak-1.0.0`, `BSL-1.0`, `Unlicense`, `0BSD`, `Unicode-3.0`, `Zlib`.
-| Keine dynamischen Nachladewege | Keine OTA-Bundles, kein CodePush, kein Remote-Config, kein Feature-Flag-Dienst. Der JS-Bundle ist Teil des signierten App-Binaries. **Diese Regel ist bei React Native aktiv durchzusetzen — sie ist nicht der Default.** |
-| Signaturpfad-Budget | Harte Obergrenze für die transitive, externe Dependency-Zahl von `trinity-types`, `-entropy`, `-keystore`, `-signer` und `-verify` (nur `-e normal`, ohne Dev- und Build-Deps). **Gemessen am 2026-08-09: 40 externe Crates. Gate bei 45.** Die Zahl stammt aus `scripts/dep_budget.py` (`MEASURED`), nicht aus einer Schätzung; Anheben nur mit Begründung im PR. Zum Vergleich: `trinity-verify` allein kommt mit **22** aus. |
+> Further licenses uncovered by the check, unproblematic in the tree: `CC0-1.0` (rust-bitcoin, secp256k1, miniscript — public-domain dedication), `MITNFA`, `BlueOak-1.0.0`, `BSL-1.0`, `Unlicense`, `0BSD`, `Unicode-3.0`, `Zlib`.
+| No dynamic reload paths | No OTA bundles, no CodePush, no remote config, no feature-flag service. The JS bundle is part of the signed app binary. **This rule must be actively enforced with React Native — it is not the default.** |
+| Signature-path budget | Hard upper bound on the transitive external dependency count of `trinity-types`, `-entropy`, `-keystore`, `-signer`, and `-verify` (only `-e normal`, without dev and build deps). **Measured on 2026-08-09: 40 external crates. Gate at 45.** The number comes from `scripts/dep_budget.py` (`MEASURED`), not from an estimate; raising only with justification in the PR. For comparison: `trinity-verify` alone gets by with **22**. |
 
-> **Ehrlicher Hinweis zu React Native:** Die JS-Schicht bringt hunderte npm-Abhängigkeiten mit. Diese liegen zwar außerhalb des Signaturpfads (sie sehen nie ein Secret), aber sie können **anzeigen, was sie wollen** — insbesondere eine falsche Empfängeradresse. Der Verifier (1.5) und die native Bestätigungsanzeige (Abschnitt 6.2) sind die Antwort darauf. Die npm-Supply-Chain ist damit nicht harmlos, sondern auf „kann täuschen, kann nicht stehlen" reduziert.
+> **Honest note on React Native:** The JS layer brings hundreds of npm dependencies. These sit outside the signature path (they never see a secret), but they can **display whatever they want** — in particular a wrong recipient address. The verifier (1.5) and the native confirmation display (Section 6.2) are the answer. The npm supply chain is thus not harmless, but reduced to "can deceive, cannot steal".
 
 ---
 
-## 2. Schlüssel-Lebenszyklus
+## 2. Key lifecycle
 
-### 2.1 Warum Entropie hier zuerst kommt
+### 2.1 Why entropy comes first here
 
-Der Coldcard-Vorfall vom Juli 2026 ist der Grund, warum dieser Abschnitt vor allem anderen steht. Eine Änderung im Firmware-Build ersetzte den Hardware-RNG durch einen vorhersagbaren Software-Ersatz; die effektive Entropie fiel von 128 auf ~72 bit (Mk4/Mk5/Q) bzw. ~40 bit (Mk3). Ein Angreifer räumte in etwa 25 Minuten rund 594 BTC aus etwa 500 Wallets. **Das Firmware-Update reparierte keinen einzigen bereits erzeugten Seed.**
+The Coldcard incident of July 2026 is why this section stands before everything else. A change in the firmware build replaced the hardware RNG with a predictable software substitute; effective entropy fell from 128 to ~72 bit (Mk4/Mk5/Q) or ~40 bit (Mk3). An attacker cleared about 594 BTC from about 500 wallets in about 25 minutes. **The firmware update repaired not a single already generated seed.**
 
-Drei Lehren, die sich hier direkt in Anforderungen übersetzen:
+Three lessons that translate directly into requirements here:
 
-1. Ein schwacher Seed ist **permanent**. Es gibt kein nachträgliches Reparieren, nur Migration.
-2. Wer Würfel benutzt hatte, war geschützt. Nutzerseitige Entropie ist kein Ritual — sie war der Unterschied.
-3. Der Fehler war **nicht** im Krypto-Algorithmus, sondern im Build. Reproducible Builds und ein extern nachrechenbarer Ableitungspfad sind deshalb Sicherheitsmaßnahmen, keine Hygiene.
+1. A weak seed is **permanent**. There is no later repair, only migration.
+2. Whoever had used dice was protected. User-side entropy is not a ritual — it was the difference.
+3. The bug was **not** in the crypto algorithm, but in the build. Reproducible builds and an externally re-computable derivation path are therefore security measures, not hygiene.
 
-### 2.2 Entropieerzeugung (Anforderung 3, Entscheidung E3)
+### 2.2 Entropy generation (Requirement 3, Decision E3)
 
 ```
-L           := 32 (24 Wörter) oder 16 (12 Wörter)         // pro Wallet gewählt, s. 2.2.3
+L           := 32 (24 words) or 16 (12 words)         // chosen per wallet, see 2.2.3
 raw_csprng  := getrandom(32)                              // OS-CSPRNG
-extra_bytes := kanonische Kodierung der Zusatzquelle       // OPTIONAL, ggf. leer
+extra_bytes := canonical encoding of the additional source // OPTIONAL, possibly empty
 extract     := HMAC-SHA512(key = raw_csprng, msg = extra_bytes)
 entropy     := extract[0..L]
-mnemonic    := BIP-39(entropy)                            // 24 bzw. 12 Wörter
-seed        := PBKDF2-HMAC-SHA512(mnemonic, "mnemonic", 2048, 64)   // BIP-39, ohne Passphrase
+mnemonic    := BIP-39(entropy)                            // 24 or 12 words
+seed        := PBKDF2-HMAC-SHA512(mnemonic, "mnemonic", 2048, 64)   // BIP-39, without passphrase
 xprv        := BIP-32-Master(seed)
 ```
 
-**Warum diese Konstruktion sicher ist — die Kette, nicht die Behauptung:**
+**Why this construction is secure — the chain, not the claim:**
 
-HMAC ist die Extract-Stufe von HKDF (RFC 5869) und ein etablierter Randomness-Extractor. Für die Kombination zweier Quellen ergibt sich:
+HMAC is the extract stage of HKDF (RFC 5869) and an established randomness extractor. For combining two sources:
 
-| Fall | `raw_csprng` | `extra_bytes` | Entropie des Ergebnisses |
+| Case | `raw_csprng` | `extra_bytes` | Entropy of the result |
 |---|---|---|---|
-| Normalfall | 256 bit gut | leer oder bekannt | **min(256, 8·L) bit** — HMAC mit unbekanntem Key ist ein PRF |
-| CSPRNG gebrochen (Coldcard-Szenario) | 0 bit, Angreifer kennt den Key | 128+ bit geheim | **≥ 128 bit** — Angreifer muss die Zusatzquelle raten |
-| **CSPRNG gebrochen, keine Zusatzquelle** | 0 bit | leer | 🔴 **0 bit — der Seed ist vorhersagbar** |
-| Beides gebrochen | 0 bit | 0 bit | 0 bit |
+| Normal case | 256 bit good | empty or known | **min(256, 8·L) bit** — HMAC with unknown key is a PRF |
+| CSPRNG broken (Coldcard scenario) | 0 bit, attacker knows the key | 128+ bit secret | **≥ 128 bit** — attacker must guess the additional source |
+| **CSPRNG broken, no additional source** | 0 bit | empty | 🔴 **0 bit — the seed is predictable** |
+| Both broken | 0 bit | 0 bit | 0 bit |
 
-Die Konstruktion ist ein **OR-Kombinierer**: sie ist so stark wie die *stärkere* der beiden Quellen, und eine zusätzliche Quelle kann das Ergebnis **nie verschlechtern**. Genau deshalb darf jede beliebige Zusatzquelle eingespeist werden — die einzige Frage ist, wie viele Bit man ihr *anrechnet*.
+The construction is an **OR combiner**: it is as strong as the *stronger* of the two sources, and an additional source can **never make the result worse**. Exactly therefore any additional source may be fed in — the only question is how many bits one *credits* to it.
 
-Zeile 3 der Tabelle ist der Coldcard-Fall. Ohne Zusatzquelle ist er nicht abgedeckt (siehe T10).
+Row 3 of the table is the Coldcard case. Without additional source it is not covered (see T10).
 
-#### 2.2.1 Zusatzentropie — was zählt und was nicht
+#### 2.2.1 Additional entropy — what counts and what does not
 
-Zusatzentropie ist durchgehend **optional** (Entscheidung E3), aber **vorausgewählt**: Der Würfel-Schritt ist im Onboarding standardmäßig aktiv und wird mit einem sichtbaren „Überspringen" verlassen, nicht mit einem „Aktivieren" betreten. Kein Zwang, keine Blockade, keine Warnschwelle — nur die Reihenfolge der Voreinstellung.
+Additional entropy is **optional** throughout (Decision E3), but **pre-selected**: the dice step is active by default in onboarding and is left with a visible "Skip", not entered with an "Activate". No compulsion, no block, no warning threshold — only the order of the default.
 
-> **Warum diese Voreinstellung und nicht die umgekehrte:** Der Coldcard-Vorfall traf ausschließlich Nutzer *ohne* eigene Würfel; wer ≥ 50 Würfe eingegeben hatte, war unberührt. Die Zusatzquelle ist damit die einzige bekannte Maßnahme, die gegen genau diesen Fehlertyp gewirkt hat — und sie kostet zehn Minuten einmalig. Eine Voreinstellung ist kein Zwang: wer sie nicht will, tippt einmal auf „Überspringen". Sie sorgt nur dafür, dass der sichere Weg auch der bequeme ist. **Hardware allein ersetzt das nicht** — Coldcard *war* Hardware.
+> **Why this default and not the reverse:** The Coldcard incident hit exclusively users *without* their own dice; whoever had entered ≥ 50 rolls was untouched. The additional source is thus the only known measure that worked against exactly this failure type — and it costs ten minutes once. A default is not compulsion: whoever does not want it taps "Skip" once. It only ensures that the safe path is also the convenient one. **Hardware alone does not replace this** — Coldcard *was* hardware.
 
-Die App bietet mehrere Quellen an; sie zerfallen in zwei Klassen, und die Unterscheidung ist die eigentliche Sicherheitsaussage.
+The app offers several sources; they fall into two classes, and the distinction is the actual security claim.
 
-**Klasse A — zählbare Entropie.** Die Bit lassen sich aus der Kombinatorik exakt berechnen, deshalb darf der Fortschrittsbalken sie gutschreiben.
+**Class A — countable entropy.** The bits can be computed exactly from combinatorics, so the progress bar may credit them.
 
-| Quelle | Bit pro Einheit | Für 128 bit | Für 256 bit | Kanonische Kodierung |
+| Source | Bits per unit | For 128 bit | For 256 bit | Canonical encoding |
 |---|---|---|---|---|
-| **Würfel (d6)** | log₂ 6 ≈ 2,585 | 50 Würfe | 99 Würfe | ASCII `1`–`6`, ohne Trennzeichen |
-| **Münzwurf** | 1,000 | 128 Würfe | 256 Würfe | ASCII `0`/`1` |
-| **Spielkarten**, vollständig gemischtes 52er-Deck | log₂(52!) ≈ 225,6 pro Deck | 1 Deck (gekürzt) | 2 Mischungen | ASCII, Rang+Farbe je Karte, z.B. `AS`, `10H`, `KD` |
-| **Hardware-Signer als Quelle** | RNG des Geräts | — | — | **Kein `extra_bytes`** — das Gerät erzeugt den Seed selbst, die App sieht nur den xpub (Abschnitt 2.7) |
-| **Zweites Telefon / anderer OS-CSPRNG** | ⚠️ 0 anrechenbar | — | — | Nicht anbieten. Beide Geräte können denselben Implementierungsfehler haben; „anderes Gerät" ist keine andere Implementierung. |
+| **Dice (d6)** | log₂ 6 ≈ 2.585 | 50 rolls | 99 rolls | ASCII `1`–`6`, no separators |
+| **Coin flip** | 1.000 | 128 flips | 256 flips | ASCII `0`/`1` |
+| **Playing cards**, fully shuffled 52-card deck | log₂(52!) ≈ 225.6 per deck | 1 deck (truncated) | 2 shuffles | ASCII, rank+suit per card, e.g. `AS`, `10H`, `KD` |
+| **Hardware signer as source** | device RNG | — | — | **No `extra_bytes`** — the device generates the seed itself, the app sees only the xpub (Section 2.7) |
+| **Second phone / other OS-CSPRNG** | ⚠️ 0 credit | — | — | Do not offer. Both devices can share the same implementation bug; "other device" is not another implementation. |
 
-**Klasse B — nicht zählbare Entropie.** Darf eingespeist, aber **nie angerechnet** werden.
+**Class B — non-countable entropy.** May be fed in, but **never credited**.
 
-| Quelle | Warum nicht zählbar |
+| Source | Why not countable |
 |---|---|
-| Kamerarauschen | In einem dunklen oder gleichmäßig ausgeleuchteten Raum ist das Bild nahezu konstant. Der Sensor liefert oft bereits entrauschte, komprimierte Frames. |
-| Mikrofonrauschen | In stiller Umgebung nahezu konstant; viele Geräte wenden Rauschunterdrückung an, bevor die App die Samples sieht. |
-| Beschleunigungssensor, Gyroskop | Liegendes Gerät = konstante Werte. Bei Bewegung wenige Bit, stark autokorreliert. |
-| Touch-Jitter, Eingabe-Timing | Wenige Bit, systematisch verzerrt, aus Sensordaten teilweise rekonstruierbar. |
-| Systemzeit, Uptime, Geräte-ID | Öffentlich oder erratbar. Null Bit. |
+| Camera noise | In a dark or evenly lit room the image is nearly constant. The sensor often already delivers denoised, compressed frames. |
+| Microphone noise | In a quiet environment nearly constant; many devices apply noise reduction before the app sees the samples. |
+| Accelerometer, gyroscope | Device lying still = constant values. In motion few bits, strongly autocorrelated. |
+| Touch jitter, input timing | Few bits, systematically biased, partly reconstructible from sensor data. |
+| System time, uptime, device ID | Public or guessable. Zero bits. |
 
-> **Die Regel dazu, und sie ist nicht verhandelbar:** Klasse-B-Quellen werden in `extra_bytes` mit aufgenommen, wenn der Nutzer sie aktiviert — der OR-Kombinierer macht das nie schlechter. Der Entropie-Zähler in der UI schreibt ihnen **exakt 0 bit** gut. Die klassische Fehlerquelle bei selbstgebauten Entropiequellen ist nicht, dass Sensorrauschen genutzt wird, sondern dass ihm 128 bit angerechnet werden, die es nicht hat. Ein Fortschrittsbalken, der bei „Handy schütteln" auf 100 % springt, erzeugt falsche Sicherheit — und falsche Sicherheit ist hier schlimmer als gar keine Zusatzquelle, weil der Nutzer dann die zählbare Quelle weglässt.
+> **The rule on this, and it is non-negotiable:** Class-B sources are included in `extra_bytes` when the user activates them — the OR combiner never makes that worse. The entropy counter in the UI credits them **exactly 0 bit**. The classic failure mode of homemade entropy sources is not that sensor noise is used, but that it is credited 128 bits it does not have. A progress bar that jumps to 100 % on "shake the phone" creates false security — and false security is worse here than no additional source at all, because the user then skips the countable source.
 
-#### 2.2.2 Kanonische Kodierung von `extra_bytes`
+#### 2.2.2 Canonical encoding of `extra_bytes`
 
-Muss extern nachrechenbar sein, deshalb exakt festgelegt. Mehrere aktivierte Quellen werden in fester Reihenfolge mit einem `0x1E` (Record Separator) getrennt konkateniert; die Reihenfolge ist die Enum-Reihenfolge `Dice < Coin < Cards < SensorNoise`, nicht die Aktivierungsreihenfolge.
+Must be externally re-computable, hence fixed exactly. Multiple activated sources are concatenated in fixed order separated by `0x1E` (Record Separator); the order is the enum order `Dice < Coin < Cards < SensorNoise`, not activation order.
 
 ```
 extra_bytes = [dice_ascii] 0x1E [coin_ascii] 0x1E [cards_ascii] 0x1E [sensor_blob]
 ```
 
-Nicht aktivierte Quellen liefern eine leere Bytefolge; ihr Separator entfällt. Sind **keine** Quellen aktiv, ist `extra_bytes` die leere Bytefolge, und `extract = HMAC-SHA512(raw_csprng, "")`. Beispiel Würfel: 5 Würfe 3,1,6,6,2 → `"31662"` → `0x33 0x31 0x36 0x36 0x32`.
+Inactive sources yield an empty byte sequence; their separator is omitted. If **no** sources are active, `extra_bytes` is the empty byte sequence, and `extract = HMAC-SHA512(raw_csprng, "")`. Example dice: 5 rolls 3,1,6,6,2 → `"31662"` → `0x33 0x31 0x36 0x36 0x32`.
 
-Das Verifikationsblatt (2.2.4) druckt `extra_bytes` als Hex mit, sonst ist die Ableitung nicht nachrechenbar.
+The verification sheet (2.2.4) prints `extra_bytes` as hex as well, otherwise the derivation is not re-computable.
 
-#### 2.2.3 Wortlänge — pro Schlüssel (Entscheidung E3b)
+#### 2.2.3 Word length — per key (Decision E3b)
 
-Die Wortlänge wird **je Schlüssel** festgelegt, nicht einheitlich pro Wallet. Das ist technisch unproblematisch, weil A, B und C ohnehin aus unabhängiger Entropie stammen (Randbedingung 1) und der Descriptor nur die xpubs sieht — die Seed-Länge ist ihm gleichgültig.
+Word length is fixed **per key**, not uniformly per wallet. That is technically unproblematic because A, B, and C already come from independent entropy (constraint 1) and the descriptor only sees the xpubs — seed length is indifferent to it.
 
-| Schlüssel | Wortlänge | Begründung |
+| Key | Word length | Rationale |
 |---|---|---|
-| **A** | **12 oder 24, wählbar** (Default 24) | Von A existiert bewusst kein Backup (1.4). A ist der Schlüssel, dessen Verlust das System aushalten *muss*. Hier hat der Nutzer die Wahl. |
-| **B** | **12 oder 24, wählbar** (Default 24) | Siehe Kasten unten — folgt zwingend aus Randbedingung 2 (A/B-Symmetrie). |
-| **C** | **fest 24** | C ist reiner Papier-/Stahl-Schlüssel, wird einmal geschrieben und liegt Jahrzehnte. Keine Bequemlichkeitsersparnis rechtfertigt hier eine Option, die niemand mehr korrigieren kann. |
+| **A** | **12 or 24, choosable** (default 24) | Of A there deliberately exists no backup (1.4). A is the key whose loss the system *must* tolerate. Here the user has the choice. |
+| **B** | **12 or 24, choosable** (default 24) | See box below — follows mandatorily from constraint 2 (A/B symmetry). |
+| **C** | **fixed 24** | C is pure paper/steel key, written once and sits for decades. No convenience saving justifies an option here that nobody can correct later. |
 
-> **Warum B wählbar ist und nicht wie C fixiert:** Randbedingung 2 des Auftrags ist nicht verhandelbar — A und B werden symmetrisch implementiert, „ein Codepfad, zwei Konfigurationen, sie unterscheiden sich **nur im Entsperrfaktor**". Würde ich B auf 24 festnageln, während A wählbar ist, entstünde ein zweiter Unterschied zwischen A und B. Das wäre ein Verstoß gegen eine gesetzte Randbedingung, nicht eine Ermessensentscheidung. **Empfehlung im UI:** B auf dieselbe Länge wie C setzen (also 24), damit die beiden Papier-Backups, die zusammen die Recovery tragen, dasselbe Format haben — aber als Empfehlung, nicht als Zwang.
+> **Why B is choosable and not fixed like C:** Constraint 2 of the brief is non-negotiable — A and B are implemented symmetrically, "one code path, two configurations, they differ **only in the unlock factor**". If I nailed B to 24 while A is choosable, a second difference between A and B would arise. That would be a violation of a set constraint, not a discretionary decision. **UI recommendation:** set B to the same length as C (i.e. 24), so the two paper backups that together carry recovery have the same format — but as recommendation, not compulsion.
 
-| | 24 Wörter | 12 Wörter |
+| | 24 words | 12 words |
 |---|---|---|
-| `L` | 32 Byte | 16 Byte |
-| Entropie | 256 bit | 128 bit |
-| Zählbare Zusatzquelle für volle Deckung | 99 Würfel / 256 Münzen / 2 Kartenmischungen | 50 Würfel / 128 Münzen / 1 Kartendeck |
-| Quiz-Stichprobe | 4 aus 24 | **3 aus 12** |
+| `L` | 32 bytes | 16 bytes |
+| Entropy | 256 bit | 128 bit |
+| Countable additional source for full coverage | 99 dice / 256 coins / 2 card shuffles | 50 dice / 128 coins / 1 card deck |
+| Quiz sample | 4 of 24 | **3 of 12** |
 
-**Zur Sicherheitsfrage:** 128 bit sind gegen Brute-Force nach heutigem Stand ausreichend — der Aufwand liegt jenseits des physikalisch Erreichbaren, und Bitcoins eigenes Sicherheitsniveau liegt für einen einzelnen Schlüssel bei ~128 bit (secp256k1). 12 Wörter sind also **kein Sicherheitskompromiss gegen einen Rechenangriff.** Der reale Unterschied ist ein anderer: bei 12 Wörtern trägt die Zusatzquelle nur halb so viel Reserve, falls der CSPRNG teilweise versagt. UI-Text entsprechend sachlich — **ohne** Angstsprache, weil 12 Wörter kein Fehler sind.
+**On the security question:** 128 bit is sufficient against brute-force by today's standard — the effort sits beyond the physically reachable, and Bitcoin's own security level for a single key sits at ~128 bit (secp256k1). 12 words are thus **not a security compromise against a computational attack.** The real difference is another: with 12 words the additional source carries only half as much reserve if the CSPRNG partially fails. UI text accordingly factual — **without** fear language, because 12 words are not a mistake.
 
-**Unveränderlich nach dem Onboarding.** Eine spätere Änderung wäre ein neues Setup mit Sweep.
+**Immutable after onboarding.** A later change would be a new setup with sweep.
 
-**Wichtig für das Datenmodell:** `word_count` liegt **pro Blob** im Header (2.4) und **pro Schlüssel** in `descriptor.json`. Ein einzelnes Wallet-weites Feld genügt nicht mehr — die Recovery-UI muss für B und C unterschiedlich viele Eingabefelder zeigen können, und der Quiz-Generator zieht je Slot aus einem anderen Bereich.
+**Important for the data model:** `word_count` sits **per blob** in the header (2.4) and **per key** in `descriptor.json`. A single wallet-wide field no longer suffices — the recovery UI must be able to show different numbers of input fields for B and C, and the quiz generator draws per slot from a different range.
 
-#### 2.2.4 Nachweisbarkeit
+#### 2.2.4 Evidencability
 
-Was die App anzeigen und exportieren können muss:
+What the app must be able to display and export:
 
-1. `raw_csprng` als 64 Hex-Zeichen, auf Wunsch anzeigbar
-2. `extra_bytes` als Hex **und** in der jeweiligen Eingabedarstellung (Ziffernfolge, Kartenliste), anzeigbar
-3. `entropy` als 32 bzw. 64 Hex-Zeichen, anzeigbar
-4. Die 24 bzw. 12 BIP-39-Wörter
-5. Ein **Verifikationsblatt** mit exakt der obigen Formelkette inklusive `L` und der Separator-Regel aus 2.2.2, sodass jeder mit `openssl dgst -sha512 -hmac` und einem BIP-39-Tool die Ableitung offline nachrechnen kann
+1. `raw_csprng` as 64 hex characters, displayable on request
+2. `extra_bytes` as hex **and** in the respective input representation (digit sequence, card list), displayable
+3. `entropy` as 32 or 64 hex characters, displayable
+4. The 24 or 12 BIP-39 words
+5. A **verification sheet** with exactly the formula chain above including `L` and the separator rule from 2.2.2, so anyone can re-compute the derivation offline with `openssl dgst -sha512 -hmac` and a BIP-39 tool
 
-Punkt 5 ist die eigentliche Anforderung. Ohne ihn ist „nachweisbare Entropie" ein Wort ohne Inhalt.
+Point 5 is the actual requirement. Without it, "evidenced entropy" is a word without content.
 
-#### 2.2.5 Erzeugung von C — drei Wege
+#### 2.2.5 Generation of C — three paths
 
-C ist der Schlüssel, der die Implementierungsdiversität herstellen kann (R2). Wie weit er das tut, hängt vom gewählten Weg ab, und die App muss das benennen statt es zu verwischen.
+C is the key that can establish implementation diversity (R2). How far it does depends on the chosen path, and the app must name that instead of blurring it.
 
-| Weg | Verfahren | Deckt T10 (RNG-Fehler) | Deckt T9 (Supply Chain) | Aufwand |
+| Path | Procedure | Covers T10 (RNG failure) | Covers T9 (supply chain) | Effort |
 |---|---|---|---|---|
-| **(a) Hardware-Signer** ⭐ | C wird auf dem angebundenen Gerät erzeugt, die App importiert nur `xpub_C` mit Origin (Abschnitt 2.7) | ✅ anderer Chip, andere Firmware, anderer RNG | ✅ **andere Codebasis** — der einzige Weg, der das wirklich tut | Gerätekauf |
-| **(b) In-App mit zählbarer Zusatzquelle** | Prozess-Neustart, dann Würfel/Münzen/Karten | ✅ bei ausreichend Würfen | ❌ gleiche Codebasis wie A und B | ~10 min |
-| **(c) In-App ohne Zusatzquelle** | Prozess-Neustart, nur OS-CSPRNG | ❌ | ❌ | ~0 min |
+| **(a) Hardware signer** ⭐ | C is generated on the connected device, the app imports only `xpub_C` with origin (Section 2.7) | ✅ other chip, other firmware, other RNG | ✅ **other codebase** — the only path that truly does that | device purchase |
+| **(b) In-app with countable additional source** | process restart, then dice/coins/cards | ✅ with enough rolls | ❌ same codebase as A and B | ~10 min |
+| **(c) In-app without additional source** | process restart, only OS-CSPRNG | ❌ | ❌ | ~0 min |
 
-**Weg (a) ist der empfohlene Default** und wird im Onboarding als erste Option angeboten (Entscheidung E6). Wählt der Nutzer (b) oder (c), zeigt die App in einem Satz, was dadurch offen bleibt — einmal, ohne Wiederholung und ohne Blockade.
+**Path (a) is the recommended default** and is offered as the first option in onboarding (Decision E6). If the user chooses (b) or (c), the app shows in one sentence what remains open — once, without repetition and without blocking.
 
-**Für (b) und (c) — C außerhalb der A/B-Session erzeugen:** Der Ablauf (a) startet erst, nachdem A und B erzeugt, verschlüsselt und aus dem Speicher genullt wurden, (b) erzwingt einen expliziten Prozess-Neustart (`exit(0)` und Kaltstart, nicht nur Screen-Wechsel), (c) prüft den Flugmodus und warnt bei aktiver Netzwerkverbindung, (d) hat keinen Schreibzugriff auf `blob_A`/`blob_B`. Nach Abschluss existiert von C **nur** der xpub in `descriptor.json`.
+**For (b) and (c) — generate C outside the A/B session:** Flow (a) starts only after A and B have been generated, encrypted, and zeroed from memory, (b) forces an explicit process restart (`exit(0)` and cold start, not only a screen change), (c) checks airplane mode and warns on active network connection, (d) has no write access to `blob_A`/`blob_B`. After completion, of C there exists **only** the xpub in `descriptor.json`.
 
-> **Ehrlich zur Reichweite von Weg (b):** Der Prozess-Neustart trennt die *Session*, nicht die *Implementierung*. Ein Bug im RNG-Aufruf oder in der BIP-39-Ableitung trifft C genauso wie A und B — der Neustart hilft nur gegen Speicherreste und versehentliche Kopplung. Gegen den Coldcard-Fehlertyp hilft ausschließlich die zählbare Zusatzquelle (Klasse A) oder Weg (a).
+> **Honest about the reach of path (b):** The process restart separates the *session*, not the *implementation*. A bug in the RNG call or in BIP-39 derivation hits C just as A and B — the restart only helps against memory remnants and accidental coupling. Against the Coldcard failure type only the countable additional source (class A) or path (a) helps.
 
-### 2.3 Ableitung und Descriptor (Anforderung 6)
+### 2.3 Derivation and descriptor (Requirement 6)
 
 ```
-Pfad je Schlüssel:  m / 48' / 0' / 0' / 2'
-                          │     │    │    └─ Skripttyp 2 = P2WSH (BIP-48)
-                          │     │    └────── Account 0
-                          │     └─────────── Coin 0 = Bitcoin Mainnet (Signet/Testnet: 1')
-                          └───────────────── Purpose 48 (BIP-48, Multisig)
+Path per key:  m / 48' / 0' / 0' / 2'
+                          │     │    │    └─ script type 2 = P2WSH (BIP-48)
+                          │     │    └────── account 0
+                          │     └─────────── coin 0 = Bitcoin mainnet (Signet/Testnet: 1')
+                          └───────────────── purpose 48 (BIP-48, multisig)
 
-Descriptor (Receive):
+Descriptor (receive):
 wsh(sortedmulti(2,
   [fpA/48h/0h/0h/2h]xpubA/0/*,
   [fpB/48h/0h/0h/2h]xpubB/0/*,
   [fpC/48h/0h/0h/2h]xpubC/0/*))#checksum
 
-Descriptor (Change):  identisch, /1/* statt /0/*
+Descriptor (change):  identical, /1/* instead of /0/*
 ```
 
-| Regel | Begründung |
+| Rule | Rationale |
 |---|---|
-| `sortedmulti`, nicht `multi` | BIP-67: Schlüssel werden lexikografisch nach der 33-Byte-komprimierten Pubkey sortiert. Die Reihenfolge der Schlüssel im Descriptor wird damit für die Adressableitung irrelevant — ein Recovery-Fehler weniger. Sparrow und Nunchuk sortieren ohnehin automatisch. |
-| Origin-Info `[fingerprint/pfad]` **immer** | Ohne sie kann ein fremder Signer nicht wissen, welchen Ableitungspfad er nehmen soll. Ihr Fehlen ist eine der häufigsten Ursachen gescheiterter Multisig-Recovery. |
-| Checksum (BIP-380) **immer** mit exportieren | Bitcoin Core verlangt sie bei `importdescriptors` und `deriveaddresses`. |
-| Getrennte Receive-/Change-Descriptoren | Explizit statt BIP-389-Multipath. `bdk_wallet 2.1.0+` unterstützt Multipath, aber die Interop-Unterstützung bei anderen Wallets ist schwächer. Zwei Zeilen auf Papier sind billiger als ein gescheitertes Recovery. |
-| Drei getrennte Master-Seeds | Randbedingung 1. Ein Seed mit drei Ableitungspfaden macht das Quorum wertlos: wer den Seed hat, hat alle drei Schlüssel. **CI-Test:** Setup wird abgelehnt, wenn zwei der drei Master-Fingerprints identisch sind (Abschnitt 5.2, P7). |
-| Netzwerk-Trennung | Signet/Testnet nutzen Coin-Type `1'` und einen separaten Descriptor-Store. Kein gemeinsamer Zustand mit Mainnet. |
+| `sortedmulti`, not `multi` | BIP-67: keys are sorted lexicographically by the 33-byte compressed pubkey. Key order in the descriptor thus becomes irrelevant for address derivation — one fewer recovery error. Sparrow and Nunchuk sort automatically anyway. |
+| Origin info `[fingerprint/path]` **always** | Without it a foreign signer cannot know which derivation path to take. Its absence is one of the most common causes of failed multisig recovery. |
+| Checksum (BIP-380) **always** export with it | Bitcoin Core requires it for `importdescriptors` and `deriveaddresses`. |
+| Separate receive/change descriptors | Explicit instead of BIP-389 multipath. `bdk_wallet 2.1.0+` supports multipath, but interop support in other wallets is weaker. Two lines on paper are cheaper than a failed recovery. |
+| Three separate master seeds | Constraint 1. One seed with three derivation paths makes the quorum worthless: whoever has the seed has all three keys. **CI test:** setup is rejected if two of the three master fingerprints are identical (Section 5.2, P7). |
+| Network separation | Signet/Testnet use coin type `1'` and a separate descriptor store. No shared state with mainnet. |
 
-**Descriptor-Persistenz:** `descriptor.json` mit Klartext-Descriptor, allen drei xpubs mit Origin, `birthday_height` je Schlüssel, Netzwerk, Erstellungszeitstempel, Format-Version, **`word_count` je Schlüssel** (`{"A":24,"B":24,"C":24}`, E3b), **`source` je Schlüssel** (`InApp` | `Hardware{model}`) sowie — bei Hardware-Schlüsseln — **`policy_id` je registriertem Gerät** (BIP-388, Abschnitt 2.7.3). Zusätzlich als **BSMS-Record (BIP-129)** exportierbar — der Standard, den Sparrow seit v1.7.3 und Coldcard als Signer und Coordinator unterstützen.
+**Descriptor persistence:** `descriptor.json` with plaintext descriptor, all three xpubs with origin, `birthday_height` per key, network, creation timestamp, format version, **`word_count` per key** (`{"A":24,"B":24,"C":24}`, E3b), **`source` per key** (`InApp` | `Hardware{model}`) and — for hardware keys — **`policy_id` per registered device** (BIP-388, Section 2.7.3). Additionally exportable as **BSMS record (BIP-129)** — the standard Sparrow has supported since v1.7.3 and Coldcard as signer and coordinator.
 
-> **Diese Zusatzfelder gehören auf den Backup-Ausdruck.** `word_count` sagt der Recovery-UI, wie viele Eingabefelder sie **pro Schlüssel** zeigen muss — bei gemischten Längen (z.B. B mit 12, C mit 24) ist das nicht mehr erratbar. `policy_id` erspart bei einem Gerätewechsel die erneute Bestätigung aller drei xpubs auf dem Gerätedisplay. Keines der Felder ist geheim.
+> **These extra fields belong on the backup printout.** `word_count` tells the recovery UI how many input fields to show **per key** — with mixed lengths (e.g. B with 12, C with 24) that is no longer guessable. `policy_id` saves re-confirming all three xpubs on the device display when changing devices. None of the fields is secret.
 
-### 2.4 Schlüssel A und B: symmetrische Implementierung (Anforderung 2)
+### 2.4 Keys A and B: symmetric implementation (Requirement 2)
 
-**Ein Codepfad, zwei Konfigurationen.** Der Unterschied zwischen A und B ist ausschließlich eine `SlotPolicy`:
+**One code path, two configurations.** The difference between A and B is exclusively a `SlotPolicy`:
 
 ```rust
 // crates/trinity-keystore/src/policy.rs
 pub struct SlotPolicy {
-    pub slot: KeySlot,                    // A oder B
+    pub slot: KeySlot,                    // A or B
     pub unlock: UnlockFactor,             // Biometry | Passphrase
     pub hw_binding: HwBinding,            // SecureEnclaveEcies | KeystoreAesGcm
-    pub argon: Option<ArgonProfile>,      // None für A, Some(..) für B
+    pub argon: Option<ArgonProfile>,      // None for A, Some(..) for B
     pub invalidate_on_biometric_change: bool,
     pub require_device_unlocked: bool,
 }
@@ -757,138 +757,138 @@ pub const POLICY_A: SlotPolicy = SlotPolicy {
 
 pub const POLICY_B: SlotPolicy = SlotPolicy {
     slot: KeySlot::B,
-    // blob_B geht mit Benutzerpräsenz auf — Biometrie ODER Gerätepasscode.
-    // Die Passphrase autorisiert (SpendPolicy, Export, Tausch), sie entschlüsselt nicht.
+    // blob_B opens with user presence — biometrics OR device passcode.
+    // The passphrase authorizes (SpendPolicy, export, rotation), it does not decrypt.
     unlock: UnlockFactor::UserPresence,
-    argon: None,                             // Argon2id sitzt im Policy-Record, nicht hier
-    invalidate_on_biometric_change: false,   // B überlebt ein neues Biometrie-Enrollment
+    argon: None,                             // Argon2id sits in the policy record, not here
+    invalidate_on_biometric_change: false,   // B survives a new biometric enrollment
     require_device_unlocked: true,
     /* … */
 };
 ```
 
-> **Abweichung von Randbedingung 4 des Auftrags — bewusst und benannt.** Der Auftrag verlangte ursprünglich, dass es „keinen Biometrie-Shortcut" für die Passphrase gibt. Diese Anforderung ist mit E7 überstimmt worden, nachdem der Maßstab in 0.1 festgelegt wurde: gemessen wird gegen ein Software-Wallet, nicht gegen ein 3×-Hardware-Multisig. Was von Randbedingung 4 **bleibt**: Die Passphrase darf weiterhin nicht der Gerätepasscode sein, liegt nicht im Keychain, wird nie persistiert, und es gibt keinen Weg, sie *auszulesen*. Was **entfällt**: dass sie bei jeder Signatur verlangt wird. Die Sicherheitseigenschaft, die dadurch verloren geht, wird durch die Ausgabegrenze in 3.6.3 teilweise ersetzt — teilweise, nicht vollständig, und genau so steht es in T4b und T5a.
+> **Deviation from constraint 4 of the brief — deliberate and named.** The brief originally required that there be "no biometric shortcut" for the passphrase. That requirement was overridden by E7 after the yardstick in 0.1 was fixed: measurement is against a software wallet, not against a 3×-hardware multisig. What of constraint 4 **remains**: the passphrase still must not be the device passcode, does not sit in the keychain, is never persisted, and there is no way to *read it out*. What **falls away**: that it is required on every signature. The security property lost thereby is partly replaced by the spending limit in 3.6.3 — partly, not fully, and exactly so it stands in T4b and T5a.
 
-#### Blob-Format (identisch für A und B)
+#### Blob format (identical for A and B)
 
 ```
-┌─ Header (AAD, authentifiziert, unverschlüsselt) ──────────────────┐
+┌─ Header (AAD, authenticated, unencrypted) ──────────────────┐
 │ magic       "TRIN"                        4 B                     │
 │ version     u8 = 1                        1 B                     │
 │ slot        u8 (0=A, 1=B)                 1 B                     │
 │ reserved    u8 = 0                        1 B                     │
-│ word_count  u8 (24 oder 12)               1 B    ← Entscheidung E3b│
+│ word_count  u8 (24 or 12)                 1 B    ← Decision E3b│
 │ nonce       24 B (XChaCha20 random)                               │
-│ birthday    u32 LE (Blockhöhe)            4 B                     │
+│ birthday    u32 LE (block height)         4 B                     │
 ├─ Ciphertext ──────────────────────────────────────────────────────┤
-│ entropy     L Byte (32 bei 24 Wörtern, 16 bei 12)                 │
+│ entropy     L bytes (32 for 24 words, 16 for 12)                 │
 │ created_at  u64 LE                         8 B                    │
 ├─ Tag ─────────────────────────────────────────────────────────────┤
 │ Poly1305    16 B                                                  │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-- **AEAD:** XChaCha20-Poly1305. Gewählt gegen AES-256-GCM wegen des 192-bit-Nonce (zufällige Nonces ohne Kollisionsrisiko, kein Zählerzustand) und weil die Software-Implementierung auf Mobilgeräten ohne AES-NI nicht seitenkanalanfällig über Tabellen-Lookups ist.
-- **Header als AAD:** `word_count` ist manipulationsgeschützt — das ist wichtiger, als es aussieht: ohne AAD-Schutz könnte ein Angreifer `word_count` von 24 auf 12 setzen und den Entschlüsseler dazu bringen, nur die halbe Entropie zu lesen.
-- **Kein KDF-Feld mehr im Blob.** Argon2id schützt seit der Korrektur in 2.4 nicht mehr den Blob, sondern den Passphrase-Verifier. `kdf_profile` und `pp_salt` liegen deshalb im Policy-Record (3.6.3), nicht hier — dort, wo sie gebraucht werden. Der Blob wird dadurch für A und B **bitgleich im Format**, was die Symmetrie aus Randbedingung 2 sauberer macht als vorher.
-- **`word_count` im Header:** Entscheidung E3b. Bestimmt `L` und damit die Ciphertext-Länge; die Recovery-UI und der Quiz-Generator lesen es hier.
-- **Gespeichert wird `entropy` (L Byte), nicht der Mnemonic-String.** Der Mnemonic wird bei Bedarf deterministisch neu erzeugt. Ein String weniger im Speicher.
+- **AEAD:** XChaCha20-Poly1305. Chosen against AES-256-GCM because of the 192-bit nonce (random nonces without collision risk, no counter state) and because the software implementation on mobile without AES-NI is not side-channel-vulnerable via table lookups.
+- **Header as AAD:** `word_count` is manipulation-protected — that is more important than it looks: without AAD protection an attacker could set `word_count` from 24 to 12 and make the decryptor read only half the entropy.
+- **No KDF field in the blob anymore.** Since the correction in 2.4, Argon2id no longer protects the blob but the passphrase verifier. `kdf_profile` and `pp_salt` therefore sit in the policy record (3.6.3), not here — where they are needed. The blob thus becomes **bit-identical in format** for A and B, which makes the symmetry from constraint 2 cleaner than before.
+- **`word_count` in the header:** Decision E3b. Determines `L` and thus ciphertext length; the recovery UI and quiz generator read it here.
+- **What is stored is `entropy` (L bytes), not the mnemonic string.** The mnemonic is regenerated deterministically when needed. One fewer string in memory.
 
-#### KEK-Ableitung
+#### KEK derivation
 
 ```
-Slot A:   KEK_A = unwrap_kek(A, wrapped_A)   // Plattform, .biometryCurrentSet
-Slot B:   KEK_B = unwrap_kek(B, wrapped_B)   // Plattform, .userPresence
+Slot A:   KEK_A = unwrap_kek(A, wrapped_A)   // platform, .biometryCurrentSet
+Slot B:   KEK_B = unwrap_kek(B, wrapped_B)   // platform, .userPresence
 ```
 
-Beide Blobs werden also **ausschließlich** durch hardware-gebundene Schlüssel geschützt. Die Passphrase geht **nicht** in KEK_B ein.
+Both blobs are thus protected **exclusively** by hardware-bound keys. The passphrase does **not** enter KEK_B.
 
-> ### ⚠️ Korrektur gegenüber dem ursprünglichen Konzept — und der Preis von E7
+> ### ⚠️ Correction versus the original concept — and the price of E7
 >
-> Das Konzept sah `KEK_B = hardware-gebunden ⊕ Argon2id(Passphrase)` vor. Das ist mit der Ein-Gesten-Signatur (E7) **nicht vereinbar**, und zwar grundsätzlich, nicht nur umsetzungstechnisch:
+> The concept foresaw `KEK_B = hardware-bound ⊕ Argon2id(Passphrase)`. That is **incompatible** with one-gesture signature (E7), and fundamentally so, not only in implementation terms:
 >
-> Jede Ausgabe braucht die Signatur von B. Soll eine Geste einen Sendevorgang abschließen, muss `blob_B` mit dieser Geste aufgehen. Geht er mit der Geste auf, kann die Passphrase nicht Teil seines Schlüssels sein. **Derselbe Schlüssel B signiert kleine wie große Beträge — der Betrag ist eine Eigenschaft der Transaktion, nicht des Schlüssels.** Es gibt daher keine Konstruktion, die B für kleine Beträge biometrisch und für große per Passphrase öffnet. Betragsabhängige Verschlüsselung existiert nicht.
+> Every spend needs B's signature. If one gesture is to complete a send, `blob_B` must open with that gesture. If it opens with the gesture, the passphrase cannot be part of its key. **The same key B signs small and large amounts — the amount is a property of the transaction, not of the key.** There is therefore no construction that opens B biometrically for small amounts and via passphrase for large ones. Amount-dependent encryption does not exist.
 >
-> **Was dadurch verloren geht, exakt benannt:** Bisher hätte ein Angreifer, der `blob_B` **und** den hardware-gebundenen Schlüssel extrahiert, zusätzlich die Passphrase per Offline-Brute-Force gegen Argon2id brechen müssen. Diese zweite Hürde entfällt. Sie greift ohnehin nur, wenn Secure Enclave bzw. StrongBox überwunden werden — dann aber wäre B jetzt sofort offen.
+> **What is lost thereby, named exactly:** Previously an attacker who extracted `blob_B` **and** the hardware-bound key would additionally have had to break the passphrase offline against Argon2id. That second hurdle falls away. It only applied when Secure Enclave or StrongBox were overcome — but then B would now be open immediately.
 >
-> **Was an ihre Stelle tritt:** die Ausgabegrenze (3.6.3) gegen Diebstahl und gegen die JS-Schicht, und die Passphrase als Autorisierungsgeheimnis (unten). Beides ist App-Politik, keine Kryptografie — gegen einen nativen Angreifer wirkungslos. Das ist der ehrliche Preis von E7.
+> **What takes its place:** the spending limit (3.6.3) against theft and against the JS layer, and the passphrase as authorization secret (below). Both are app policy, not cryptography — ineffective against a native attacker. That is the honest price of E7.
 >
-> **Wer die Eigenschaft zurück will, bekommt sie über Hardware-B** (6.6): Dort liegt B's Schlüssel im Secure Element eines separaten Geräts hinter dessen PIN, mit Wipe nach N Fehlversuchen — ein echter zweiter Faktor, und gegen Brute-Force strukturell stärker als die ursprüngliche Passphrase-Konstruktion (6.6.1).
+> **Whoever wants the property back gets it via hardware-B** (6.6): there B's key sits in the secure element of a separate device behind its PIN, with wipe after N failed attempts — a real second factor, and structurally stronger against brute-force than the original passphrase construction (6.6.1).
 
-#### Die Passphrase als Autorisierungsgeheimnis
+#### The passphrase as authorization secret
 
-Sie verschlüsselt nichts mehr, sie autorisiert. Gespeichert wird ein Argon2id-Verifier, kein Schlüssel:
+It no longer encrypts anything; it authorizes. What is stored is an Argon2id verifier, not a key:
 
 ```
 verifier = Argon2id(pass, pp_salt, profile)          // 32 B
-// im Kernzustand liegt NUR H = SHA-256(verifier), nie `verifier` selbst
+// in core state sits ONLY H = SHA-256(verifier), never `verifier` itself
 ```
 
-Der Vergleich läuft in konstanter Zeit im Rust-Kern. Verlangt wird die Passphrase bei:
+Comparison runs in constant time in the Rust core. The passphrase is required for:
 
-1. Ausgaben oberhalb der `SpendPolicy`-Grenze (3.6.3)
-2. Jeder Lockerung der Policy — Sockel oder Deckel anheben, Quote erhöhen, Fenster verkürzen (3.6.6)
-3. Export, Wallet-Löschung, Schlüsseltausch
-4. Der ersten Signatur nach einer Neuinstallation
+1. Spends above the `SpendPolicy` limit (3.6.3)
+2. Every relaxation of the policy — raising floor or cap, increasing share, shortening window (3.6.6)
+3. Export, wallet deletion, key rotation
+4. The first signature after a reinstall
 
-Die Argon2id-Kosten (2.4, Profile) bleiben unverändert. Sie erschweren jetzt nicht mehr das Brechen von `blob_B`, sondern das Durchprobieren des Verifiers durch jemanden, der `H` gelesen hat — dieselbe Rechnung, anderer Angriffspunkt.
+The Argon2id costs (2.4, profiles) remain unchanged. They no longer harden breaking `blob_B`, but brute-forcing the verifier by someone who has read `H` — the same calculation, different attack point.
 
-#### Getrennte Zugriffsklassen für A und B
+#### Separate access classes for A and B
 
-A und B werden weiterhin symmetrisch implementiert (Randbedingung 2 — ein Codepfad, zwei Konfigurationen), bekommen aber **unterschiedliche Zugriffsklassen**, und das ist eine bewusste Verbesserung:
+A and B continue to be implemented symmetrically (constraint 2 — one code path, two configurations), but get **different access classes**, and that is a deliberate improvement:
 
 | | Slot A | Slot B |
 |---|---|---|
-| iOS | `.biometryCurrentSet` | `.userPresence` (Biometrie **oder** Gerätepasscode) |
+| iOS | `.biometryCurrentSet` | `.userPresence` (biometrics **or** device passcode) |
 | Android | `AUTH_BIOMETRIC_STRONG`, `setInvalidatedByBiometricEnrollment(true)` | `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL`, `setInvalidatedByBiometricEnrollment(false)` |
-| Neue Biometrie registriert | 🔴 **A ist unwiederbringlich weg** | ✅ **B überlebt** |
+| New biometrics registered | 🔴 **A is irretrievably gone** | ✅ **B survives** |
 
-**Eine Face-ID-Auswertung erfüllt beide Klassen** — der Ein-Gesten-Ablauf bleibt unberührt. Der Gewinn zeigt sich im Störfall: Registriert jemand ein neues Gesicht (der Nutzer selbst oder ein Angreifer mit dem Gerätepasscode), stirbt nur A. Der Nutzer hat dann **B auf dem Gerät und C auf Papier** — also das Quorum — und kann ohne das Papier-Backup von B in ein frisches Setup migrieren. Würden beide Slots an `biometryCurrentSet` hängen, wäre ein zusätzlicher Fingerabdruck ein voller Recovery-Fall aus Papier.
+**One Face ID evaluation satisfies both classes** — the one-gesture flow remains untouched. The gain shows in failure cases: if someone registers a new face (the user themselves or an attacker with the device passcode), only A dies. The user then has **B on the device and C on paper** — thus the quorum — and can migrate into a fresh setup without the paper backup of B. If both slots hung on `biometryCurrentSet`, an additional fingerprint would be a full recovery case from paper.
 
-**Und die Gegenprobe:** Ein Angreifer, der nur den Gerätepasscode kennt, öffnet damit B — aber nicht A, denn A verlangt die aktuelle Biometrie, und ein Neu-Enrollment zerstört A. Er hält also **einen** von drei Schlüsseln. Das ist T1, vom Modell abgedeckt.
+**And the counter-check:** An attacker who only knows the device passcode opens B with it — but not A, because A requires current biometrics, and a re-enrollment destroys A. They thus hold **one** of three keys. That is T1, covered by the model.
 
-#### Argon2id-Profile (Entscheidung E4)
+#### Argon2id profiles (Decision E4)
 
-| Profil | m (KiB) | t | p | Output | Zielgerät | Erwartete Dauer |
+| Profile | m (KiB) | t | p | Output | Target device | Expected duration |
 |---|---|---|---|---|---|---|
-| `HIGH` (Default) | 262144 (**256 MiB**) | 3 | 4 | 32 B | ≥ 4 GB RAM | ~1,5–3 s |
-| `LOW` (Fallback) | 65536 (**64 MiB**) | 6 | 4 | 32 B | < 4 GB RAM | ~1,5–3 s |
+| `HIGH` (default) | 262144 (**256 MiB**) | 3 | 4 | 32 B | ≥ 4 GB RAM | ~1.5–3 s |
+| `LOW` (fallback) | 65536 (**64 MiB**) | 6 | 4 | 32 B | < 4 GB RAM | ~1.5–3 s |
 
-**Begründung — und wogegen das *nicht* schützt:**
+**Rationale — and what this does *not* protect against:**
 
-- `LOW` ist exakt RFC 9106 Option 2 (`m=64 MiB, t=3, p=4`) mit verdoppeltem `t`, um den geringeren Speicher teilweise zu kompensieren. RFC 9106 Option 1 (`m=2 GiB`) ist auf iOS nicht praktikabel — eine 2-GiB-Allokation führt zuverlässig zu Jetsam-Termination.
-- Beide Profile liegen **deutlich über** dem OWASP-Minimum (`m=19 MiB, t=2, p=1`), was angemessen ist: hier wird nicht ein Server-Login geschützt, sondern ein Bitcoin-Schlüssel gegen einen Angreifer mit physischem Gerätezugriff und unbegrenzter Zeit.
-- **Ehrlich:** Argon2id verlangsamt Offline-Brute-Force um einen konstanten Faktor. Bei 256 MiB und ~2 s pro Versuch schafft ein Angreifer mit spezialisierter Hardware vielleicht 10³–10⁵ Versuche/Sekunde statt 10¹⁰. Das rettet eine **starke** Passphrase; eine schwache rettet es **nicht**. Die eigentliche Sicherheit liegt in der Passphrase-Entropie, nicht in der KDF. Deshalb:
+- `LOW` is exactly RFC 9106 option 2 (`m=64 MiB, t=3, p=4`) with doubled `t` to partially compensate the lower memory. RFC 9106 option 1 (`m=2 GiB`) is not practical on iOS — a 2 GiB allocation reliably leads to Jetsam termination.
+- Both profiles sit **clearly above** the OWASP minimum (`m=19 MiB, t=2, p=1`), which is appropriate: this does not protect a server login, but a Bitcoin key against an attacker with physical device access and unlimited time.
+- **Honestly:** Argon2id slows offline brute-force by a constant factor. At 256 MiB and ~2 s per attempt an attacker with specialized hardware might manage 10³–10⁵ attempts/second instead of 10¹⁰. That saves a **strong** passphrase; a weak one it does **not**. The real security sits in passphrase entropy, not in the KDF. Hence:
 
-#### Passphrase-Anforderungen (Randbedingung 4)
+#### Passphrase requirements (constraint 4)
 
-| Anforderung | Wert | Erzwungen? |
+| Requirement | Value | Enforced? |
 |---|---|---|
-| Erzeugung | **Diceware**, in der App mit Würfeln oder CSPRNG, EFF-Long-Wordlist (7776 Wörter) | angeboten, empfohlen |
-| Mindestlänge | **6 Diceware-Wörter** ≈ 77,5 bit | **hart erzwungen** |
-| Empfohlen | 7 Wörter ≈ 90,5 bit | Default der Erzeugungshilfe |
-| Bei Selbstwahl | Mindestens 6 Wörter **oder** eine gemessene Entropieschätzung ≥ 77 bit (zxcvbn-artig, konservativ), zusätzlich Abgleich gegen eine eingebettete Liste häufiger Passwörter | hart erzwungen |
-| **Keine PIN** | Numerische Eingaben werden komplett abgelehnt | hart |
-| **Nicht der Gerätepasscode** | Vergleich gegen den Gerätepasscode ist technisch unmöglich; stattdessen explizite Bestätigungsabfrage und Warnung im Onboarding | UX-Maßnahme, nicht erzwingbar — **ehrlich zu benennen** |
-| **Nicht im Keychain** | Die Passphrase wird zu **keinem** Zeitpunkt persistiert. Kein „Merken"-Schalter, keine Autofill-Integration, `isSecureTextEntry`/`IMPORTANT_FOR_AUTOFILL_NO`, Screenshot-Sperre auf dem Eingabescreen | hart |
-| **Biometrie ersetzt sie nur unterhalb der Grenze** | Oberhalb der `SpendPolicy`, bei Policy-Änderungen, bei Export und bei der ersten Nutzung nach Installation ist die Passphrase **unumgehbar** — durchgesetzt im Rust-Kern (3.6.3), nicht in der UI | hart |
-| **Eingabe zumutbar machen** | Diceware-Autovervollständigung, vorgezogenes Argon2id, wortweises Feedback — senkt eine Passphrase-Eingabe von ~45 auf 10–15 s **ohne** Entropieverlust (6.2.1) | Pflicht |
-| **Sie bleibt der Anker** | Die Passphrase ist das Einzige, was ein Dieb mit entsperrtem Telefon nicht hat. Fällt sie, fällt die Ausgabegrenze — deshalb gelten alle Anforderungen oben unverändert, obwohl sie seltener eingegeben wird | hart |
+| Generation | **Diceware**, in the app with dice or CSPRNG, EFF Long Wordlist (7776 words) | offered, recommended |
+| Minimum length | **6 Diceware words** ≈ 77.5 bit | **hard enforced** |
+| Recommended | 7 words ≈ 90.5 bit | default of the generation helper |
+| On self-choice | At least 6 words **or** a measured entropy estimate ≥ 77 bit (zxcvbn-like, conservative), plus check against an embedded list of common passwords | hard enforced |
+| **No PIN** | Numeric inputs are rejected entirely | hard |
+| **Not the device passcode** | Comparison against the device passcode is technically impossible; instead explicit confirmation prompt and warning in onboarding | UX measure, not enforceable — **to name honestly** |
+| **Not in the keychain** | The passphrase is persisted at **no** point. No "Remember" switch, no autofill integration, `isSecureTextEntry`/`IMPORTANT_FOR_AUTOFILL_NO`, screenshot block on the input screen | hard |
+| **Biometrics replaces it only below the limit** | Above the `SpendPolicy`, on policy changes, on export, and on first use after installation the passphrase is **unavoidable** — enforced in the Rust core (3.6.3), not in the UI | hard |
+| **Make input tolerable** | Diceware autocomplete, prefetched Argon2id, per-word feedback — lowers a passphrase entry from ~45 to 10–15 s **without** entropy loss (6.2.1) | mandatory |
+| **It remains the anchor** | The passphrase is the only thing a thief with an unlocked phone does not have. If it falls, the spending limit falls — hence all requirements above remain unchanged, even though it is entered less often | hard |
 
-> **Warum Randbedingung 4 und E7 zusammenpassen:** Unterhalb der Ausgabegrenze öffnet eine biometrische Geste A und B (`sign_ab`, E7). Oberhalb der Grenze, bei Policy-Änderungen, bei Export und bei der ersten Nutzung nach Installation bleibt die Passphrase **unumgehbar** — durchgesetzt im Rust-Kern vor dem Entsperren von B, nicht als fehlende Enum-Variante. Was typsystem-erzwungen bleibt: kein exportierter Aufruf ändert die `SpendPolicy` oder exportiert Schlüsselmaterial ohne `SecretBytes` (S23).
+> **Why constraint 4 and E7 fit together:** Below the spending limit one biometric gesture opens A and B (`sign_ab`, E7). Above the limit, on policy changes, on export, and on first use after installation the passphrase remains **unavoidable** — enforced in the Rust core before unlocking B, not as a missing enum variant. What remains type-system enforced: no exported call changes the `SpendPolicy` or exports key material without `SecretBytes` (S23).
 
-#### Plattform-Flags — exakt
+#### Platform flags — exact
 
 **iOS (≥ 16):**
 
 ```swift
-// KEK-Wrapping-Schlüssel: P-256 in der Secure Enclave.
-// Die SE kann kein secp256k1 — aber sie kann ECIES über P-256,
-// und damit einen 32-Byte-KEK ent-/verpacken. Das ist der ganze Trick.
+// KEK wrapping key: P-256 in the Secure Enclave.
+// The SE cannot do secp256k1 — but it can do ECIES over P-256,
+// and with that wrap/unwrap a 32-byte KEK. That is the whole trick.
 let access = SecAccessControlCreateWithFlags(
     nil,
-    kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,   // nie in ein Backup, weg ohne Passcode
-    [.privateKeyUsage, .biometryCurrentSet],           // Slot A: neue Biometrie ⇒ invalidiert
+    kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,   // never in a backup, gone without passcode
+    [.privateKeyUsage, .biometryCurrentSet],           // slot A: new biometrics ⇒ invalidated
     &error)!
 
 let attrs: [String: Any] = [
@@ -901,17 +901,17 @@ let attrs: [String: Any] = [
         kSecAttrAccessControl as String:  access,
     ],
 ]
-// Slot B: [.privateKeyUsage, .userPresence] statt .biometryCurrentSet
-// → eine Face-ID-Auswertung erfüllt beides (E7), aber B überlebt ein
-//   neues Biometrie-Enrollment, weil auch der Gerätepasscode genügt.
+// Slot B: [.privateKeyUsage, .userPresence] instead of .biometryCurrentSet
+// → one Face ID evaluation satisfies both (E7), but B survives a
+//   new biometric enrollment because the device passcode also suffices.
 // Unwrap: SecKeyCreateDecryptedData(privKey, .eciesEncryptionCofactorX963SHA256AESGCM, wrapped)
 ```
 
-| Flag | Wirkung | Warum hier |
+| Flag | Effect | Why here |
 |---|---|---|
-| `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` | Nicht in iCloud- **und nicht in lokalen** Backups; verlangt gesetzten Passcode; **wird gelöscht, wenn der Nutzer den Passcode entfernt** | Blob-Schlüssel wandert nie in ein Backup. Nebeneffekt: Passcode-Entfernung ⇒ A ist weg ⇒ Gerät ist ein „Verlustfall". Das ist gewollt und **muss im Onboarding stehen**. |
-| `.biometryCurrentSet` (Slot A) | Bindet an den aktuellen Enrollment-Satz; Hinzufügen/Ändern eines Fingerabdrucks oder Gesichts invalidiert den Schlüssel | Ein Angreifer, der das entsperrte Gerät hat und sein eigenes Gesicht hinzufügt, bekommt **kein** A. |
-| `.userPresence` (Slot B) | Biometrie **oder** Gerätepasscode | Erfüllt die Ein-Gesten-Auswertung mit und überlebt ein Biometrie-Enrollment. Ein Angreifer mit nur dem Passcode bekommt damit B — aber nicht A, also einen von drei Schlüsseln (T1). |
+| `kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly` | Not in iCloud **and not in local** backups; requires set passcode; **is deleted when the user removes the passcode** | Blob key never migrates into a backup. Side effect: passcode removal ⇒ A is gone ⇒ device is a "loss case". That is intended and **must stand in onboarding**. |
+| `.biometryCurrentSet` (slot A) | Binds to the current enrollment set; adding/changing a fingerprint or face invalidates the key | An attacker who has the unlocked device and adds their own face gets **no** A. |
+| `.userPresence` (slot B) | Biometrics **or** device passcode | Satisfies one-gesture evaluation and survives a biometric enrollment. An attacker with only the passcode gets B with it — but not A, thus one of three keys (T1). |
 
 **Android (≥ 10 / API 29):**
 
@@ -922,112 +922,112 @@ val spec = KeyGenParameterSpec.Builder(alias(slot),
     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
     .setKeySize(256)
     .setRandomizedEncryptionRequired(true)
-    .setUnlockedDeviceRequired(true)                      // beide Slots
+    .setUnlockedDeviceRequired(true)                      // both slots
     .setUserAuthenticationRequired(true)
     .apply {
         if (slot == Slot.A) {
             setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG)
-            setInvalidatedByBiometricEnrollment(true)     // Pendant zu .biometryCurrentSet
+            setInvalidatedByBiometricEnrollment(true)     // pendant to .biometryCurrentSet
         } else {
-            setUserAuthenticationParameters(5,           // 5 s, deckt beide Slots (3.6.2)
+            setUserAuthenticationParameters(5,           // 5 s, covers both slots (3.6.2)
                 KeyProperties.AUTH_BIOMETRIC_STRONG
                     or KeyProperties.AUTH_DEVICE_CREDENTIAL)
-            setInvalidatedByBiometricEnrollment(false)    // B überlebt neues Enrollment
+            setInvalidatedByBiometricEnrollment(false)    // B survives new enrollment
         }
-        if (hasStrongBox()) setIsStrongBoxBacked(true)    // Titan M2 o.ä.
+        if (hasStrongBox()) setIsStrongBoxBacked(true)    // Titan M2 or similar
     }
     .build()
 ```
 
-| Flag | Wirkung |
+| Flag | Effect |
 |---|---|
-| `setIsStrongBoxBacked(true)` | Schlüssel liegt in einem dedizierten Sicherheitschip statt nur im TEE. **Feature-Detection nötig** (`FEATURE_STRONGBOX_KEYSTORE`); StrongBox ist langsamer und hat Größenbeschränkungen — deshalb wrappt es nur den 32-Byte-KEK, nicht die Nutzdaten. |
-| `setInvalidatedByBiometricEnrollment(true)` | Schlüssel wird bei Änderung der Biometrie-Registrierung permanent ungültig. |
-| `setUnlockedDeviceRequired(true)` | Keine Nutzung bei gesperrtem Gerät — verhindert Hintergrundnutzung. |
-| `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` für B | Eine Auswertung deckt A und B; B bleibt zusätzlich per Gerätepasscode erreichbar und überlebt ein neues Biometrie-Enrollment. |
+| `setIsStrongBoxBacked(true)` | Key sits in a dedicated security chip instead of only in the TEE. **Feature detection needed** (`FEATURE_STRONGBOX_KEYSTORE`); StrongBox is slower and has size limits — hence it wraps only the 32-byte KEK, not the payload. |
+| `setInvalidatedByBiometricEnrollment(true)` | Key becomes permanently invalid on biometric enrollment change. |
+| `setUnlockedDeviceRequired(true)` | No use while device locked — prevents background use. |
+| `AUTH_BIOMETRIC_STRONG \| AUTH_DEVICE_CREDENTIAL` for B | One evaluation covers A and B; B remains additionally reachable via device passcode and survives a new biometric enrollment. |
 
-> **Beobachtbare Konsequenz beider Plattformen:** Ein neuer Fingerabdruck oder ein entfernter Passcode **zerstört A**. Das ist die gewollte Sicherheitseigenschaft und gleichzeitig ein Supportfall. Die App muss (a) diesen Zustand beim Start erkennen, (b) ihn klar benennen („Schlüssel A ist nicht mehr verfügbar — Ihre Wallet ist weiterhin sicher, aber Sie brauchen jetzt B + C"), (c) einen geführten Weg zu einem frischen Setup anbieten. Ein stiller Fehler an dieser Stelle ist ein Vertrauensverlust und potenziell ein Fundverlust.
+> **Observable consequence of both platforms:** A new fingerprint or a removed passcode **destroys A**. That is the intended security property and simultaneously a support case. The app must (a) detect this state on start, (b) name it clearly ("Key A is no longer available — your wallet is still safe, but you now need B + C"), (c) offer a guided path to a fresh setup. A silent error at this point is a trust loss and potentially a fund loss.
 
-### 2.5 Lebenszyklus je Schlüssel
+### 2.5 Lifecycle per key
 
-#### Speicher-Handling — die Regeln
+#### Memory handling — the rules
 
-| Regel | Umsetzung |
+| Rule | Implementation |
 |---|---|
-| Jeder Secret-Typ implementiert `ZeroizeOnDrop` | `zeroize 1.9.0`, `#[derive(ZeroizeOnDrop)]`; CI-Lint prüft, dass kein `struct` in `trinity-keystore`/`trinity-signer` ohne dieses Derive Secret-Felder hält |
-| Kein `Clone` auf Secret-Typen | Typsystem verhindert unbemerkte Kopien |
-| Kein `Debug`/`Display` auf Secret-Typen | Manuelle Impls, die `"[redacted]"` ausgeben; verhindert Leaks in Logs und Panics |
-| Keine `String`-Repräsentation | Mnemonic intern als `[u16; 24]` Wortindizes, nicht als String |
-| Signatur-Session ist eng | Der xpriv existiert nur innerhalb eines `sign_*`-Aufrufs. Kein Caching, keine `static`, keine `OnceCell`. Der Aufruf ist die Lebensdauer. |
-| `panic = "abort"` in Release | Kein Unwinding ⇒ keine halb aufgeräumten Secrets auf dem Stack; zusätzlich kein Panic-Handler, der Speicher dumpt |
-| Kein Backtrace, kein Crash-Reporter über dem Rust-Kern | Kein Sentry/Crashlytics mit Speicherzugriff. Wenn Crash-Reporting gewünscht ist: nur Metadaten, kein Speicherinhalt — **explizit zu entscheiden (Abschnitt 7, O6)** |
-| Kein Logging in `trinity-keystore`/`trinity-signer` | `#![deny(clippy::print_stdout, clippy::dbg_macro)]` plus `[bans]` gegen `log`/`tracing` in diesen Crates |
+| Every secret type implements `ZeroizeOnDrop` | `zeroize 1.9.0`, `#[derive(ZeroizeOnDrop)]`; CI lint checks that no `struct` in `trinity-keystore`/`trinity-signer` holds secret fields without this derive |
+| No `Clone` on secret types | Type system prevents unnoticed copies |
+| No `Debug`/`Display` on secret types | Manual impls that print `"[redacted]"`; prevents leaks in logs and panics |
+| No `String` representation | Mnemonic internally as `[u16; 24]` word indices, not as string |
+| Signature session is tight | The xpriv exists only within a `sign_*` call. No caching, no `static`, no `OnceCell`. The call is the lifetime. |
+| `panic = "abort"` in release | No unwinding ⇒ no half-cleaned secrets on the stack; additionally no panic handler that dumps memory |
+| No backtrace, no crash reporter over the Rust core | No Sentry/Crashlytics with memory access. If crash reporting is desired: only metadata, no memory content — **to decide explicitly (Section 7, O6)** |
+| No logging in `trinity-keystore`/`trinity-signer` | `#![deny(clippy::print_stdout, clippy::dbg_macro)]` plus `[bans]` against `log`/`tracing` in these crates |
 
-> **Was `zeroize` nicht kann — ehrlich:** Der Compiler darf Werte in Registern und auf dem Stack kopieren, bevor `zeroize` greift. `zeroize` nutzt `write_volatile` + Compiler-Fence und ist damit gegen Wegoptimierung geschützt, aber **nicht** gegen bereits entstandene Zwischenkopien in Registern oder gespillte Stack-Slots. Ebenso wenig gegen Swapping oder OS-Speicher-Snapshots. Das ist eine bekannte, in Rust nicht abschließend lösbare Lücke. Sie reduziert das Zeitfenster von „bis Prozessende" auf „Bruchteile einer Sekunde" — das ist der reale Gewinn, und mehr sollte nicht behauptet werden.
+> **What `zeroize` cannot do — honestly:** The compiler may copy values in registers and on the stack before `zeroize` runs. `zeroize` uses `write_volatile` + compiler fence and is thus protected against optimization away, but **not** against intermediate copies already made in registers or spilled stack slots. Nor against swapping or OS memory snapshots. That is a known gap not finally solvable in Rust. It reduces the time window from "until process end" to "fractions of a second" — that is the real gain, and more should not be claimed.
 
-#### A — Lebenszyklus
+#### A — lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Erzeugt: entropy = HMAC-SHA512(csprng, dice?)
-    Erzeugt --> Provisioniert: PlatformKeyStore.provision(A, POLICY_A)<br/>SE/StrongBox-Key angelegt
-    Provisioniert --> Verschlüsselt: KEK_A = wrap_kek(A, random32)<br/>blob_A = XChaCha20Poly1305(entropy)
-    Verschlüsselt --> Genullt: zeroize(entropy, mnemonic, xprv)
-    Genullt --> Ruhend
+    [*] --> Generated: entropy = HMAC-SHA512(csprng, dice?)
+    Generated --> Provisioned: PlatformKeyStore.provision(A, POLICY_A)<br/>SE/StrongBox key created
+    Provisioned --> Encrypted: KEK_A = wrap_kek(A, random32)<br/>blob_A = XChaCha20Poly1305(entropy)
+    Encrypted --> Zeroed: zeroize(entropy, mnemonic, xprv)
+    Zeroed --> AtRest
 
-    Ruhend --> Entsperrt: sign_ab() → verify() OK → unwrap_kek(A)<br/>Biometrie-Prompt
-    Entsperrt --> Ruhend: Signatur fertig, alles genullt
-    Ruhend --> Invalidiert: Biometrie geändert / Passcode entfernt
-    Invalidiert --> [*]: A dauerhaft weg → geführtes Neu-Setup
-    Ruhend --> Gelöscht: Wipe / Schlüsseltausch
-    Gelöscht --> [*]
+    AtRest --> Unlocked: sign_ab() → verify() OK → unwrap_kek(A)<br/>biometric prompt
+    Unlocked --> AtRest: signature done, everything zeroed
+    AtRest --> Invalidated: biometrics changed / passcode removed
+    Invalidated --> [*]: A permanently gone → guided re-setup
+    AtRest --> Deleted: wipe / key rotation
+    Deleted --> [*]
 ```
 
-**Kein Backup, keine Anzeige.** Der Mnemonic von A wird dem Nutzer nach dem Onboarding-Nachweis **nie wieder** angezeigt. Es gibt keine exportierte Funktion dafür. Verlust von A ist ein vorgesehener, abgedeckter Zustand.
+**No backup, no display.** A's mnemonic is **never again** shown to the user after the onboarding evidence. There is no exported function for that. Loss of A is a planned, covered state.
 
-#### B — Lebenszyklus
+#### B — lifecycle
 
-Identisch zu A bis auf: `POLICY_B` (Zugriffsklasse `.userPresence` statt `.biometryCurrentSet`) **und ein erzwungenes externes Backup** (Randbedingung 2). Die Entsperr-Kante von außen ist dieselbe wie bei A: `sign_ab()` (nicht ein eigener exportierter `sign_b`-Aufruf). Ohne bestandenen Backup-Nachweis für B wird das Setup nicht abgeschlossen — die Wallet erhält keine Empfangsadresse. Details in Abschnitt 6.1.
+Identical to A except: `POLICY_B` (access class `.userPresence` instead of `.biometryCurrentSet`) **and a forced external backup** (constraint 2). The unlock edge from outside is the same as for A: `sign_ab()` (not a separate exported `sign_b` call). Without passed backup evidence for B the setup is not completed — the wallet receives no receive address. Details in Section 6.1.
 
-#### C — Lebenszyklus
+#### C — lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Vorbereitung: A und B fertig, verschlüsselt, genullt<br/>Prozess-Neustart erzwungen
-    Vorbereitung --> Würfeleingabe: Zusatzentropie empfohlen, überspringbar (E3)
-    Würfeleingabe --> Erzeugt: entropy = HMAC-SHA512(csprng, dice)
-    Erzeugt --> Angezeigt: 24 Wörter + Descriptor,<br/>NATIV gerendert, Screenshot gesperrt
-    Angezeigt --> Nachgewiesen: Stichprobe 4 von 24 Wörtern
-    Nachgewiesen --> Verworfen: zeroize(alles außer xpub + Origin)
-    Verworfen --> [*]: nur xpub_C in descriptor.json
+    [*] --> Preparation: A and B done, encrypted, zeroed<br/>process restart forced
+    Preparation --> DiceInput: additional entropy recommended, skippable (E3)
+    DiceInput --> Generated: entropy = HMAC-SHA512(csprng, dice)
+    Generated --> Displayed: 24 words + descriptor,<br/>NATIVELY rendered, screenshot blocked
+    Displayed --> Evidenced: sample 4 of 24 words
+    Evidenced --> Discarded: zeroize(everything except xpub + origin)
+    Discarded --> [*]: only xpub_C in descriptor.json
 ```
 
-**C wird nie persistiert.** Nach dem Onboarding kennt die App von C ausschließlich `[fpC/48h/0h/0h/2h]xpubC`. Es gibt keinen Codepfad, der C's xpriv speichert — auch nicht temporär, auch nicht „für die Signatur".
+**C is never persisted.** After onboarding the app knows of C exclusively `[fpC/48h/0h/0h/2h]xpubC`. There is no code path that stores C's xpriv — not even temporarily, not even "for the signature".
 
-**C signiert im Normalbetrieb nicht.** Das 2-von-3 wird durch A + B erfüllt. C kommt nur bei Geräteverlust oder Schlüsseltausch zum Einsatz, und dann über den Import-Weg: Mnemonic-Eingabe in eine frische Installation oder — bevorzugt — Signatur in Sparrow.
+**C does not sign in normal operation.** The 2-of-3 is fulfilled by A + B. C comes into play only on device loss or key rotation, and then via the import path: mnemonic entry into a fresh install or — preferably — signature in Sparrow.
 
-### 2.6 Löschung
+### 2.6 Deletion
 
-| Auslöser | Wirkung |
+| Trigger | Effect |
 |---|---|
-| Nutzer wählt „Wallet löschen" | `destroy(A)`, `destroy(B)` (SE-/Keystore-Schlüssel unwiederbringlich weg), `blob_A`/`blob_B` mit Zufallsdaten überschreiben und löschen, Watch-only-DB löschen. **`descriptor.json` bleibt** mit einer expliziten Abfrage — ohne Descriptor sind die Papier-Backups wertlos (R3). |
-| Schlüsseltausch abgeschlossen | Erst nach bestätigter Konfirmation der Sweep-Transaktion (Abschnitt 6.5), dann wie oben. Vorher **nicht**. |
-| Biometrie-Änderung | A allein invalidiert; B, C und Descriptor bleiben unberührt. |
-| App-Deinstallation | iOS: Keychain-Items mit `…ThisDeviceOnly` überleben eine Deinstallation je nach iOS-Version **möglicherweise**. `blob_A`/`blob_B` verschwinden mit der Sandbox, damit ist der KEK ohne Nutzen. ⟨**verifizieren**: Verhalten unter iOS 17/18/19 testen und dokumentieren⟩ |
+| User chooses "Delete wallet" | `destroy(A)`, `destroy(B)` (SE/Keystore keys irretrievably gone), overwrite `blob_A`/`blob_B` with random data and delete, delete watch-only DB. **`descriptor.json` remains** with an explicit prompt — without the descriptor the paper backups are worthless (R3). |
+| Key rotation completed | Only after confirmed confirmation of the sweep transaction (Section 6.5), then as above. Before that **not**. |
+| Biometric change | A alone invalidates; B, C, and descriptor remain untouched. |
+| App uninstall | iOS: Keychain items with `…ThisDeviceOnly` **may** survive an uninstall depending on iOS version. `blob_A`/`blob_B` disappear with the sandbox, so the KEK is useless. ⟨**verify**: test and document behavior under iOS 17/18/19⟩ |
 
-### 2.7 Hardware-Signer-Anbindung (Entscheidung E6)
+### 2.7 Hardware-signer integration (Decision E6)
 
-Ein angebundener Hardware-Signer erfüllt in dieser Architektur zwei Aufgaben: er kann **C bei der Wallet-Erstellung erzeugen** (nur `xpub_C` wird importiert, Abschnitt 2.2.5 Weg a) und er kann später **B als externer Signer ablösen** (Abschnitt 6.6). Beides läuft über dieselbe Abstraktion, weil beides nur PSBTs und xpubs bewegt.
+A connected hardware signer fulfills two roles in this architecture: it can **generate C at wallet creation** (only `xpub_C` is imported, Section 2.2.5 path a) and it can later **replace B as an external signer** (Section 6.6). Both run over the same abstraction because both only move PSBTs and xpubs.
 
-#### 2.7.1 Die harte Randbedingung: iOS erlaubt kein USB
+#### 2.7.1 The hard constraint: iOS allows no USB
 
-Der Befund, der die gesamte Transportplanung bestimmt: **iOS gestattet Apps keinen Zugriff auf beliebige USB-HID-Geräte.** HIDDriverKit und die IOKit-HID-APIs stehen auf iOS/iPadOS nicht zur Verfügung; Kommunikation mit einem USB-C-Zubehör ohne MFi-Zertifizierung ist nicht möglich. Dasselbe gilt für serielles Bluetooth außerhalb der von iOS unterstützten Profile.
+The finding that determines the entire transport plan: **iOS does not grant apps access to arbitrary USB-HID devices.** HIDDriverKit and the IOKit HID APIs are not available on iOS/iPadOS; communication with a USB-C accessory without MFi certification is not possible. The same applies to serial Bluetooth outside profiles supported by iOS.
 
-Genau deshalb hat BitBox für die iOS-Unterstützung des **BitBox02 Nova** einen eigenen BLE-Weg gebaut („Whisper"): ein **separater Bluetooth-Chip (DA14531)** mit eigener Firmware, ohne Zugriff auf den Flash des Haupt-MCU und ohne Kenntnis von Wallet-Geheimnissen, mit Ende-zu-Ende-verschlüsselter Übertragung und Pairing-Bestätigung auf dem Gerät. Ledger löst dasselbe Problem über BLE (Nano X) und NFC.
+Exactly therefore BitBox built its own BLE path for iOS support of the **BitBox02 Nova** ("Whisper"): a **separate Bluetooth chip (DA14531)** with its own firmware, without access to the main MCU flash and without knowledge of wallet secrets, with end-to-end encrypted transfer and pairing confirmation on the device. Ledger solves the same problem via BLE (Nano X) and NFC.
 
-Konsequenz für dieses Projekt: **USB ist ein Android-only-Transport.** Wer plattformgleiche Anbindung will, kommt an BLE, NFC oder QR nicht vorbei.
+Consequence for this project: **USB is an Android-only transport.** Whoever wants platform-equal integration cannot avoid BLE, NFC, or QR.
 
-#### 2.7.2 Transport-Abstraktion
+#### 2.7.2 Transport abstraction
 
 ```rust
 // crates/trinity-signer/src/transport.rs
@@ -1036,140 +1036,140 @@ pub trait PsbtTransport: Send + Sync {
     fn discover(&self) -> Result<Vec<DeviceRef>, TransportError>;
     fn get_xpub(&self, dev: &DeviceRef, path: &DerivationPath)
         -> Result<XpubWithOrigin, TransportError>;
-    /// BIP-388: Policy auf dem Gerät registrieren. Ohne das erkennt der
-    /// Signer die Change-Adressen des Multisig nicht als eigene.
+    /// BIP-388: register policy on the device. Without that the
+    /// signer does not recognize the multisig change addresses as its own.
     fn register_policy(&self, dev: &DeviceRef, policy: &WalletPolicy)
         -> Result<PolicyId, TransportError>;
     fn sign_psbt(&self, dev: &DeviceRef, psbt: Psbt) -> Result<Psbt, TransportError>;
 }
 ```
 
-Weil `ExternalSigner` (E5) nur `PsbtTransport` konsumiert, ist ein neuer Transport oder ein neues Gerät eine zusätzliche Implementierung — kein Eingriff in den Signaturpfad.
+Because `ExternalSigner` (E5) only consumes `PsbtTransport`, a new transport or device is an additional implementation — no intervention in the signature path.
 
-#### 2.7.3 BIP-388 Wallet Policies — nicht optional
+#### 2.7.3 BIP-388 wallet policies — not optional
 
-Externe Signer wie **Ledger, BitBox02 und Blockstream Jade** nutzen für Multisig **BIP-388 Wallet Policies**, um die Descriptor-Policy auf dem Gerät anzuzeigen und zu beschränken. Im Ledger-Bitcoin-App ist das seit Version 2.1.0 implementiert.
+External signers such as **Ledger, BitBox02, and Blockstream Jade** use **BIP-388 wallet policies** for multisig to display and constrain the descriptor policy on the device. In the Ledger Bitcoin app this has been implemented since version 2.1.0.
 
-Was das praktisch heißt: Der Descriptor muss **vor der ersten Nutzung einmalig auf dem Gerät registriert** werden. Ohne diese Registrierung erkennt das Gerät die Change-Adressen der 2-von-3-Wallet nicht als eigene und zeigt sie dem Nutzer als fremde Empfänger an — eine Transaktion sieht dann so aus, als würde sie Geld verlieren.
+What that means practically: the descriptor must be **registered once on the device before first use**. Without that registration the device does not recognize the change addresses of the 2-of-3 wallet as its own and shows them to the user as foreign recipients — a transaction then looks as if it were losing money.
 
 ```
-Wallet-Policy-Template:  wsh(sortedmulti(2,@0/**,@1/**,@2/**))
-Key-Information-Vektor:  [ [fpA/48'/0'/0'/2']xpubA,
+Wallet-policy template:  wsh(sortedmulti(2,@0/**,@1/**,@2/**))
+Key-information vector:  [ [fpA/48'/0'/0'/2']xpubA,
                            [fpB/48'/0'/0'/2']xpubB,
                            [fpC/48'/0'/0'/2']xpubC ]
 ```
 
-Die Registrierung erzeugt geräteseitig eine `PolicyId` (bei Ledger ein HMAC), die bei jeder späteren Signatur mitgegeben wird. **Diese ID gehört in `descriptor.json` und auf den Backup-Ausdruck** — geht sie verloren, muss die Policy neu registriert werden, was eine erneute Bestätigung aller drei xpubs auf dem Gerätedisplay bedeutet.
+Registration produces a device-side `PolicyId` (on Ledger an HMAC) that is passed with every later signature. **This ID belongs in `descriptor.json` and on the backup printout** — if it is lost, the policy must be re-registered, which means re-confirming all three xpubs on the device display.
 
-> **Der Sicherheitswert der Registrierung liegt in der Bestätigung, nicht in der Speicherung.** Bei der Registrierung liest der Nutzer alle drei xpubs auf dem Display des Hardware-Signers — also auf einem Bildschirm, den weder unsere App noch ein kompromittiertes Telefon kontrolliert. Das ist die eine Stelle im gesamten Ablauf, an der T4b (kompromittiertes Telefon) nicht greift. Der Schritt darf deshalb nicht als lästige Formalität gerahmt werden.
+> **The security value of registration sits in the confirmation, not in the storage.** At registration the user reads all three xpubs on the hardware signer's display — i.e. on a screen that neither our app nor a compromised phone controls. That is the one place in the entire flow where T4b (compromised phone) does not apply. The step must therefore not be framed as a tiresome formality.
 
-#### 2.7.4 Transport-Matrix
+#### 2.7.4 Transport matrix
 
-| Transport | iOS | Android | Rust-Crate | Aufwand | Angriffsfläche |
+| Transport | iOS | Android | Rust crate | Effort | Attack surface |
 |---|---|---|---|---|---|
-| **QR** (BBQr + UR) | ✅ Kamera + Bildschirm | ✅ | `bbqr 0.5.0` (2026-07-16), `ur 0.5.2` (2026-07-29) | 🟢 gering | **Kleinste.** Kein Vendor-SDK, keine Entitlements, kein Pairing, keine Funkstrecke. Datenkanal ist optisch und vom Nutzer sichtbar. |
-| **NFC** | ✅ CoreNFC, Entitlement nötig | ✅ voller Zugriff | keins — pro Gerät zu implementieren | 🟡 mittel | Kurze Reichweite, aber proprietäre Protokolle pro Hersteller. |
-| **BLE** | ✅ einziger Weg für BitBox/Ledger | ✅ | keins — Vendor-Protokoll (Whisper bzw. Ledger-BLE) | 🔴 hoch | Funkstrecke, Pairing, E2E-Krypto des Herstellers. Sicherheit hängt am Vendor-Protokoll, das wir nicht kontrollieren. |
-| **USB** | ❌ **nicht möglich** ohne MFi | ✅ USB-OTG | `bitbox-api 0.13.0` (2026-07-18), `ledger-transport`/`ledger-apdu 0.11.0` (2024-05) | 🟡 mittel, Android-only | Physische Verbindung, kein Funk. |
+| **QR** (BBQr + UR) | ✅ camera + screen | ✅ | `bbqr 0.5.0` (2026-07-16), `ur 0.5.2` (2026-07-29) | 🟢 low | **Smallest.** No vendor SDK, no entitlements, no pairing, no radio link. Data channel is optical and visible to the user. |
+| **NFC** | ✅ CoreNFC, entitlement needed | ✅ full access | none — implement per device | 🟡 medium | Short range, but proprietary protocols per vendor. |
+| **BLE** | ✅ only path for BitBox/Ledger | ✅ | none — vendor protocol (Whisper or Ledger BLE) | 🔴 high | Radio link, pairing, vendor E2E crypto. Security depends on the vendor protocol we do not control. |
+| **USB** | ❌ **not possible** without MFi | ✅ USB-OTG | `bitbox-api 0.13.0` (2026-07-18), `ledger-transport`/`ledger-apdu 0.11.0` (2024-05) | 🟡 medium, Android-only | Physical connection, no radio. |
 
-**Zu `hwi 0.10.0`:** Das ist ein Rust-Wrapper um das Python-HWI und setzt eine Python-Laufzeit voraus. **Auf Mobilgeräten unbrauchbar** — als Abkürzung ausgeschlossen, auch wenn der Crate-Name das Gegenteil nahelegt.
+**On `hwi 0.10.0`:** That is a Rust wrapper around Python HWI and requires a Python runtime. **Unusable on mobile** — excluded as a shortcut, even if the crate name suggests otherwise.
 
-#### 2.7.5 Gerätematrix
+#### 2.7.5 Device matrix
 
-| Gerät | Transport zum Telefon | BIP-388 | Als C-Quelle | Als Hardware-B |
+| Device | Transport to phone | BIP-388 | As C source | As hardware-B |
 |---|---|---|---|---|
-| **Coldcard Q** | QR (BBQr, eigene Kamera + Display), NFC, microSD | ✅ | 🔒 **ausgegraut**, Freigabe ab FW 1.5.0Q (2.7.9) | 🔒 dito |
-| **Coldcard Mk4/Mk5** | NFC, microSD | ✅ | 🔒 **ausgegraut**, Freigabe ab FW 5.6.0 | 🔒 dito |
-| **Coldcard Mk2/Mk3** | microSD | ✅ | ❌ **nicht freigegeben** — betroffene Gerätegeneration | ❌ |
-| **Keystone** | QR (UR, animiert) | ✅ | ✅ | ✅ |
-| **SeedSigner** | QR (UR) | ✅ | ✅ | ⚠️ speichert selbst keine Seeds |
+| **Coldcard Q** | QR (BBQr, own camera + display), NFC, microSD | ✅ | 🔒 **greyed out**, release from FW 1.5.0Q (2.7.9) | 🔒 same |
+| **Coldcard Mk4/Mk5** | NFC, microSD | ✅ | 🔒 **greyed out**, release from FW 5.6.0 | 🔒 same |
+| **Coldcard Mk2/Mk3** | microSD | ✅ | ❌ **not released** — affected device generation | ❌ |
+| **Keystone** | QR (UR, animated) | ✅ | ✅ | ✅ |
+| **SeedSigner** | QR (UR) | ✅ | ✅ | ⚠️ does not store seeds itself |
 | **Blockstream Jade Plus** | QR, USB, BLE | ✅ | ✅ | ✅ |
 | **Foundation Passport** | QR, microSD | ✅ | ✅ | ✅ |
-| **BitBox02 Nova** | **BLE (Whisper)** auf iOS · USB-C auf Android | ✅ | ✅ | ✅ |
-| **BitBox02** (ohne Nova) | USB-C — **Android-only** | ✅ | ✅ | ✅ |
-| **Ledger Nano X** | **BLE** · NFC | ✅ ab App 2.1.0 | ✅ | ✅ |
-| **Ledger Nano S Plus** | USB — **Android-only** | ✅ ab App 2.1.0 | ✅ | ✅ |
-| **Coinkite Tapsigner** | NFC | ❌ Einzelschlüssel-Karte, keine Policy-Registrierung | ✅ | ⚠️ signiert PSBT, zeigt aber nichts an — kein eigenes Display, damit kein Schutz nach 2.7.3 |
+| **BitBox02 Nova** | **BLE (Whisper)** on iOS · USB-C on Android | ✅ | ✅ | ✅ |
+| **BitBox02** (without Nova) | USB-C — **Android-only** | ✅ | ✅ | ✅ |
+| **Ledger Nano X** | **BLE** · NFC | ✅ from app 2.1.0 | ✅ | ✅ |
+| **Ledger Nano S Plus** | USB — **Android-only** | ✅ from app 2.1.0 | ✅ | ✅ |
+| **Coinkite Tapsigner** | NFC | ❌ single-key card, no policy registration | ✅ | ⚠️ signs PSBT but shows nothing — no own display, thus no protection per 2.7.3 |
 
-#### 2.7.6 Staffelung und Begründung
+#### 2.7.6 Staging and rationale
 
-| Phase | Transporte | Damit abgedeckt |
+| Phase | Transports | Thus covered |
 |---|---|---|
 | **v1** | **QR + NFC** | Coldcard Q/Mk4, Keystone, SeedSigner, Jade Plus, Passport, Tapsigner |
 | **v1.1** | **+ BLE** | **BitBox02 Nova, Ledger Nano X** |
 | **v1.1** | **+ USB (Android)** | BitBox02, Ledger Nano S Plus, Jade |
 
-**Warum QR zuerst und nicht BitBox/Ledger zuerst:** QR ist auf beiden Plattformen identisch, braucht kein Vendor-SDK, kein Pairing, keine Entitlements und keine Funkstrecke — und die Rust-Crates sind aktuell gepflegt (`bbqr` Juli 2026, `ur` Juli 2026). Damit steht der `ExternalSigner`-Pfad in v1 **real getestet** (Anforderung aus E5), statt nur als Interface zu existieren.
+**Why QR first and not BitBox/Ledger first:** QR is identical on both platforms, needs no vendor SDK, no pairing, no entitlements, and no radio link — and the Rust crates are currently maintained (`bbqr` July 2026, `ur` July 2026). Thus the `ExternalSigner` path stands **real-tested** in v1 (requirement from E5), instead of existing only as an interface.
 
-**Warum BitBox02 Nova und Ledger trotzdem fest eingeplant sind:** Es sind die Geräte, die du genannt hast, und sie sind für viele Nutzer die realistische Wahl. Der Grund für v1.1 ist Aufwand, nicht Ablehnung:
+**Why BitBox02 Nova and Ledger are still firmly planned:** They are the devices you named, and for many users they are the realistic choice. The reason for v1.1 is effort, not rejection:
 
-- **BitBox02 Nova:** `bitbox-api 0.13.0` ist aktuell gepflegt. ⟨**offen**: ob der Crate den Whisper-BLE-Transport abdeckt oder nur USB — falls nur USB, ist das BLE-Protokoll nachzubauen, und iOS-Unterstützung hängt daran.⟩
-- **Ledger:** `ledger-transport`/`ledger-apdu 0.11.0` sind generisch und seit Mai 2024 unverändert; ein Rust-Crate auf App-Ebene für die Bitcoin-App existiert **nicht**. BIP-388-Registrierung und PSBT-Signatur müssten als APDU-Sequenzen selbst geschrieben werden — sicherheitskritischer Code ohne gepflegte Referenz. Das ist der teuerste Posten der ganzen Liste und der Grund, warum er nicht in v1 steht.
+- **BitBox02 Nova:** `bitbox-api 0.13.0` is currently maintained. ⟨**open**: whether the crate covers the Whisper BLE transport or only USB — if only USB, the BLE protocol must be reimplemented, and iOS support depends on that.⟩
+- **Ledger:** `ledger-transport`/`ledger-apdu 0.11.0` are generic and unchanged since May 2024; a Rust crate at app level for the Bitcoin app does **not** exist. BIP-388 registration and PSBT signing would have to be written as APDU sequences ourselves — security-critical code without a maintained reference. That is the most expensive item on the whole list and the reason it is not in v1.
 
-#### 2.7.7 Was die Anbindung sicherheitstechnisch ändert
+#### 2.7.7 What the integration changes security-wise
 
-| Bedrohung | Ohne Hardware-C | Mit Hardware-C |
+| Threat | Without hardware-C | With hardware-C |
 |---|---|---|
-| **T9 Supply Chain** | 🔴 A, B, C teilen eine Codebasis — ein Angriff trifft alle drei | 🟡 C stammt aus fremder Codebasis, fremdem RNG, fremder Firmware. Das Quorum hat erstmals **zwei** Implementierungen. |
-| **T10 RNG-Fehler** | 🔴 ohne Zusatzquelle nicht abgedeckt | ✅ C hat einen unabhängigen RNG |
-| **T4b kompromittiertes Telefon** | 🔴 unverändert | 🔴 **unverändert** — C signiert im Normalbetrieb nicht. Erst Hardware-**B** (6.6) ändert daran etwas. |
+| **T9 supply chain** | 🔴 A, B, C share one codebase — one attack hits all three | 🟡 C comes from foreign codebase, foreign RNG, foreign firmware. The quorum has for the first time **two** implementations. |
+| **T10 RNG failure** | 🔴 not covered without additional source | ✅ C has an independent RNG |
+| **T4b compromised phone** | 🔴 unchanged | 🔴 **unchanged** — C does not sign in normal operation. Only hardware-**B** (6.6) changes that. |
 
-> **Die wichtigste Zeile ist die letzte.** Ein Hardware-C verbessert die Erzeugung und die Supply-Chain-Lage, aber **nicht** den Alltagsbetrieb — im Normalfall signieren weiterhin A und B auf demselben Telefon. Wer T4b adressieren will, muss B verlagern, nicht C. Das ist kein Argument gegen Hardware-C, sondern gegen die Erwartung, damit sei das Telefonproblem gelöst.
+> **The most important row is the last.** A hardware-C improves generation and the supply-chain situation, but **not** day-to-day operation — in the normal case A and B still sign on the same phone. Whoever wants to address T4b must move B, not C. That is not an argument against hardware-C, but against the expectation that it solves the phone problem.
 
-#### 2.7.8 Neue Bedrohung durch die Anbindung
+#### 2.7.8 New threat from the integration
 
-Die Hardware-Anbindung führt einen zusätzlichen Angriffsweg ein: den Transportkanal selbst. Er ist als **T19** im Bedrohungsmodell (4.1) geführt — dort steht die vollständige Angriffskette. Kurzfassung: Über den Kanal wandern ausschließlich PSBTs und xpubs, nie privates Material; der schwächste Punkt ist der **xpub-Import**, und die Gegenmaßnahme ist die Bestätigung auf dem Gerätedisplay (2.7.3).
+Hardware integration introduces an additional attack path: the transport channel itself. It is tracked as **T19** in the threat model (4.1) — there the full attack chain stands. Short version: only PSBTs and xpubs move over the channel, never private material; the weakest point is the **xpub import**, and the countermeasure is confirmation on the device display (2.7.3).
 
-#### 2.7.9 Gerätefreigabe — Coldcard zunächst ausgegraut
+#### 2.7.9 Device release — Coldcard initially greyed out
 
-Nicht jedes technisch angebundene Gerät soll ab Tag 1 empfohlen werden. Die Gerätematrix trägt deshalb einen Freigabezustand, der **unabhängig vom Codepfad** ist:
+Not every technically integrated device should be selectable from day 1. The device matrix therefore carries a release state that is **independent of the code path**:
 
 ```rust
 pub enum DeviceGate {
     Enabled,
-    /// Sichtbar, ausgegraut, mit Begründung. Codepfad existiert und ist getestet.
+    /// Visible, greyed out, with reason. Code path exists and is tested.
     Greyed { reason: GateReason, unlock: UnlockCondition },
     Hidden,
 }
 
 pub enum UnlockCondition {
-    /// Gerät meldet seine Firmware-Version; Freigabe ab Mindestversion je Modell.
+    /// Device reports its firmware version; release from minimum version per model.
     MinFirmware(BTreeMap<ModelId, Version>),
-    Manual,                 // nur durch bewusste Nutzeraktion in den Einstellungen
+    Manual,                 // only by deliberate user action in settings
     None,
 }
 ```
 
-**Coldcard startet als `Greyed`** — Grund: der Entropie-Vorfall vom Juli/August 2026 (Abschnitt 2.1). Der Codepfad ist trotzdem vollständig implementiert und getestet; Coldcard Q ist ohnehin das Referenzgerät für den BBQr-Transport (D19, S16–S18). Es geht nur um die Voreinstellung in der Auswahl, nicht um fehlende Funktionalität.
+**Coldcard starts as `Greyed`** — reason: the entropy incident of July/August 2026 (Section 2.1). The code path is still fully implemented and tested; Coldcard Q is in any case the reference device for the BBQr transport (D19, S16–S18). It is only about the default in the selection, not missing functionality.
 
-**Die Freigabebedingung, und warum sie in unserem Fall sauber greift:**
+**The release condition, and why it applies cleanly in our case:**
 
-| Modell | Mindestversion für Freigabe |
+| Model | Minimum version for release |
 |---|---|
 | Mk4, Mk5 | ≥ 5.6.0 |
 | Q | ≥ 1.5.0Q |
-| Edge-Track Mk4/Mk5 | ≥ 6.6.0X |
-| Edge-Track Q | ≥ 6.6.0QX |
-| Mk2, Mk3 | **keine Freigabe** — Seeds mit ≈40 bit effektiver Entropie, Gerätegeneration nicht mehr empfohlen |
+| Edge-track Mk4/Mk5 | ≥ 6.6.0X |
+| Edge-track Q | ≥ 6.6.0QX |
+| Mk2, Mk3 | **no release** — seeds with ≈40 bit effective entropy, device generation no longer recommended |
 
-> **Warum eine reine Firmware-Prüfung hier ausreicht — und wo sie es nicht täte.** Ein Firmware-Update repariert keinen bereits erzeugten Seed. Bei einem *bestehenden* Gerät könnte die App also nie wissen, ob der darauf liegende Seed auf betroffener Version entstanden ist. **In unserem Ablauf entsteht C aber genau jetzt**, während der Wallet-Erstellung, auf der gerade geprüften Firmware. Damit ist der Vorfall für unseren Anwendungsfall abgedeckt, und zwar nachweisbar — nicht durch Vertrauen, sondern durch die Reihenfolge der Schritte.
+> **Why a pure firmware check suffices here — and where it would not.** A firmware update does not repair an already generated seed. On an *existing* device the app could thus never know whether the seed on it was created on an affected version. **In our flow C is created exactly now**, during wallet creation, on the firmware just checked. Thus the incident is covered for our use case, and evidentially — not by trust, but by the order of steps.
 >
-> **Daraus folgt eine harte Regel:** Für Slot C wird **ausschließlich ein frisch auf dem Gerät erzeugter Seed** akzeptiert. Der Import eines xpub aus einem *vorhandenen* Wallet auf dem Gerät ist für C gesperrt — bei diesem Weg kann die App die Entstehungsgeschichte des Seeds nicht prüfen, und dann hilft auch aktuelle Firmware nichts. Diese Regel gilt **modellunabhängig für alle Hersteller**, nicht nur für Coldcard; Coldcard ist nur der Anlass, aus dem sie formuliert wurde.
+> **From that follows a hard rule:** For slot C **exclusively a seed freshly generated on the device** is accepted. Import of an xpub from an *existing* wallet on the device is locked for C — on that path the app cannot check the seed's origin history, and then current firmware does not help either. This rule applies **model-independently for all vendors**, not only for Coldcard; Coldcard is only the occasion from which it was formulated.
 
-**Für Slot B (Hardware-B, Abschnitt 6.6) gilt sie nicht** — dort ersetzt der Nutzer bewusst einen bestehenden Schlüssel und bringt möglicherweise ein eingerichtetes Gerät mit. Dort zeigt die App stattdessen einen Hinweis mit den betroffenen Versionsbereichen und der Frage, ob der Seed mit ≥ 50 privaten Würfelwürfen erzeugt wurde — die einzige bekannte Bedingung, unter der ein Seed aus betroffener Firmware unbedenklich blieb. Beantworten kann das nur der Nutzer; die App kann es nur fragen und die Antwort protokollieren.
+**For slot B (hardware-B, Section 6.6) it does not apply** — there the user deliberately replaces an existing key and may bring an already set-up device. There the app instead shows a notice with the affected version ranges and the question whether the seed was generated with ≥ 50 private dice rolls — the only known condition under which a seed from affected firmware remained harmless. Only the user can answer that; the app can only ask and log the answer.
 
-⚠️ **Vor Umsetzung zu verifizieren** (Anhang B, Punkt 6 und 12): Die Versionsangaben oben stammen aus Sekundärquellen. Sie müssen gegen die Coinkite-Primäradvisory geprüft werden, **bevor** sie als Freigabeschwelle Code werden — eine zu niedrig angesetzte Schwelle gäbe ein betroffenes Gerät frei.
+⚠️ **To verify before implementation** (Appendix B, points 6 and 12): the version numbers above come from secondary sources. They must be checked against the Coinkite primary advisory **before** they become release thresholds in code — a threshold set too low would release an affected device.
 
 ---
 
-## 3. Signaturfluss
+## 3. Signature flow
 
-### 3.1 Sequenzdiagramm — vollständiger Sendevorgang
+### 3.1 Sequence diagram — full send
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as Nutzer
+    participant U as User
     participant JS as app/ (React Native)
     participant NAT as platform/ (Swift·Kotlin)
     participant FFI as trinity-ffi
@@ -1180,564 +1180,564 @@ sequenceDiagram
     participant PKS as Keychain / Keystore
     participant CH as trinity-chain
 
-    U->>JS: Empfänger + Betrag + Fee-Ziel
+    U->>JS: recipient + amount + fee target
     JS->>FFI: build_psbt(SendRequest)
     FFI->>W: TxBuilder ⟨API-VERIFY⟩
-    W->>W: Coin Selection (BnB, Fallback SRD)
-    W->>W: Change-Adresse aus Change-Descriptor /1/i
-    W->>W: nLockTime = tip_height (Anti-Fee-Sniping)
-    W-->>FFI: PSBT (unsigniert)
+    W->>W: coin selection (BnB, fallback SRD)
+    W->>W: change address from change descriptor /1/i
+    W->>W: nLockTime = tip_height (anti-fee-sniping)
+    W-->>FFI: PSBT (unsigned)
     FFI-->>JS: psbt_b64
 
-    Note over JS,V: Verifikation VOR jeder Anzeige und VOR jedem Schlüsselzugriff
+    Note over JS,V: Verification BEFORE every display and BEFORE every key access
     JS->>FFI: verify_psbt(psbt_b64)
-    FFI->>V: verify(psbt, gespeicherter Descriptor, policy)
-    V->>V: V1–V9 (eigener Parser, eigene BIP-32/67-Ableitung)
-    V-->>FFI: PsbtVerdict{ok, empfänger, betrag, change, fee, feerate}
+    FFI->>V: verify(psbt, stored descriptor, policy)
+    V->>V: V1–V9 (own parser, own BIP-32/67 derivation)
+    V-->>FFI: PsbtVerdict{ok, recipient, amount, change, fee, feerate}
     FFI-->>JS: verdict
-    JS->>NAT: Bestätigungsdialog NATIV rendern (aus verdict, nicht aus JS-State)
-    NAT-->>U: „X sat an bc1q… · Gebühr Y sat (Z sat/vB)"
-    U->>NAT: Bestätigen
+    JS->>NAT: render confirmation dialog NATIVELY (from verdict, not from JS state)
+    NAT-->>U: "X sat to bc1q… · fee Y sat (Z sat/vB)"
+    U->>NAT: confirm
 
-    Note over NAT,S: Ausgabegrenze — im Rust-Kern, vor jedem Schlüsselzugriff
+    Note over NAT,S: Spending limit — in Rust core, before every key access
     NAT->>FFI: sign_ab(psbt_b64)
     FFI->>S: check SpendPolicy (3.6.3)
-    alt Betrag ≤ Quote, Fenster frei, nicht erste Nutzung
-        S-->>NAT: braucht nur Biometrie
-        NAT->>PKS: EINE Auswertung (LAContext bzw. 5-s-Fenster)
-        PKS-->>U: Face ID / Fingerabdruck
-        U-->>PKS: Geste
-        PKS-->>KS: KEK_A und KEK_B — getrennte Schlüssel, ein Prompt
-    else Betrag > Quote · Policy-Änderung · Export · erste Nutzung
-        S-->>NAT: Passphrase erforderlich
-        NAT->>U: Eingabe (Data/ByteArray, NIE String, Autovervollständigung)
-        U->>NAT: Passphrase
+    alt amount ≤ share, window free, not first use
+        S-->>NAT: needs only biometrics
+        NAT->>PKS: ONE evaluation (LAContext or 5-s window)
+        PKS-->>U: Face ID / fingerprint
+        U-->>PKS: gesture
+        PKS-->>KS: KEK_A and KEK_B — separate keys, one prompt
+    else amount > share · policy change · export · first use
+        S-->>NAT: passphrase required
+        NAT->>U: input (Data/ByteArray, NEVER String, autocomplete)
+        U->>NAT: passphrase
         NAT->>FFI: sign_ab(psbt_b64, SecretBytes)
-        PKS-->>U: Biometrie für KEK_A
-        KS->>KS: Argon2id(pass, pp_salt) — vorgezogen, ≈ 2 s
-        S->>S: Verifier in konstanter Zeit prüfen
+        PKS-->>U: biometrics for KEK_A
+        KS->>KS: Argon2id(pass, pp_salt) — prefetched, ≈ 2 s
+        S->>S: check verifier in constant time
     end
 
-    Note over S,V: Signatur A, dann B — jeweils mit eigener Verifikation
-    S->>V: verify(...) vor Slot A
+    Note over S,V: Signature A, then B — each with its own verification
+    S->>V: verify(...) before slot A
     V-->>S: ok
     KS->>KS: entropy_A = AEAD-decrypt(blob_A, KEK_A)
-    S->>S: ECDSA, RFC-6979-Nonce, low-s, Eigenverifikation
+    S->>S: ECDSA, RFC-6979 nonce, low-s, self-verification
     S->>S: zeroize(xprv_A, entropy_A, KEK_A)
-    S->>V: verify(...) vor Slot B — unsigned_tx unverändert?
+    S->>V: verify(...) before slot B — unsigned_tx unchanged?
     V-->>S: ok
     KS->>KS: entropy_B = AEAD-decrypt(blob_B, KEK_B)
-    S->>S: ECDSA, RFC-6979, low-s, Eigenverifikation
-    S->>S: zeroize(alles, inkl. SecretBytes)
-    S->>S: SpendPolicy-Zähler fortschreiben (verschlüsselt)
+    S->>S: ECDSA, RFC-6979, low-s, self-verification
+    S->>S: zeroize(everything, incl. SecretBytes)
+    S->>S: advance SpendPolicy counter (encrypted)
     S-->>FFI: psbt_ab
-    FFI-->>NAT: psbt_ab (2 von 2)
+    FFI-->>NAT: psbt_ab (2 of 2)
 
     NAT->>FFI: finalize(psbt_ab)
-    FFI->>W: Witness bauen: OP_0 sigA sigB witnessScript
-    W->>W: Konsens-Prüfung der finalisierten Tx
+    FFI->>W: build witness: OP_0 sigA sigB witnessScript
+    W->>W: consensus check of finalized tx
     W-->>FFI: tx_hex
-    FFI->>CH: broadcast(tx_hex) — getrenntes Backend
+    FFI->>CH: broadcast(tx_hex) — separate backend
     CH-->>FFI: txid
     FFI-->>JS: txid
-    JS-->>U: Bestätigung
+    JS-->>U: confirmation
 ```
 
-### 3.2 PSBT-Bau und Coin Selection
+### 3.2 PSBT construction and coin selection
 
-| Aspekt | Festlegung | Begründung |
+| Aspect | Specification | Rationale |
 |---|---|---|
-| Coin Selection | BDK-Default: Branch-and-Bound, Fallback Single Random Draw ⟨API-VERIFY: exakter Enum-Name in `bdk_wallet 3.1.0`⟩ | BnB findet changelose Lösungen, wenn möglich — kein Change-Output heißt kein Change-Angriffsvektor und kein Fingerprint. |
-| `nLockTime` | `= aktuelle Tip-Höhe`, `nSequence = 0xFFFFFFFE` | Anti-Fee-Sniping: Ein Reorg-Miner kann die Transaktion nicht in einen älteren Block ziehen. Standardverhalten von Core und Sparrow — Abweichung wäre ein Fingerprint. |
-| RBF | `nSequence` signalisiert Replaceability | Gebührenerhöhung ohne neuen Schlüsselzugriff möglich; Fee-Bump-Flow durchläuft dieselbe Verifikation. |
-| Change-Ableitung | Immer aus dem Change-Descriptor `/1/*`, nächster unbenutzter Index | Nie Wiederverwendung. |
-| Dust-Schwelle | Change unterhalb der Dust-Schwelle wandert in die Gebühr | Kein unspendbarer Output. |
-| Fee-Obergrenzen | `max_absolute_fee` und `max_feerate` in der `VerifyPolicy`, nutzerkonfigurierbar mit konservativen Defaults | V5. Schützt gegen einen kompromittierten Fee-Estimator. |
-| **Konsolidierung nach Poisoning** | UTXOs, die als Dust unterhalb einer Schwelle eingehen, werden per Default **nicht** in die Coin Selection aufgenommen und in der UI markiert | Address Poisoning setzt Dust in der Historie ab; siehe Bedrohung T8. |
+| Coin selection | BDK default: Branch-and-Bound, fallback Single Random Draw ⟨API-VERIFY: exact enum name in `bdk_wallet 3.1.0`⟩ | BnB finds changeless solutions when possible — no change output means no change attack vector and no fingerprint. |
+| `nLockTime` | `= current tip height`, `nSequence = 0xFFFFFFFE` | Anti-fee-sniping: a reorg miner cannot pull the transaction into an older block. Standard behavior of Core and Sparrow — deviation would be a fingerprint. |
+| RBF | `nSequence` signals replaceability | Fee increase without new key access possible; fee-bump flow runs the same verification. |
+| Change derivation | Always from the change descriptor `/1/*`, next unused index | Never reuse. |
+| Dust threshold | Change below the dust threshold goes into the fee | No unspendable output. |
+| Fee caps | `max_absolute_fee` and `max_feerate` in `VerifyPolicy`, user-configurable with conservative defaults | V5. Protects against a compromised fee estimator. |
+| **Consolidation after poisoning** | UTXOs that arrive as dust below a threshold are by default **not** taken into coin selection and are marked in the UI | Address poisoning deposits dust in the history; see threat T8. |
 
-### 3.3 Verifikation vor Signatur
+### 3.3 Verification before signature
 
-Der Verifier läuft **dreimal** pro Transaktion, und das ist Absicht, nicht Redundanz aus Unsicherheit. Der exportierte Einstieg ist `sign_ab` (ein Aufruf, eine Geste); die beiden Signaturschritte und ihre Verifier-Läufe liegen **crate-intern**:
+The verifier runs **three times** per transaction, and that is intentional, not redundancy from uncertainty. The exported entry is `sign_ab` (one call, one gesture); the two signature steps and their verifier runs sit **crate-internal**:
 
-1. **Nach dem Bau, für die Anzeige** (`verify_psbt`) — der Nutzer sieht, was der Verifier sieht, nicht was der Builder behauptet.
-2. **In `sign_ab`, vor dem Zugriff auf Schlüssel A** — schlägt die Prüfung fehl, erscheint der Biometrie-Prompt gar nicht erst.
-3. **In `sign_ab`, vor dem Zugriff auf Schlüssel B** — zwischen den beiden Signaturen darf sich das `unsigned_tx` nicht geändert haben; der Vergleich läuft über dessen Txid. **Dieser dritte Lauf ist der wichtigste** und der Grund, warum die Verifikation nicht einmalig zentral stattfindet.
+1. **After construction, for display** (`verify_psbt`) — the user sees what the verifier sees, not what the builder claims.
+2. **In `sign_ab`, before access to key A** — if the check fails, the biometric prompt never appears.
+3. **In `sign_ab`, before access to key B** — between the two signatures the `unsigned_tx` must not have changed; comparison runs over its txid. **This third run is the most important** and the reason verification is not done once centrally.
 
-Zusätzlich prüft der interne Schritt für B, dass die bereits vorhandene Signatur von A zum erwarteten Pubkey gehört.
+Additionally the internal step for B checks that the already present signature of A belongs to the expected pubkey.
 
-### 3.4 Signatur — deterministische Nonces (Anforderung 4)
+### 3.4 Signature — deterministic nonces (Requirement 4)
 
-| Festlegung | Detail |
+| Specification | Detail |
 |---|---|
-| Algorithmus | ECDSA über secp256k1, Nonce nach **RFC 6979** |
-| Implementierung | `secp256k1 0.29.1` → libsecp256k1, `secp256k1_ecdsa_sign` mit der Default-Nonce-Funktion `nonce_function_rfc6979`. **Nichts selbst geschrieben, keine eigene Nonce-Ableitung, kein eigener RNG im Signaturpfad.** |
-| Low-s | Signaturen werden normalisiert (BIP-62/Policy-Regel). libsecp256k1 erzeugt low-s per Default; wird zusätzlich geprüft. |
-| SIGHASH | `SIGHASH_ALL` (0x01), ausschließlich. Jeder andere Wert im PSBT ist ein harter Fehler. |
-| **Eigenverifikation** | Nach jeder Signatur verifiziert der Signer die eigene Signatur gegen den eigenen Pubkey und den Sighash. Kostet Mikrosekunden, fängt Fehlableitungen und Speicherkorruption. |
-| **Determinismus-Test** | Zweimaliges Signieren desselben PSBT mit demselben Schlüssel muss **bitgleiche** Signaturen ergeben. Als Property-Test in CI (Abschnitt 5.2, P4) und als optionale Laufzeit-Selbstprüfung. |
+| Algorithm | ECDSA over secp256k1, nonce per **RFC 6979** |
+| Implementation | `secp256k1 0.29.1` → libsecp256k1, `secp256k1_ecdsa_sign` with the default nonce function `nonce_function_rfc6979`. **Nothing self-written, no own nonce derivation, no own RNG in the signature path.** |
+| Low-s | Signatures are normalized (BIP-62/policy rule). libsecp256k1 produces low-s by default; additionally checked. |
+| SIGHASH | `SIGHASH_ALL` (0x01), exclusively. Any other value in the PSBT is a hard error. |
+| **Self-verification** | After every signature the signer verifies its own signature against its own pubkey and the sighash. Costs microseconds, catches mis-derivation and memory corruption. |
+| **Determinism test** | Signing the same PSBT twice with the same key must yield **bit-identical** signatures. As property test in CI (Section 5.2, P4) and as optional runtime self-check. |
 
-> **Warum das ausreicht und wo die Grenze liegt:** Eine schwache Nonce leakt den privaten Schlüssel aus einer **einzigen** Signatur — bei wiederverwendeter Nonce über zwei Signaturen ist die Extraktion trivial. RFC 6979 leitet die Nonce deterministisch aus privatem Schlüssel und Nachrichten-Hash ab; es gibt keinen RNG, der versagen kann. Die verbleibende Grenze ist ein Seitenkanal in libsecp256k1 selbst — dagegen hilft nur, dass libsecp256k1 die am intensivsten geprüfte Implementierung ist und konstante Laufzeit anstrebt. Eine Eigenimplementierung wäre in jeder Hinsicht schlechter.
+> **Why that suffices and where the limit sits:** A weak nonce leaks the private key from a **single** signature — with a reused nonce over two signatures extraction is trivial. RFC 6979 derives the nonce deterministically from private key and message hash; there is no RNG that can fail. The remaining limit is a side channel in libsecp256k1 itself — against that only helps that libsecp256k1 is the most intensively reviewed implementation and aims for constant time. A self-implementation would be worse in every respect.
 
-### 3.5 Finalisierung und Broadcast
+### 3.5 Finalization and broadcast
 
-| Schritt | Prüfung |
+| Step | Check |
 |---|---|
-| Finalisierung | Witness `OP_0 <sigA> <sigB> <witnessScript>`; die Signaturreihenfolge muss der **BIP-67-sortierten Pubkey-Reihenfolge** im witnessScript folgen, nicht der Signaturreihenfolge. Häufige Fehlerquelle. |
-| Konsens-Prüfung | Die finalisierte Transaktion wird lokal gegen die Skript-Regeln validiert, bevor sie das Gerät verlässt ⟨optional `bitcoinconsensus` — Abwägung: eine Dependency mehr im kritischen Pfad vs. eine echte Konsensvalidierung. **Empfehlung: ja**, weil sie einen ganzen Bug-Klasse ausschließt.⟩ |
-| Größe/Gebühr final | vsize der fertigen Transaktion wird gemessen; die effektive Feerate wird gegen `max_feerate` geprüft. Eine finalisierte Transaktion, die über der Obergrenze liegt, wird **nicht** gesendet. |
-| Broadcast | Über ein separat konfigurierbares Backend (1.6). Fehlschlag ⇒ die Transaktion wird lokal aufbewahrt und kann erneut gesendet werden; kein automatischer Rebroadcast über einen anderen Weg ohne Nutzeraktion. |
+| Finalization | Witness `OP_0 <sigA> <sigB> <witnessScript>`; signature order must follow the **BIP-67-sorted pubkey order** in the witnessScript, not signature order. Common error source. |
+| Consensus check | The finalized transaction is validated locally against script rules before it leaves the device ⟨optional `bitcoinconsensus` — trade-off: one more dependency in the critical path vs. a real consensus validation. **Recommendation: yes**, because it excludes a whole bug class.⟩ |
+| Size/fee final | vsize of the finished transaction is measured; effective feerate is checked against `max_feerate`. A finalized transaction above the cap is **not** sent. |
+| Broadcast | Via a separately configurable backend (1.6). Failure ⇒ the transaction is kept locally and can be resent; no automatic rebroadcast over another path without user action. |
 
-### 3.6 Ein-Gesten-Signatur und Ausgabegrenzen (Entscheidung E7)
+### 3.6 One-gesture signature and spending limits (Decision E7)
 
-**Anforderung:** Ein Sendevorgang kostet eine Geste. Die App soll sich anfühlen wie ein gängiges Software-Wallet und im Hintergrund trotzdem ein 2-von-3 sein.
+**Requirement:** A send costs one gesture. The app should feel like a common software wallet and still be a 2-of-3 in the background.
 
-#### 3.6.1 Was dabei kryptografisch nicht geht — und warum das kein Beinbruch ist
+#### 3.6.1 What is cryptographically impossible here — and why that is not a disaster
 
-Jede Ausgabe braucht zwei Signaturen. Auf dem Telefon liegen A und B. Also müssen für jede telefonseitige Ausgabe **beide** Blobs aufgehen, und damit bestimmt die schwächere der beiden Entsperrungen die Sicherheit. Öffnet eine Geste beide, ist das ein Faktor. Daran ändert auch keine Betragsstaffelung etwas: Was mit Biometrie aufgeht, geht immer mit Biometrie auf.
+Every spend needs two signatures. On the phone sit A and B. So for every phone-side spend **both** blobs must open, and thus the weaker of the two unlocks determines security. If one gesture opens both, that is one factor. No amount tiering changes that: what opens with biometrics always opens with biometrics.
 
-Es gibt dafür **keinen Trick**. Wer etwas anderes behauptet, hat einen Denkfehler oder verkauft etwas. Also lautet die richtige Frage nicht „wie umgehe ich das", sondern „wo hole ich die Sicherheit stattdessen her".
+There is **no trick** for that. Whoever claims otherwise has a reasoning error or is selling something. So the right question is not "how do I work around that", but "where do I get the security from instead".
 
-Der Vergleich, auf den es ankommt (Maßstab aus 0.1) — Ein-Gesten-Trinity gegen ein normales Software-Wallet:
+The comparison that matters (yardstick from 0.1) — one-gesture Trinity against a normal software wallet:
 
-| | Software-Wallet (Single-Sig) | **Trinity, Ein-Gesten-Modus** |
+| | Software wallet (single-sig) | **Trinity, one-gesture mode** |
 |---|---|---|
-| Kompromittiertes Telefon | 🔴 alles weg | 🔴 alles weg — **gleichauf, nicht schlechter** |
-| Backup gefunden / fotografiert / gestohlen | 🔴 alles weg | ✅ **1 von 3, wertlos für den Finder** |
-| Ein Schlüssel leakt | 🔴 alles weg | ✅ **abgedeckt, Sweep möglich** |
-| Backup verbrannt / verloren | 🔴 alles weg | ✅ zweites Backup trägt |
-| RNG-Fehler bei der Erzeugung | 🔴 alles weg | ✅ bei Hardware-C oder Zusatzentropie abgedeckt |
-| **Entrissenes, entsperrtes Handy** | 🔴 **alles weg** | ⚠️ **nur bis zur Grenze — Rest rettbar** (3.6.3) |
-| Manipulierte Change-Adresse | 🔴 meist ungeprüft | ✅ unabhängiger Verifier |
+| Compromised phone | 🔴 everything gone | 🔴 everything gone — **level, not worse** |
+| Backup found / photographed / stolen | 🔴 everything gone | ✅ **1 of 3, worthless to the finder** |
+| One key leaks | 🔴 everything gone | ✅ **covered, sweep possible** |
+| Backup burned / lost | 🔴 everything gone | ✅ second backup carries |
+| RNG failure at generation | 🔴 everything gone | ✅ covered with hardware-C or additional entropy |
+| **Snatched, unlocked phone** | 🔴 **everything gone** | ⚠️ **only up to the limit — remainder recoverable** (3.6.3) |
+| Manipulated change address | 🔴 usually unchecked | ✅ independent verifier |
 
-**Sechs von sieben Zeilen verbessern sich, eine bleibt gleich, keine wird schlechter.** Das ist die ehrliche Bilanz des Ein-Gesten-Modus — und sie ist deutlich besser, als „ein Faktor statt zwei" klingt.
+**Six of seven rows improve, one stays equal, none gets worse.** That is the honest balance of one-gesture mode — and it is clearly better than "one factor instead of two" sounds.
 
-#### 3.6.2 Eine Geste, zwei Schlüssel — plattformseitig
+#### 3.6.2 One gesture, two keys — platform-side
 
-Beide Blobs bleiben durch **getrennte** hardware-gebundene Schlüssel geschützt; geteilt wird nur die Nutzerinteraktion, nicht das Schlüsselmaterial. Ein Angreifer, der einen KEK extrahiert, bekommt den anderen dadurch nicht.
+Both blobs remain protected by **separate** hardware-bound keys; only the user interaction is shared, not the key material. An attacker who extracts one KEK does not get the other from that.
 
-**iOS** — eine Auswertung, zwei Keychain-Zugriffe:
+**iOS** — one evaluation, two Keychain accesses:
 
 ```swift
 let ctx = LAContext()
-ctx.touchIDAuthenticationAllowableReuseDuration = 10   // deckt genau die zwei Zugriffe
+ctx.touchIDAuthenticationAllowableReuseDuration = 10   // covers exactly the two accesses
 try await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics,
-                             localizedReason: "Transaktion signieren")
-// derselbe Kontext für beide SE-Schlüssel — ein Prompt, zwei getrennte Schlüssel
+                             localizedReason: "Sign transaction")
+// same context for both SE keys — one prompt, two separate keys
 let kekA = try unwrap(slot: .A, context: ctx)
 let kekB = try unwrap(slot: .B, context: ctx)
 ```
 
-**Android** — zeitbasierte Autorisierung statt CryptoObject-Bindung:
+**Android** — time-based authorization instead of CryptoObject binding:
 
 ```kotlin
-// Ein BiometricPrompt kann per CryptoObject nur EINEN Cipher binden.
-// Für zwei Schlüssel deshalb zeitbasierte Auth mit kurzem Fenster:
-setUserAuthenticationParameters(5 /* Sekunden */, KeyProperties.AUTH_BIOMETRIC_STRONG)
+// One BiometricPrompt can bind only ONE Cipher via CryptoObject.
+// For two keys therefore time-based auth with a short window:
+setUserAuthenticationParameters(5 /* seconds */, KeyProperties.AUTH_BIOMETRIC_STRONG)
 ```
 
-⚠️ **Benannter Trade-off:** Zeitbasierte Autorisierung ist schwächer als die CryptoObject-Bindung pro Nutzung — für 5 Sekunden sind die Schlüssel ohne erneute Auswertung verwendbar. Das ist der Preis dafür, dass ein Send nur einen Prompt hat. Das Fenster wird **so kurz wie technisch möglich** gewählt und ist nicht konfigurierbar.
+⚠️ **Named trade-off:** Time-based authorization is weaker than per-use CryptoObject binding — for 5 seconds the keys are usable without re-evaluation. That is the price of a send having only one prompt. The window is chosen **as short as technically possible** and is not configurable.
 
-Die übrigen Flags aus 2.4 bleiben unverändert und gelten **pro Slot**: Slot A mit `.biometryCurrentSet` bzw. `setInvalidatedByBiometricEnrollment(true)` — ein neu registriertes Gesicht oder ein neuer Fingerabdruck invalidiert **nur A**. Slot B mit `.userPresence` bzw. `AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL` und `setInvalidatedByBiometricEnrollment(false)` **überlebt** das Enrollment; genau daraus entsteht der Recovery-Weg mit B (Gerät) + C (Papier), ohne das Papier-Backup von B (T14, S33, S34, RECOVERY.md §4).
+The remaining flags from 2.4 stay unchanged and apply **per slot**: slot A with `.biometryCurrentSet` or `setInvalidatedByBiometricEnrollment(true)` — a newly registered face or fingerprint invalidates **only A**. Slot B with `.userPresence` or `AUTH_BIOMETRIC_STRONG | AUTH_DEVICE_CREDENTIAL` and `setInvalidatedByBiometricEnrollment(false)` **survives** the enrollment; exactly from that arises the recovery path with B (device) + C (paper), without the paper backup of B (T14, S33, S34, RECOVERY.md §4).
 
-#### 3.6.3 Die Ausgabegrenze — durchgesetzt im Rust-Kern
+#### 3.6.3 The spending limit — enforced in the Rust core
 
-Hier kommt die Sicherheit her, die die eine Geste kostet.
+Here comes the security that the one gesture costs.
 
 ```rust
-// crates/trinity-signer/src/limits.rs — NICHT in der JS-Schicht
+// crates/trinity-signer/src/limits.rs — NOT in the JS layer
 pub struct SpendPolicy {
-    /// Anteil des Guthabens im gleitenden Fenster.
+    /// Share of balance in the sliding window.
     pub window_fraction: Option<Ratio>,        // Default: 20 %
-    /// Sockel: so viel geht IMMER ohne Passphrase. In Sat.
-    pub window_floor_sat: Option<u64>,         // Default: Sat-Gegenwert von 200 €
-    /// Deckel: darüber IMMER Passphrase. In Sat.
-    pub window_cap_sat: Option<u64>,           // Default: Sat-Gegenwert von 500 €
+    /// Floor: this much ALWAYS goes without passphrase. In sats.
+    pub window_floor_sat: Option<u64>,         // Default: sat equivalent of €200
+    /// Cap: above this ALWAYS passphrase. In sats.
+    pub window_cap_sat: Option<u64>,           // Default: sat equivalent of €500
     pub window: Duration,                      // Default: 24 h
-    /// Erste Signatur nach Neuinstallation verlangt immer die Passphrase.
-    pub passphrase_on_first_use: bool,         // Default: true, nicht abschaltbar
+    /// First signature after reinstall always requires the passphrase.
+    pub passphrase_on_first_use: bool,         // Default: true, not disableable
 }
 
-/// Was im Fenster ohne Passphrase ausgegeben werden darf.
+/// What may be spent in the window without passphrase.
 fn allowance(p: &SpendPolicy, balance_sat: u64) -> u64 {
     let by_fraction = p.window_fraction.map(|f| f * balance_sat).unwrap_or(u64::MAX);
     let floor = p.window_floor_sat.unwrap_or(0);
     let cap   = p.window_cap_sat.unwrap_or(u64::MAX);
-    debug_assert!(floor <= cap, "Sockel über Deckel — bei jedem Setzen zu erzwingen");
+    debug_assert!(floor <= cap, "floor above cap — to enforce on every set");
     by_fraction.clamp(floor, cap)
-    // Natürlich zusätzlich durch das Guthaben selbst begrenzt.
+    // Naturally also limited by the balance itself.
 }
 ```
 
-**Die Kurve, die daraus entsteht** — und in der Praxis erlebt fast jeder Nutzer nur zwei der drei Bereiche:
+**The curve that results** — and in practice almost every user only experiences two of the three ranges:
 
-| Guthaben | Ohne Passphrase pro 24 h | Was greift |
+| Balance | Without passphrase per 24 h | What applies |
 |---|---|---|
-| unter 1.000 € | **200 €** (bzw. das gesamte Guthaben, wenn kleiner) | **Sockel** |
-| 1.000 – 2.500 € | 200 – 500 €, gleitend | **die 20-%-Quote** |
-| über 2.500 € | **500 €** | **Deckel** |
+| under €1,000 | **€200** (or the entire balance if smaller) | **floor** |
+| €1,000 – €2,500 | €200 – €500, sliding | **the 20% share** |
+| over €2,500 | **€500** | **cap** |
 
-Für die Nutzerkommunikation heißt das: **„200 € am Tag ohne Passphrase, bei größerem Guthaben bis zu 500 €."** Die Quote sorgt nur für den weichen Übergang dazwischen und dafür, dass die Regel begründet statt willkürlich ist.
+For user communication that means: **"€200 a day without passphrase, with larger balance up to €500."** The share only provides the soft transition in between and that the rule is reasoned rather than arbitrary.
 
-> **Der Sockel ist eine bewusste Lockerung, und zwar die einzige im Entwurf.** Bei einem Guthaben unter 1.000 € kann ein Dieb bis zu 200 € abziehen — bei sehr kleinen Beständen also fast alles. Das ist gewollt: Wer 150 € hält, braucht keine Diebstahlsbremse, sondern eine Wallet, die sich benutzen lässt (T20). Ab dem Punkt, an dem echtes Geld im Spiel ist, greifen Quote und Deckel.
+> **The floor is a deliberate relaxation, and the only one in the design.** With a balance under €1,000 a thief can take up to €200 — with very small holdings thus almost everything. That is intentional: whoever holds €150 needs no theft brake, but a wallet that can be used (T20). From the point where real money is at stake, share and cap apply.
 
-**Zum Deckel als Tages- und nicht als Transaktionsgrenze:** Die 500 € gelten kumulativ pro 24 Stunden, nicht je Überweisung. Eine Grenze pro Transaktion würde nichts bewirken, weil ein Dieb stückelt — dieselbe Begründung wie oben, S29 testet es.
+**On the cap as a daily and not a per-transaction limit:** The €500 apply cumulatively per 24 hours, not per transfer. A per-transaction limit would achieve nothing because a thief splits — same rationale as above, S29 tests it.
 
-`sign_ab` prüft die Policy **vor** dem Entsperren von B und verlangt bei Überschreitung `SecretBytes`. Der geführte Zähler liegt im verschlüsselten Zustand des Kerns, nicht in einer JS-lesbaren Datei.
+`sign_ab` checks the policy **before** unlocking B and requires `SecretBytes` on exceedance. The tracked counter sits in the encrypted state of the core, not in a JS-readable file.
 
-**Warum es keine Grenze pro Transaktion gibt.** Eine solche Grenze bringt sicherheitstechnisch **nichts**: Ein Dieb, der 20 % nicht in einer Überweisung bewegen darf, macht drei kleinere. Nur die kumulative Fenstergrenze begrenzt den Schaden — die Transaktionsgrenze erzeugt ausschließlich Reibung. Sie ist deshalb ersatzlos gestrichen. Eine Zahl statt zwei, gleiche Sicherheit, weniger Nachfragen.
+**Why there is no per-transaction limit.** Such a limit achieves **nothing** security-wise: a thief who may not move 20% in one transfer makes three smaller ones. Only the cumulative window limit bounds the damage — the transaction limit creates exclusively friction. It is therefore dropped without replacement. One number instead of two, same security, fewer questions.
 
-**Warum nicht empfängerbasiert statt betragsbasiert.** Naheliegend wäre: bekannte Empfänger ohne Passphrase, neue mit. Ein Dieb sendet immer an eine neue Adresse und wäre damit vollständig blockiert — bei einer kontobasierten Chain wäre das die überlegene Lösung. **Bei Bitcoin funktioniert es nicht:** Adressen wechseln bei jeder Zahlung, und das ist gewollt. Fast jeder Empfänger wäre „neu", die Passphrase käme ständig, und eine Wiedererkennung „gleicher Empfänger, neue Adresse" ist genau das, was Address Poisoning (T8) ausnutzt. Betragsbasiert ist hier die einzig tragfähige Variante.
+**Why not recipient-based instead of amount-based.** The obvious idea: known recipients without passphrase, new ones with. A thief always sends to a new address and would be fully blocked — on an account-based chain that would be the superior solution. **On Bitcoin it does not work:** addresses change with every payment, and that is intentional. Almost every recipient would be "new", the passphrase would come constantly, and recognition "same recipient, new address" is exactly what address poisoning (T8) exploits. Amount-based is the only viable variant here.
 
-**Warum alle drei Größen zusammen.** Die Quote allein skaliert mit dem Guthaben — wer 10 BTC hält, verlöre bei 20 % zwei BTC; dagegen der **Deckel**. Die Quote allein ist bei kleinen Guthaben zugleich zu streng — bei 200 € wären 20 % nur 40 €, und die Passphrase käme bei jeder normalen Zahlung; dagegen der **Sockel**. Zusammen: `clamp(20 % des Guthabens, 200 €, 500 €)`.
+**Why all three quantities together.** The share alone scales with balance — whoever holds 10 BTC would lose two BTC at 20%; against that the **cap**. The share alone is also too strict at small balances — at €200, 20% would be only €40, and the passphrase would come on every normal payment; against that the **floor**. Together: `clamp(20 % of balance, €200, €500)`.
 
-**Was die Grenze leistet — und wogegen sie nichts ausrichtet:**
+**What the limit achieves — and what it does nothing against:**
 
-| Angreifer | Wirkt die Grenze? | Warum |
+| Attacker | Does the limit work? | Why |
 |---|---|---|
-| **Dieb mit entsperrtem Telefon** (T5a) | ✅ **Ja** | Er bedient die App über die UI. Der Kern verlangt oberhalb der Quote die Passphrase, die er nicht hat. |
-| **Kompromittierte npm-Abhängigkeit** (JS-Ebene) | ✅ **Ja** | Die Prüfung liegt in Rust. Die JS-Schicht kann sie weder lesen noch umgehen. Das ist der **wahrscheinlichste** Supply-Chain-Weg bei React Native. |
-| **Nativer Codeausführungs-Angriff, Jailbreak/Root** (T4b) | ❌ **Nein** | Wer im Prozess Code ausführt, umgeht jede App-Politik. |
-| **Nötigung** (T17) | ❌ Nein | Der Nutzer gibt die Passphrase her. |
+| **Thief with unlocked phone** (T5a) | ✅ **Yes** | They operate the app through the UI. The core requires the passphrase above the share, which they do not have. |
+| **Compromised npm dependency** (JS level) | ✅ **Yes** | The check sits in Rust. The JS layer can neither read nor bypass it. That is the **most likely** supply-chain path with React Native. |
+| **Native code-execution attack, jailbreak/root** (T4b) | ❌ **No** | Whoever runs code in the process bypasses every app policy. |
+| **Coercion** (T17) | ❌ No | The user hands over the passphrase. |
 
-Also: **eine echte Grenze gegen die zwei häufigsten realen Angriffe, keine gegen den stärksten.** Genau so ist sie im UI zu beschreiben — als Diebstahlsbremse, nicht als kryptografische Schranke.
+So: **a real limit against the two most common real attacks, none against the strongest.** Exactly so it is to be described in the UI — as a theft brake, not as a cryptographic barrier.
 
-#### 3.6.4 Die Eigenschaft, die daraus folgt und die kein Software-Wallet hat
+#### 3.6.4 The property that follows and that no software wallet has
 
-> Wird dir das entsperrte Telefon entrissen, kommt der Dieb an höchstens 200 € am Tag — bei größeren Beständen an ein Fünftel, aber nie an mehr als 500 €. Für alles darüber braucht er die Passphrase. **Du nimmst dein Backup von B, holst C aus dem zweiten Aufbewahrungsort und schiebst den Rest in ein frisches Setup** — mit genau den zwei Schlüsseln, die der Dieb nicht hat.
+> If the unlocked phone is snatched from you, the thief gets at most €200 a day — with larger holdings a fifth, but never more than €500. For everything above they need the passphrase. **You take your backup of B, fetch C from the second storage place, and move the rest into a fresh setup** — with exactly the two keys the thief does not have.
 
-Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne jede Handlungsoption. Das ist der konkrete, in einem Satz erklärbare Grund, warum sich der Umstieg lohnt — und er kostet den Nutzer eine einmalig eingestellte Zahl.
+On a single-sig wallet the same incident is a total loss without any course of action. That is the concrete, one-sentence reason the switch is worth it — and it costs the user one once-set number.
 
-Damit das trägt, sind drei Dinge **nicht** mit der Signatur-Geste änderbar, sondern verlangen immer die Passphrase:
+For that to hold, three things are **not** changeable with the signature gesture, but always require the passphrase:
 
-1. Die `SpendPolicy` ändern oder abschalten
-2. Schlüssel exportieren, Wallet löschen, Schlüsseltausch starten
-3. Die erste Signatur nach einer Neuinstallation
+1. Change or disable the `SpendPolicy`
+2. Export keys, delete wallet, start key rotation
+3. The first signature after a reinstall
 
-#### 3.6.5 Voreinstellungen und Einstellbarkeit
+#### 3.6.5 Defaults and configurability
 
-| Einstellung | Default | Bereich |
+| Setting | Default | Range |
 |---|---|---|
-| Gleitendes Fenster | **20 % des Guthabens in 24 h** | 1 %–100 %, Fenster 1 h–7 d, oder aus |
-| Sockel | **Sat-Gegenwert von 200 €** | frei in Sat oder Fiat, oder aus |
-| Deckel | **Sat-Gegenwert von 500 €** | frei in Sat oder Fiat, oder aus |
-| Kombination | `clamp(Quote, Sockel, Deckel)` | Sockel ≤ Deckel wird beim Setzen erzwungen |
-| Pro Transaktion | **keine** | entfällt bewusst, siehe oben |
-| Erste Nutzung nach Installation | Passphrase | **nicht abschaltbar** |
+| Sliding window | **20 % of balance in 24 h** | 1 %–100 %, window 1 h–7 d, or off |
+| Floor | **sat equivalent of €200** | free in sats or fiat, or off |
+| Cap | **sat equivalent of €500** | free in sats or fiat, or off |
+| Combination | `clamp(share, floor, cap)` | floor ≤ cap enforced on set |
+| Per transaction | **none** | deliberately dropped, see above |
+| First use after install | passphrase | **not disableable** |
 
-#### 3.6.6 Der Fiat-Deckel — der Kurs setzt die Grenze, er setzt sie nicht durch
+#### 3.6.6 The fiat cap — the rate sets the limit, it does not enforce it
 
-Ein Deckel in Euro ist für den Nutzer die verständliche Größe, aber ein Kurs im Signaturpfad wäre eine ernste Angriffsfläche. Rechnet die App zur Signaturzeit um und ein Angreifer manipuliert die Kursquelle auf „1 BTC = 1 €", dann entsprechen 500 € plötzlich 500 BTC — der Deckel wäre lautlos aufgehoben. Ein Ausfall der Quelle wäre ebenso heikel: „fail open" ist ein Loch, „fail closed" macht die Wallet offline unbenutzbar.
+A cap in euro is the understandable size for the user, but a rate in the signature path would be a serious attack surface. If the app converts at signature time and an attacker manipulates the rate source to "1 BTC = €1", then €500 suddenly equals 500 BTC — the cap would be silently lifted. Source failure would be equally awkward: "fail open" is a hole, "fail closed" makes the wallet unusable offline.
 
-**Deshalb die Trennung:**
+**Hence the separation:**
 
-| | Wer macht es | Wann |
+| | Who does it | When |
 |---|---|---|
-| **Grenze setzen** | Kursquelle, einmalig, mit ausdrücklicher Zustimmung | wenn der Nutzer den Deckel einstellt oder neu verankert |
-| **Grenze durchsetzen** | Rust-Kern, **ausschließlich auf dem gespeicherten Sat-Wert** | bei jeder Signatur |
+| **Set the limit** | rate source, once, with explicit consent | when the user sets or re-anchors the cap |
+| **Enforce the limit** | Rust core, **exclusively on the stored sat value** | on every signature |
 
-Der durchgesetzte Wert ist **immer** eine Sat-Zahl im verschlüsselten Kernzustand. Zur Signaturzeit findet **kein** Netzwerkabruf statt, keine Umrechnung, keine Kursabhängigkeit. Die Grenze funktioniert offline und ist durch keine externe Quelle beeinflussbar.
+The enforced value is **always** a sat number in encrypted core state. At signature time there is **no** network fetch, no conversion, no rate dependence. The limit works offline and is influenceable by no external source.
 
-**Neuverankerung bei Kursbewegung.** Steigt der Kurs, entspricht der gespeicherte Sat-Deckel real weniger Euro; fällt er, entsprechend mehr. Die App weist darauf hin, sobald die Abweichung eine Schwelle überschreitet („Dein Tagesdeckel entspricht jetzt etwa 900 € statt 500 € — anpassen?"). Dabei gilt:
+**Re-anchoring on rate movement.** If the rate rises, the stored sat cap corresponds to fewer euros in reality; if it falls, correspondingly more. The app points that out once the deviation exceeds a threshold ("Your daily cap now corresponds to about €900 instead of €500 — adjust?"). There:
 
-- **Sat-Wert senken** — jederzeit ohne Passphrase. Eine Verschärfung ist nie ein Risiko.
-- **Sat-Wert anheben** — **verlangt die Passphrase.** Es ist eine Lockerung der Policy und fällt unter dieselbe Regel wie jede andere (3.6.4).
+- **Lower sat value** — anytime without passphrase. A tightening is never a risk.
+- **Raise sat value** — **requires the passphrase.** It is a policy relaxation and falls under the same rule as every other (3.6.4).
 
-Das gilt für **Sockel und Deckel gleichermaßen**, und die Richtungen gehen dabei sauber auf:
+That applies to **floor and cap equally**, and the directions work out cleanly:
 
-| Kursbewegung | Der gespeicherte Sat-Wert entspricht | Anpassung wäre | Passphrase? |
+| Rate movement | The stored sat value corresponds to | Adjustment would be | Passphrase? |
 |---|---|---|---|
-| Kurs **steigt** | mehr Euro als gewollt → Grenze zu weit | Sat-Wert **senken** | ✅ nein — die sichere Richtung ist frei |
-| Kurs **fällt** | weniger Euro als gewollt → Grenze zu streng | Sat-Wert **anheben** | 🔒 ja |
+| Rate **rises** | more euros than intended → limit too loose | **lower** sat value | ✅ no — the safe direction is free |
+| Rate **falls** | fewer euros than intended → limit too strict | **raise** sat value | 🔒 yes |
 
-Diese Asymmetrie ist der Kern: Ein Dieb kann die Grenze weder durch Warten auf eine Kursbewegung noch durch eine manipulierte Neuverankerung weiten — und die einzige Richtung, in der Nichtstun schadet, ist die, die ohnehin keine Passphrase kostet.
+This asymmetry is the core: a thief can neither widen the limit by waiting for a rate move nor by a manipulated re-anchor — and the only direction where inaction hurts is the one that costs no passphrase anyway.
 
-**Woher der Kurs kommt.** Kursquelle ist **optional und standardmäßig aus**. Wer sie nutzt, erfährt vorher, was sie kostet: Der Anbieter lernt die IP und dass von dort eine Bitcoin-Wallet nach dem Kurs fragt — dieselbe Kategorie von Preisgabe wie ein fremder Electrum-Server (1.6), und ebenso deutlich zu kennzeichnen. Ohne konfigurierte Quelle setzt der Nutzer den Deckel direkt in Sat.
+**Where the rate comes from.** Rate source is **optional and off by default**. Whoever uses it learns beforehand what it costs: the provider learns the IP and that a Bitcoin wallet there is asking for the rate — the same category of disclosure as a third-party Electrum server (1.6), and equally clearly to label. Without a configured source the user sets the cap directly in sats.
 
-**Wann gefragt wird.** Nicht im Onboarding — bei leerer Wallet kann niemand sinnvoll beantworten, wie hoch ein Tagesdeckel sein soll. Stattdessen **beim ersten Mal, an dem die Grenze tatsächlich greift**: Der Nutzer steht davor, versteht die Frage und kann sie beantworten. Bis dahin gilt der Default aus der Tabelle oben.
+**When asked.** Not in onboarding — with an empty wallet nobody can sensibly answer how high a daily cap should be. Instead **the first time the limit actually applies**: the user is standing in front of it, understands the question, and can answer. Until then the default from the table above applies.
 
-**Invariante bei jedem Setzen:** `Sockel ≤ Deckel`. Wird der Sockel über den Deckel gehoben oder der Deckel unter den Sockel gesenkt, wird die Eingabe abgelehnt statt stillschweigend zurechtgebogen — eine vertauschte Klammer wäre sonst eine lautlose Aufhebung der Grenze.
+**Invariant on every set:** `floor ≤ cap`. If the floor is raised above the cap or the cap lowered under the floor, the input is rejected instead of silently reshaped — a swapped bracket would otherwise be a silent lift of the limit.
 
-**Plausibilitätsprüfung bei jeder Verankerung**, auch wenn der Kurs nur zum Setzen dient: Ein Kurs außerhalb eines fest einkompilierten Plausibilitätsbereichs oder mit einem Sprung von mehr als einer Größenordnung gegenüber dem zuletzt bekannten Wert wird abgelehnt, nicht verrechnet. Kostet nichts und schließt den gröbsten Manipulationsversuch aus.
+**Plausibility check on every anchoring**, even when the rate only serves setting: a rate outside a compile-time fixed plausibility range or with a jump of more than one order of magnitude versus the last known value is rejected, not applied. Costs nothing and excludes the coarsest manipulation attempt.
 
-#### 3.6.7 Was auf die Grenze angerechnet wird — exakt
+#### 3.6.7 What counts against the limit — exact
 
-Unpräzise Definitionen sind hier eine Fehlerquelle mit direkter Sicherheitswirkung. Deshalb ausbuchstabiert:
+Imprecise definitions here are an error source with direct security effect. Hence spelled out:
 
-| Frage | Festlegung | Begründung |
+| Question | Specification | Rationale |
 |---|---|---|
-| **Was zählt?** | Summe der Outputs, die **nicht** zum eigenen Descriptor gehören, **plus die Gebühr** | Das ist der tatsächliche Abfluss. Die Gebühr mitzuzählen verhindert, dass ein Angreifer über eine absurde Gebühr an einen Miner abfließen lässt, was die Grenze sonst nicht sähe. |
-| Change | zählt **nicht** | Bleibt in der Wallet. Die Zugehörigkeit stellt `trinity-verify` (V3/V4) unabhängig fest — nicht der Builder. |
-| **Bezugsgröße Guthaben** | bestätigte UTXOs **plus** unbestätigter eigener Change | Fremdes unbestätigtes Geld zählt nicht: sonst könnte ein Angreifer die Bezugsgröße durch eine unbestätigte Zahlung an die Wallet künstlich anheben und damit die 20-%-Quote weiten. |
-| Zeitpunkt der Messung | Guthaben **vor** der Transaktion, ermittelt im Rust-Kern | Nicht aus der JS-Schicht übernehmen. |
-| **RBF-Gebührenerhöhung** | nur die **Differenz** der Gebühr zählt | Sonst würde ein Fee-Bump den vollen Betrag ein zweites Mal anrechnen und das Fenster grundlos schließen. |
-| Ersetzte Transaktion | ihr Beitrag bleibt gebucht, wird aber nicht verdoppelt | Der Zähler führt Transaktionen anhand ihres Input-Sets, nicht anhand der Txid. |
-| **Verworfene / nie bestätigte Transaktion** | bleibt angerechnet bis zum Fensterende | Die sichere Richtung. Andernfalls könnte ein Angreifer den Zähler durch absichtlich scheiternde Transaktionen zurücksetzen. |
-| Selbstüberweisung an den eigenen Descriptor | zählt **nicht** (außer Gebühr) | Kein Abfluss. |
-| Fenster | gleitend, nicht Kalendertag | Ein Kalendertag erlaubt „23:59 plus 00:01" und verdoppelt die Grenze an einer vorhersagbaren Stelle. |
+| **What counts?** | Sum of outputs that do **not** belong to the own descriptor, **plus the fee** | That is the actual outflow. Counting the fee prevents an attacker from draining via an absurd fee to a miner, which the limit would otherwise not see. |
+| Change | does **not** count | Stays in the wallet. Membership is established independently by `trinity-verify` (V3/V4) — not the builder. |
+| **Balance reference** | confirmed UTXOs **plus** unconfirmed own change | Foreign unconfirmed money does not count: otherwise an attacker could artificially raise the reference by an unconfirmed payment to the wallet and thus widen the 20% share. |
+| Measurement time | balance **before** the transaction, determined in the Rust core | Do not take from the JS layer. |
+| **RBF fee increase** | only the **difference** in fee counts | Otherwise a fee bump would count the full amount a second time and close the window without reason. |
+| Replaced transaction | its contribution stays booked but is not doubled | The counter tracks transactions by their input set, not by txid. |
+| **Dropped / never confirmed transaction** | stays counted until window end | The safe direction. Otherwise an attacker could reset the counter via deliberately failing transactions. |
+| Self-transfer to own descriptor | does **not** count (except fee) | No outflow. |
+| Window | sliding, not calendar day | A calendar day allows "23:59 plus 00:01" and doubles the limit at a predictable point. |
 
-Der Zähler liegt im verschlüsselten Kernzustand, nicht in einer JS-lesbaren Datei, und überlebt App-Neustart wie Gerätereboot (S29).
+The counter sits in encrypted core state, not in a JS-readable file, and survives app restart and device reboot (S29).
 
-#### 3.6.8 Die vergessene Passphrase — ein neues Risiko, das E7 selbst erzeugt
+#### 3.6.8 The forgotten passphrase — a new risk that E7 itself creates
 
-Vor E7 wurde die Passphrase bei jedem Sendevorgang eingegeben und war dadurch eingeübt. Jetzt kann ein Nutzer sie monatelang nicht brauchen. **Selten benutzte Geheimnisse werden vergessen** — das ist kein Randfall, sondern der Normalfall.
+Before E7 the passphrase was entered on every send and was thus practiced. Now a user can go months without needing it. **Rarely used secrets are forgotten** — that is not an edge case, but the normal case.
 
-**Die gute Nachricht zuerst, und sie gehört genau so ins UI:** Eine vergessene Passphrase ist **kein Geldverlust**. Sie verschlüsselt seit der Korrektur in 2.4 nichts mehr. Wer sie vergisst, verliert die Fähigkeit, oberhalb der Tagesgrenze zu senden und die Policy zu ändern — nicht den Zugriff auf die Mittel. Der Ausweg ist der ohnehin dokumentierte und getestete Weg: Backup-B plus C in ein frisches Setup sweepen (S4, 6.4).
+**The good news first, and it belongs exactly so in the UI:** A forgotten passphrase is **not fund loss**. Since the correction in 2.4 it encrypts nothing anymore. Whoever forgets it loses the ability to send above the daily limit and to change the policy — not access to the funds. The way out is the already documented and tested path: backup-B plus C into a fresh setup (S4, 6.4).
 
-**Drei Maßnahmen:**
+**Three measures:**
 
-1. **Erinnerungsübung.** Wurde die Passphrase 60 Tage nicht gebraucht, bittet die App beim nächsten Öffnen einmalig um Eingabe — reine Prüfung, keine Transaktion, jederzeit verschiebbar. Kostet 15 Sekunden alle zwei Monate und ist der Unterschied zwischen „eingeübt" und „vergessen".
-2. **Der Hinweis an der richtigen Stelle.** Beim Einrichten und bei jeder Erinnerungsübung ein Satz: *„Vergisst du sie, verlierst du kein Geld — du brauchst dann dein Backup von B und C."* Ohne diesen Satz erzeugt eine vergessene Passphrase Panik und übereilte Handlungen.
-3. **Wenn sie aufgeschrieben wird, dann an einem dritten Ort.** Nicht auf das Backup-Blatt von B und nicht auf das von C.
+1. **Reminder drill.** If the passphrase has not been used for 60 days, the app once asks for entry on next open — pure check, no transaction, anytime deferrable. Costs 15 seconds every two months and is the difference between "practiced" and "forgotten".
+2. **The notice in the right place.** At setup and at every reminder drill one sentence: *"If you forget it, you lose no money — you then need your backup of B and C."* Without that sentence a forgotten passphrase creates panic and rushed actions.
+3. **If it is written down, then at a third place.** Not on B's backup sheet and not on C's.
 
-> **Warum ein dritter Ort — die Angriffskette, nicht die Faustregel.** Naheliegend wäre, die Passphrase neben B's Wortliste zu schreiben: Wer dieses Blatt findet, hat B ohnehin, die Passphrase scheint nichts hinzuzufügen. Für den Finder allein stimmt das. Es gibt aber eine Kombination, in der es doch schadet: **entsperrtes Telefon plus gefundenes B-Blatt.** Dort hält der Angreifer A und B über die App, wird aber von der Ausgabegrenze gebremst — und die Passphrase auf dem Blatt hebt genau diese Bremse auf. Dasselbe gilt für C's Blatt. Ein dritter Ort kostet nichts und schließt beide Kombinationen.
+> **Why a third place — the attack chain, not the rule of thumb.** The obvious idea is to write the passphrase next to B's word list: whoever finds that sheet has B anyway, the passphrase seems to add nothing. For the finder alone that is true. But there is a combination where it does hurt: **unlocked phone plus found B sheet.** There the attacker holds A and B via the app, but is braked by the spending limit — and the passphrase on the sheet lifts exactly that brake. The same applies to C's sheet. A third place costs nothing and closes both combinations.
 
-> **Der Sockel unterliegt derselben Verankerung wie der Deckel.** Beide sind Fiat-Eingaben, die einmalig in Sat umgerechnet und danach ausschließlich als Sat-Werte durchgesetzt werden. Für den Sockel ist die Asymmetrie besonders wichtig: Ihn anzuheben weitet die Grenze für **jedes** Guthaben und ist damit die wirksamste denkbare Lockerung — sie verlangt die Passphrase.
+> **The floor is subject to the same anchoring as the cap.** Both are fiat inputs converted once into sats and thereafter enforced exclusively as sat values. For the floor the asymmetry is especially important: raising it widens the limit for **every** balance and is thus the most effective conceivable relaxation — it requires the passphrase.
 
-**„Immer fragen"** stellt den Zustand vor dieser Entscheidung her — Passphrase bei jedem Send, zwei echte Faktoren. Das bleibt für alle verfügbar, die es wollen, und ist mit der Bedienbarkeitsarbeit aus 6.2.1 auf 10–15 Sekunden gebracht. Es ist nicht der Default, weil es dem Maßstab aus 0.1 widerspricht.
+**"Always ask"** restores the state before this decision — passphrase on every send, two real factors. That remains available for everyone who wants it, and with the usability work from 6.2.1 is brought to 10–15 seconds. It is not the default because it contradicts the yardstick from 0.1.
 
-**Der Weg zu zwei echten Faktoren ohne Reibung bleibt Hardware-B** (6.6): ein NFC-Tap dauert etwa zwei Sekunden — also ungefähr so lang wie die Biometrie — und liefert dabei einen zweiten, physisch getrennten Faktor. Das ist die Stufe, auf die die App hinarbeiten sollte, ohne sie vorauszusetzen.
+**The path to two real factors without friction remains hardware-B** (6.6): an NFC tap takes about two seconds — thus roughly as long as biometrics — and delivers a second, physically separate factor. That is the level the app should work toward, without presupposing it.
 
 ---
 
-## 4. Bedrohungsmodell
+## 4. Threat model
 
-**Lesart der Spalten:** „Greift die Architektur" beschreibt die konkrete Stelle, an der die Angriffskette bricht. Wo die Kette **nicht** bricht, steht das dort.
+**Reading the columns:** "Architecture holds" describes the concrete place where the attack chain breaks. Where the chain does **not** break, that stands there.
 
-### 4.1 Bedrohungstabelle
+### 4.1 Threat table
 
-| ID | Angriff | Betroffene Schlüssel | Greift die Architektur — wo genau die Kette bricht | Restrisiko |
+| ID | Attack | Keys affected | Architecture holds — where exactly the chain breaks | Residual risk |
 |---|---|---|---|---|
-| **T1** | **Seed-Leak eines einzelnen Schlüssels** (z.B. C fotografiert) | C (oder A oder B) | ✅ **Ja.** 2-von-3: ein Schlüssel signiert nicht. Die Kette bricht bei der Skriptauswertung — `OP_CHECKMULTISIG` mit k=2 lehnt eine Signatur ab. Reaktion: Sweep in ein frisches Setup mit den zwei verbliebenen (6.5). | Der Angreifer weiß, dass er einen Schlüssel hat, und kann gezielt den zweiten suchen. **Zeitkritisch:** der Sweep muss stattfinden, nicht nur möglich sein. |
-| **T2** | **Geräteverlust** (Diebstahl ohne Entsperrung, Verlust, Defekt, Wasserschaden) | A und B (Gerätekopien) | ✅ **Ja.** Backup-B + C rekonstruieren das Quorum sofort, ohne Wartezeit, ohne Dienst. Die Kette bricht, weil die Gerätekopien nie die einzige Instanz von B waren (Randbedingung 2, erzwungen). | **Nur wenn das B-Backup existiert.** Ohne es ist Geräteverlust Totalverlust — deshalb ist der Backup-Nachweis blockierend und nicht empfehlend. |
-| **T3** | **Malware ohne Root/Jailbreak**, andere App auf demselben Gerät | keine | ✅ **Ja.** iOS/Android-Sandbox trennt Prozessspeicher und Dateisystem; `…ThisDeviceOnly` + SE/StrongBox verhindern KEK-Export; `blob_*` liegt in der App-Sandbox. Die Kette bricht an der OS-Prozessisolation. | Eine Kernel-Lücke oder ein Sandbox-Escape hebt das auf. Dann gilt T4b. **Nachweis:** S9 (kein Schlüsselzugriff ohne bestandene Prüfung) und der Speicher-Hygiene-Test aus 5.4 belegen, dass nichts Geheimes die Sandbox verlässt; die Isolation selbst liefert das OS und ist von uns nicht testbar. |
-| **T4a** | **Kompromittierte JS-Schicht** — bösartige npm-Abhängigkeit, ohne native Codeausführung | keine direkt | ✅ **Ja, und das ist der wahrscheinlichste Supply-Chain-Weg bei React Native.** Die JS-Schicht sieht kein Schlüsselmaterial (1.3), kann die Ausgabegrenze weder lesen noch umgehen (3.6.3) und kann kein manipuliertes PSBT durchbringen (Verifier, 1.5) — der Bestätigungsdialog wird nativ aus dem `PsbtVerdict` gerendert. | Sie kann **täuschen**, nicht stehlen: eine falsche Adresse anzeigen. Dagegen der native Dialog (6.2) und das Adressbuch. **Nachweis:** S23 (kein Weg zu B ohne `SecretBytes`, build-brechend), S28 und S30 (Grenze und Policy aus der JS-Schicht nicht umgehbar), P2 (jede Change-Mutation wird abgelehnt). |
-| **T4b** | **Kompromittiertes Telefon** — native Codeausführung im App-Kontext, Jailbreak/Root, Zero-Day | **A und B** | ❌ **Nein.** Der Angreifer wartet die Biometrie-Freigabe ab und liest beide Schlüssel im Moment der Signatur. Rust-Kern, `zeroize` und Hardware-Bindung **verkleinern das Zeitfenster**, schließen es aber nicht. Die Ausgabegrenze hilft hier **nicht** — wer im Prozess Code ausführt, umgeht jede App-Politik. | 🔴 **Vollständiger Verlust. Explizit nicht abgedeckt** — genau wie bei jedem Single-Sig-Wallet auf demselben Telefon; wir sind hier gleichauf, nicht schlechter. Einzige echte Gegenmaßnahme: B auf externe Hardware (6.6). |
-| **T5a** | **Entrissenes, entsperrtes Telefon** ohne Kenntnis der Passphrase — der häufigste reale Angriff auf Handy-Wallets | A und B, begrenzt | ⚠️ **Teilweise, und genau hier liegt der Hauptgewinn gegenüber Single-Sig.** Der Dieb kann bis zur `SpendPolicy`-Grenze ausgeben (Default `clamp(20 % des Guthabens, 200 €, 500 €)` in 24 h — praktisch also 200 € bei kleinen und 500 € bei großen Beständen). Darüber verlangt der **Rust-Kern** die Passphrase — die Kette bricht in `sign_ab`, bevor B entsperrt wird. Policy abschalten geht ebenfalls nur mit Passphrase (3.6.4). | ⚠️ **Verlust bis zur Quote.** Der Rest ist rettbar: Backup-B plus C in ein frisches Setup sweepen, mit genau den zwei Schlüsseln, die der Dieb nicht hat. **Bei einem Single-Sig-Wallet ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.** Quote nutzerseitig auf „immer fragen" stellbar (3.6.5). |
-| **T5b** | **Diebstahl mit beobachteter Passphrase** (Shoulder-Surfing, Kamera, Nötigung) + entsperrbares Gerät | **A und B** | ❌ **Nein bei Software-B.** Wer das entsperrte Gerät und die Passphrase hat, hat beide Schlüssel und kann zusätzlich die Ausgabegrenze abschalten. ✅ **Ja bei Hardware-B:** B liegt dann gar nicht auf dem Telefon; der Angreifer braucht zusätzlich das physische Gerät **und** dessen PIN, die ein Secure Element mit Wipe nach N Fehlversuchen durchsetzt (6.6.1). | 🔴 **Vollständiger Verlust bei Software-B.** Teilminderungen: Screenshot-Sperre und keine Zeichenvorschau auf dem Eingabescreen, kein Autofill — und die Passphrase wird durch E7 **seltener** eingegeben, was die Gelegenheiten zum Mitlesen reduziert. Ein Duress-Wallet ist **nicht** vorgesehen (Zustand, gestrichen). |
-| **T6** | **Manipulierte Change-Adresse** — kompromittierter Builder oder JS-Schicht leitet Change an den Angreifer | keine (Schlüssel bleiben sicher) | ✅ **Ja, das ist der Kernzweck von `trinity-verify`.** Die Kette bricht bei V3/V4: Jeder Output, der weder ein erklärter Empfänger noch eine **unabhängig aus dem gespeicherten Descriptor abgeleitete** Change-Adresse ist, führt zur Ablehnung **vor** jedem Schlüsselzugriff. Da der Verifier weder `miniscript` noch den Builder-Code nutzt, kann sich ein Builder-Bug nicht selbst bestätigen. | Ein Angreifer, der zusätzlich `descriptor.json` **und** `trinity-verify` ersetzt, gewinnt — das ist aber bereits T4b oder T9. Restrisiko: ein Bug im eigenen Parser — siehe T18. **Nachweis:** P2 und P3 (jede Mutation von Change-Adresse und Ableitungspfad führt zur Ablehnung), S9 (Ablehnung **vor** jedem Schlüsselzugriff, mit Mock-Assertion), D4 und D5 (Verifier gegen Core und gegen den Builder). |
-| **T7** | **Manipulierte Empfängeradresse** — JS-Schicht zeigt X, PSBT enthält Y | keine | ✅ **Weitgehend.** Die Kette bricht an der **nativen** Bestätigungsanzeige: der Dialog wird aus dem `PsbtVerdict` des Rust-Verifiers gerendert, nicht aus JS-State. Der Nutzer sieht, was tatsächlich im PSBT steht. | Der Nutzer muss die Adresse **lesen**. Gegenmaßnahme: Anzeige in Vierergruppen, erste und letzte 8 Zeichen hervorgehoben, plus ein Adressbuch mit Wiedererkennung bekannter Empfänger. |
-| **T8** | **Address Poisoning** — Lookalike-Adresse mit identischen Anfangs-/Endzeichen wird per Dust in die Historie gesetzt; 2026 industrialisiert (≈ 3 Mio Dust-Transfers durch einen einzelnen Contract) | keine | ⚠️ **Teilweise.** Maßnahmen: (a) **Kein Copy-Paste aus der Transaktionshistorie** — Adressen aus eingehenden Transaktionen sind in der UI nicht als Sendeziel wählbar; (b) eingehender Dust unterhalb einer Schwelle wird markiert und aus der Coin Selection ausgeschlossen; (c) Adressbucheinträge nur explizit mit Label anlegbar; (d) Warnung, wenn eine neue Zieladresse mit einer bekannten in den ersten/letzten 6 Zeichen übereinstimmt, aber nicht identisch ist. | Ein Nutzer, der außerhalb der App kopiert (Messenger, E-Mail), ist ungeschützt. Die Warnung nach (d) ist der letzte Schutz und hängt davon ab, dass die echte Adresse bereits bekannt ist. |
-| **T9** | **Supply-Chain-Angriff auf die App** — kompromittierte Dependency, Build-Server oder Update | **A und B gleichzeitig** | ⚠️ **Teilweise, und das ist die unangenehmste Zeile der Tabelle.** Maßnahmen: `cargo vendor`, exakte Pins, reproducible builds mit ≥ 2 unabhängigen Verifizierern, `cargo-deny`/`-audit`/`-vet`, keine dynamischen Nachladewege, Dependency-Budget für den Signaturpfad. **Aber:** A und B teilen die Codebasis — ein erfolgreicher Angriff trifft beide. Der Coldcard-Fall war genau das: ein Build-Fehler, keine Kryptografie-Schwäche. | 🟡 **Reduzierbar ab v1.** Die einzige strukturelle Antwort ist Implementierungsdiversität. **C auf einem Hardware-Signer erzeugen (2.2.5 Weg a) ist ab der Wallet-Erstellung möglich** und macht aus 1-von-1 ein 2-von-1. Vollständig gelöst erst mit Hardware-**B** (6.6). Wer C in der App erzeugt, bleibt bei 1-von-1 — **muss so im Onboarding stehen.** |
-| **T10** | **RNG-Fehler** — OS-CSPRNG schwach, virtualisiert, oder Build-Fehler wie bei Coldcard | alle drei bei Erzeugung | ⚠️ **Nur bei genutzter Zusatzquelle oder Hardware-C.** Die Kette bricht am OR-Kombinierer (2.2): mit einer zählbaren Klasse-A-Quelle (≥ 50 Würfe / 128 Münzen / 1 Kartendeck) bleiben ≥ 128 bit, selbst wenn der CSPRNG vollständig vorhersagbar ist. Ein auf Hardware erzeugtes C hat ohnehin einen unabhängigen RNG. Zusätzlich: Roh-Entropie anzeigbar, Ableitung extern nachrechenbar. | 🔴 **Zusatzentropie ist durchgehend optional (E3).** Wer sie für alle drei Schlüssel überspringt **und** C in der App erzeugt, ist gegen genau den Fehlertyp ungeschützt, der bei Coldcard ≈594 BTC gekostet hat. Die App muss das an der Stelle sagen, an der übersprungen wird — einmal, sachlich, ohne Blockade. Klasse-B-Quellen (Sensorrauschen) ändern daran **nichts**, weil ihnen 0 bit angerechnet werden (2.2.1). |
-| **T19** | **Manipulierter Transportkanal zum Hardware-Signer** — BLE-MITM beim Pairing, gefälschter QR, NFC-Relay | keine (über den Kanal geht nur Öffentliches) | ✅ **Teilweise.** Es wandern nur PSBTs und xpubs über den Kanal, nie privates Material. Ein untergeschobenes PSBT wird auf dem **Display des Signers** geprüft — einem Bildschirm außerhalb der Kontrolle unserer App — und die Rückgabe erneut von `trinity-verify` gegen den gespeicherten Descriptor. Die Kette bricht an einem der beiden Displays. | MITM beim **xpub-Import** kann einen fremden Schlüssel in den Descriptor bringen. **Gegenmaßnahme: importierter xpub und BIP-388-Policy werden auf dem Gerätedisplay bestätigt, nicht nur auf dem Telefon** (2.7.3). Ohne diesen Schritt ist der Import der schwächste Punkt der Hardware-Anbindung. **Nachweis:** D19 (Round-Trip bytegleich), S16 (Import mit Displaybestätigung), S18 (Gerät erkennt Change als eigenen — belegt die korrekte Policy-Registrierung), S17. Das Displayverhalten selbst ist nur am echten Gerät prüfbar, siehe TESTING.md §4. |
-| **T20** | **Abbruch und Nichtnutzung** — der Nutzer bricht das Onboarding ab, legt ein Backup nur halb an, oder migriert gar nicht erst von Börse bzw. Single-Sig | alle drei, indirekt | ⚠️ **Der einzige Eintrag, bei dem zusätzliche Sicherheitsmaßnahmen die Lage *verschlechtern*.** Wer abbricht, landet nicht bei einer etwas unsichereren Wallet — er bleibt bei der Aufstellung aus der Tabelle in 0.1, wo ein einziger Fehler Totalverlust bedeutet. Gegenmaßnahmen sind hier Weglassungen: Zusatzentropie optional (E3), Wortlänge wählbar (E3b), Hardware optional (E6), Passphrase in 10–15 s statt 45 (6.2.1). | **Nicht durch Technik lösbar, nur durch Messung.** Abbruchquote je Onboarding-Schritt gehört instrumentiert (lokal, ohne Telemetrie nach außen) und in Nutzertests erhoben — siehe 5.5, Punkt 15. **Zwei Hürden bleiben trotzdem hart**, weil ohne sie der Abstand zur Ausgangslage verschwindet: der blockierende Backup-Nachweis (6.1) und die Ausgabegrenze samt Passphrase-Pflicht oberhalb davon (3.6.3, E7) — ohne sie wäre ein entrissenes Telefon wieder Totalverlust. |
-| **T11** | **Descriptor-Verlust** — Backups vorhanden, aber die Wallet-Konfiguration fehlt | keine, aber Mittel unzugänglich | ✅ **Ja, wenn die UX-Maßnahmen greifen.** Descriptor ist Pflichtbestandteil jedes Backup-Ausdrucks, wird beim Backup-Nachweis mit abgefragt, ist als BSMS-Record (BIP-129) exportierbar und liegt zusätzlich unverschlüsselt in `descriptor.json` (Cloud-Backup ausdrücklich **erlaubt** — er ist nicht geheim). | Mit allen drei xpubs, aber ohne Descriptor, ist die Rekonstruktion trivial (`wsh(sortedmulti(2,…))`, Reihenfolge egal dank BIP-67). Mit nur zwei Seeds und **ohne** dritten xpub ist die Wallet **unwiederbringlich verloren** — kein Brute-Force möglich. 🔴 Deshalb ist der Descriptor auf Papier nicht optional. |
-| **T12** | **Backup-B und C am selben Ort** — Einbruch, Hausdurchsuchung, Feuer | **B und C** | ❌ **Nein — und diese Regel trägt das gesamte Modell.** Wer beide Papier-Backups findet, hat das Quorum. Die Passphrase hilft **nicht**: sie schützt nur die Gerätekopie von B, nicht das Papier. | 🔴 **Vollständiger Verlust.** Nur durch UX adressierbar: Ortstrennung ist Pflichtabfrage im Onboarding, wird beim Backup-Ausdruck wiederholt, und die App fragt periodisch nach Bestätigung. Die App kann es nicht prüfen. **Feuer/Wasser sind der Gegenfall:** dieselbe Trennung, die vor Einbruch schützt, schützt auch vor dem Verlust beider Backups in einem Brand. |
-| **T13** | **Nonce-Fehler / Nonce-Wiederverwendung** | der signierende Schlüssel | ✅ **Ja.** RFC 6979 über libsecp256k1, kein RNG im Signaturpfad, plus Determinismus-Test in CI und Eigenverifikation nach jeder Signatur (3.4). | Seitenkanal in libsecp256k1 selbst. Nicht durch uns adressierbar; libsecp256k1 ist die am intensivsten geprüfte Implementierung. **Nachweis:** P4 (zweimaliges Signieren ergibt bitgleiche Signaturen), D7 und D8 (bitgleich zu `walletprocesspsbt` — nur wegen RFC 6979 überhaupt als Vergleich möglich). |
-| **T14** | **Biometrie-Umgehung** — Angreifer registriert eigenes Gesicht/Fingerabdruck auf dem entsperrten Gerät | A | ✅ **Ja.** `.biometryCurrentSet` (iOS) bzw. `setInvalidatedByBiometricEnrollment(true)` (Android) invalidieren den KEK-Schlüssel bei jeder Enrollment-Änderung. Die Kette bricht beim `unwrap_kek`-Aufruf: der Schlüssel existiert nicht mehr. | A ist danach **weg** — für den Angreifer wie für den Nutzer. Das ist ein Verlustfall, kein Diebstahlfall, und seit der Zugriffsklassen-Trennung in 2.4 **überlebt B**: Recovery läuft über B auf dem Gerät plus C, ohne das Papier-Backup von B. **Nachweis:** S33 (Enrollment-Wechsel: A weg, B lebt), S34 (nur Passcode ⇒ nur B), S14. |
-| **T15** | **Bösartiges PSBT von außen** (importiert, per QR, aus einer Fremdanwendung) | keine | ✅ **Ja.** Jedes PSBT durchläuft V1–V9, egal woher es kommt. Fremde Inputs (V7), fremde Skripte (V2) und implausible Gebühren (V5) führen zur Ablehnung. | Der Nutzer kann eine korrekt aufgebaute Transaktion an einen falschen Empfänger bestätigen. Das ist T7. **Nachweis:** P1 bis P3 und P11 bis P12 (Grammatik, Mutationen, SIGHASH, fehlendes `witness_utxo`), S9 und S10 (Ablehnung vor Schlüsselzugriff, auch bei Manipulation zwischen A und B), S11 (Fee-Angriff). |
-| **T16** | **Watch-only-Server als Beobachter** (Electrum-Betreiber, CBF-Peers) | keine | ⚠️ **Nur Privacy, kein Fundverlust.** Ein fremder Electrum-Server sieht den vollständigen Wallet-Graphen. CBF reduziert das erheblich. Backend ist frei wählbar, kein Hersteller-Default. | Vollständige Deanonymisierung gegenüber einem fremden Electrum-Server. **Muss in der UI direkt bei der Auswahl stehen, nicht in einer Hilfeseite.** **Nachweis:** S2 (alle drei Backends liefern denselben Saldo — Wahlfreiheit ist real), S13 (Ausfall ⇒ sauberer Fehler, **kein stiller Fallback** auf ein anderes Backend, das mehr sähe); `privacy_profile()` je Backend ist Abnahmekriterium in WP-14 bis WP-16. |
-| **T17** | **Nötigung** („$5 wrench attack") | alle | ❌ **Nein.** Ein Duress-Wallet würde Zustand einführen und ist gestrichen. | 🔴 **Explizit nicht abgedeckt.** Ehrlich zu benennen: Wer den Nutzer zwingen kann, kann die Wallet leeren. |
-| **T18** | **Fehler im eigenen Verifier-Parser** | keine, aber V3/V4 wirkungslos | ⚠️ **Teilweise.** Der Parser ist klein (~250 Zeilen, eine Grammatik) und vollständig testabgedeckt; zusätzlich Differential Testing gegen Bitcoin Core `deriveaddresses` und Property-based Tests über zufällige Descriptoren. | Ein Bug, der sowohl den eigenen Parser als auch die Core-Referenz gleich betrifft, ist praktisch ausgeschlossen — dafür sind sie zu verschieden. **Nachweis:** D4 (gegen Core `deriveaddresses`, 500 Setups), D5 (gegen den Builder — jede Divergenz ist ein Alarm), D1 (Checksum), P9 (fremde Grammatik wird abgelehnt), dazu 100 % Zweigabdeckung ohne Ausnahme und ≥ 24 h Fuzzing (TESTING.md §3.2). |
+| **T1** | **Seed leak of a single key** (e.g. C photographed) | C (or A or B) | ✅ **Yes.** 2-of-3: one key does not sign. The chain breaks at script evaluation — `OP_CHECKMULTISIG` with k=2 rejects one signature. Response: sweep into a fresh setup with the two remaining (6.5). | The attacker knows they have one key and can hunt the second deliberately. **Time-critical:** the sweep must happen, not only be possible. |
+| **T2** | **Device loss** (theft without unlock, loss, defect, water damage) | A and B (device copies) | ✅ **Yes.** Backup-B + C reconstruct the quorum immediately, without wait, without service. The chain breaks because the device copies were never the only instance of B (constraint 2, enforced). | **Only if the B backup exists.** Without it device loss is total loss — hence backup evidence is blocking, not advisory. |
+| **T3** | **Malware without root/jailbreak**, other app on same device | none | ✅ **Yes.** iOS/Android sandbox separates process memory and filesystem; `…ThisDeviceOnly` + SE/StrongBox prevent KEK export; `blob_*` sits in the app sandbox. The chain breaks at OS process isolation. | A kernel hole or sandbox escape lifts that. Then T4b applies. **Evidence:** S9 (no key access without passed check) and the memory-hygiene test from 5.4 evidence that nothing secret leaves the sandbox; the isolation itself is provided by the OS and is not testable by us. |
+| **T4a** | **Compromised JS layer** — malicious npm dependency, without native code execution | none directly | ✅ **Yes, and that is the most likely supply-chain path with React Native.** The JS layer sees no key material (1.3), can neither read nor bypass the spending limit (3.6.3), and cannot push through a manipulated PSBT (verifier, 1.5) — the confirmation dialog is rendered natively from the `PsbtVerdict`. | It can **deceive**, not steal: show a wrong address. Against that the native dialog (6.2) and the address book. **Evidence:** S23 (no path to B without `SecretBytes`, build-breaking), S28 and S30 (limit and policy not bypassable from the JS layer), P2 (every change mutation is rejected). |
+| **T4b** | **Compromised phone** — native code execution in app context, jailbreak/root, zero-day | **A and B** | ❌ **No.** The attacker waits for the biometric unlock and reads both keys at the moment of signature. Rust core, `zeroize`, and hardware binding **shrink the time window**, but do not close it. The spending limit does **not** help here — whoever runs code in the process bypasses every app policy. | 🔴 **Full loss. Explicitly not covered** — exactly as with every single-sig wallet on the same phone; we are level here, not worse. Only real countermeasure: B on external hardware (6.6). |
+| **T5a** | **Snatched, unlocked phone** without knowledge of the passphrase — the most common real attack on phone wallets | A and B, limited | ⚠️ **Partial, and exactly here sits the main gain over single-sig.** The thief can spend up to the `SpendPolicy` limit (default `clamp(20 % of balance, €200, €500)` in 24 h — practically €200 at small and €500 at large holdings). Above that the **Rust core** requires the passphrase — the chain breaks in `sign_ab` before B is unlocked. Disabling the policy also only works with passphrase (3.6.4). | ⚠️ **Loss up to the share.** The rest is recoverable: backup-B plus C into a fresh setup, with exactly the two keys the thief does not have. **On a single-sig wallet the same incident is a total loss without course of action.** Share user-settable to "always ask" (3.6.5). |
+| **T5b** | **Theft with observed passphrase** (shoulder surfing, camera, coercion) + unlockable device | **A and B** | ❌ **No with software-B.** Whoever has the unlocked device and the passphrase has both keys and can additionally disable the spending limit. ✅ **Yes with hardware-B:** B then does not sit on the phone at all; the attacker additionally needs the physical device **and** its PIN, which a secure element enforces with wipe after N failed attempts (6.6.1). | 🔴 **Full loss with software-B.** Partial mitigations: screenshot block and no character preview on the input screen, no autofill — and the passphrase is entered **less often** through E7, which reduces opportunities to watch. A duress wallet is **not** planned (state, dropped). |
+| **T6** | **Manipulated change address** — compromised builder or JS layer directs change to the attacker | none (keys stay safe) | ✅ **Yes, that is the core purpose of `trinity-verify`.** The chain breaks at V3/V4: every output that is neither a declared recipient nor a change address **independently derived from the stored descriptor** leads to rejection **before** any key access. Since the verifier uses neither `miniscript` nor the builder code, a builder bug cannot confirm itself. | An attacker who additionally replaces `descriptor.json` **and** `trinity-verify` wins — but that is already T4b or T9. Residual risk: a bug in the own parser — see T18. **Evidence:** P2 and P3 (every mutation of change address and derivation path leads to rejection), S9 (rejection **before** any key access, with mock assertion), D4 and D5 (verifier against Core and against the builder). |
+| **T7** | **Manipulated recipient address** — JS layer shows X, PSBT contains Y | none | ✅ **Largely.** The chain breaks at the **native** confirmation display: the dialog is rendered from the Rust verifier's `PsbtVerdict`, not from JS state. The user sees what actually sits in the PSBT. | The user must **read** the address. Countermeasure: display in groups of four, first and last 8 characters highlighted, plus an address book with recognition of known recipients. |
+| **T8** | **Address poisoning** — lookalike address with identical start/end characters is placed via dust in the history; 2026 industrialized (≈ 3 M dust transfers by a single contract) | none | ⚠️ **Partial.** Measures: (a) **No copy-paste from transaction history** — addresses from incoming transactions are not selectable as send targets in the UI; (b) incoming dust below a threshold is marked and excluded from coin selection; (c) address-book entries only creatable explicitly with label; (d) warning when a new target address matches a known one in the first/last 6 characters but is not identical. | A user who copies outside the app (messenger, email) is unprotected. The warning per (d) is the last protection and depends on the real address already being known. |
+| **T9** | **Supply-chain attack on the app** — compromised dependency, build server, or update | **A and B simultaneously** | ⚠️ **Partial, and that is the most uncomfortable row of the table.** Measures: `cargo vendor`, exact pins, reproducible builds with ≥ 2 independent verifiers, `cargo-deny`/`-audit`/`-vet`, no dynamic reload paths, dependency budget for the signature path. **But:** A and B share the codebase — a successful attack hits both. The Coldcard case was exactly that: a build error, not a cryptography weakness. | 🟡 **Reducible from v1.** The only structural answer is implementation diversity. **Generating C on a hardware signer (2.2.5 path a) is possible from wallet creation** and turns 1-of-1 into 2-of-1. Fully solved only with hardware-**B** (6.6). Whoever generates C in the app stays at 1-of-1 — **must stand so in onboarding.** |
+| **T10** | **RNG failure** — OS-CSPRNG weak, virtualized, or build error as with Coldcard | all three at generation | ⚠️ **Only with used additional source or hardware-C.** The chain breaks at the OR combiner (2.2): with a countable class-A source (≥ 50 dice / 128 coins / 1 card deck) ≥ 128 bit remain, even if the CSPRNG is fully predictable. A C generated on hardware has an independent RNG anyway. Additionally: raw entropy displayable, derivation externally re-computable. | 🔴 **Additional entropy is optional throughout (E3).** Whoever skips it for all three keys **and** generates C in the app is unprotected against exactly the failure type that cost Coldcard ≈594 BTC. The app must say that at the skip point — once, factually, without blocking. Class-B sources (sensor noise) change that **nothing**, because they are credited 0 bit (2.2.1). |
+| **T19** | **Manipulated transport channel to the hardware signer** — BLE MITM at pairing, forged QR, NFC relay | none (only public material goes over the channel) | ✅ **Partial.** Only PSBTs and xpubs move over the channel, never private material. A substituted PSBT is checked on the **signer's display** — a screen outside our app's control — and the return again by `trinity-verify` against the stored descriptor. The chain breaks at one of the two displays. | MITM at **xpub import** can put a foreign key into the descriptor. **Countermeasure: imported xpub and BIP-388 policy are confirmed on the device display, not only on the phone** (2.7.3). Without that step import is the weakest point of hardware integration. **Evidence:** D19 (round-trip byte-identical), S16 (import with display confirmation), S18 (device recognizes change as own — evidences correct policy registration), S17. Display behavior itself is only checkable on a real device, see TESTING.md §4. |
+| **T20** | **Abandonment and non-use** — the user abandons onboarding, creates a backup only half-way, or never migrates from exchange or single-sig | all three, indirectly | ⚠️ **The only entry where additional security measures *worsen* the situation.** Whoever abandons does not land at a slightly less safe wallet — they stay at the setup from the table in 0.1, where a single failure means total loss. Countermeasures here are omissions: additional entropy optional (E3), word length choosable (E3b), hardware optional (E6), passphrase in 10–15 s instead of 45 (6.2.1). | **Not solvable by technology, only by measurement.** Abandonment rate per onboarding step belongs instrumented (local, no telemetry outward) and collected in user tests — see 5.5, criterion 15. **Two hurdles stay hard anyway**, because without them the distance from the starting position disappears: the blocking backup evidence (6.1) and the spending limit plus passphrase requirement above it (3.6.3, E7) — without them a snatched phone would again be total loss. |
+| **T11** | **Descriptor loss** — backups present, but the wallet configuration is missing | none, but funds inaccessible | ✅ **Yes, if the UX measures take hold.** Descriptor is mandatory part of every backup printout, is co-checked at backup evidence, is exportable as BSMS record (BIP-129), and additionally sits unencrypted in `descriptor.json` (cloud backup expressly **allowed** — it is not secret). | With all three xpubs but without descriptor, reconstruction is trivial (`wsh(sortedmulti(2,…))`, order irrelevant thanks to BIP-67). With only two seeds and **without** third xpub the wallet is **irretrievably lost** — no brute-force possible. 🔴 Hence the descriptor on paper is not optional. |
+| **T12** | **Backup-B and C in the same place** — break-in, house search, fire | **B and C** | ❌ **No — and this rule carries the entire model.** Whoever finds both paper backups has the quorum. The passphrase does **not** help: it protects only the device copy of B, not the paper. | 🔴 **Full loss.** Only addressable via UX: location separation is a mandatory prompt in onboarding, is repeated at backup printout, and the app periodically asks for confirmation. The app cannot check it. **Fire/water are the counter-case:** the same separation that protects against break-in also protects against losing both backups in a fire. |
+| **T13** | **Nonce failure / nonce reuse** | the signing key | ✅ **Yes.** RFC 6979 via libsecp256k1, no RNG in the signature path, plus determinism test in CI and self-verification after every signature (3.4). | Side channel in libsecp256k1 itself. Not addressable by us; libsecp256k1 is the most intensively reviewed implementation. **Evidence:** P4 (signing twice yields bit-identical signatures), D7 and D8 (bit-identical to `walletprocesspsbt` — only possible as comparison because of RFC 6979). |
+| **T14** | **Biometric bypass** — attacker registers own face/fingerprint on the unlocked device | A | ✅ **Yes.** `.biometryCurrentSet` (iOS) or `setInvalidatedByBiometricEnrollment(true)` (Android) invalidate the KEK key on every enrollment change. The chain breaks at the `unwrap_kek` call: the key no longer exists. | A is then **gone** — for the attacker as for the user. That is a loss case, not a theft case, and since the access-class split in 2.4 **B survives**: recovery runs over B on the device plus C, without the paper backup of B. **Evidence:** S33 (enrollment change: A gone, B lives), S34 (only passcode ⇒ only B), S14. |
+| **T15** | **Malicious PSBT from outside** (imported, via QR, from a foreign app) | none | ✅ **Yes.** Every PSBT runs V1–V9, wherever it comes from. Foreign inputs (V7), foreign scripts (V2), and implausible fees (V5) lead to rejection. | The user can confirm a correctly built transaction to a wrong recipient. That is T7. **Evidence:** P1 to P3 and P11 to P12 (grammar, mutations, SIGHASH, missing `witness_utxo`), S9 and S10 (rejection before key access, also on manipulation between A and B), S11 (fee attack). |
+| **T16** | **Watch-only server as observer** (Electrum operator, CBF peers) | none | ⚠️ **Only privacy, no fund loss.** A third-party Electrum server sees the full wallet graph. CBF reduces that considerably. Backend is freely choosable, no vendor default. | Full deanonymization toward a third-party Electrum server. **Must stand in the UI directly at selection, not on a help page.** **Evidence:** S2 (all three backends deliver the same balance — choice is real), S13 (failure ⇒ clean error, **no silent fallback** to another backend that would see more); `privacy_profile()` per backend is acceptance criterion in WP-14 to WP-16. |
+| **T17** | **Coercion** ("$5 wrench attack") | all | ❌ **No.** A duress wallet would introduce state and is dropped. | 🔴 **Explicitly not covered.** To name honestly: whoever can coerce the user can empty the wallet. |
+| **T18** | **Bug in the own verifier parser** | none, but V3/V4 ineffective | ⚠️ **Partial.** The parser is small (~250 lines, one grammar) and fully test-covered; additionally differential testing against Bitcoin Core `deriveaddresses` and property-based tests over random descriptors. | A bug that equally affects both the own parser and the Core reference is practically excluded — they are too different for that. **Evidence:** D4 (against Core `deriveaddresses`, 500 setups), D5 (against the builder — every divergence is an alarm), D1 (checksum), P9 (foreign grammar is rejected), plus 100% branch coverage without exception and ≥ 24 h fuzzing (TESTING.md §3.2). |
 
-### 4.2 Was ausdrücklich nicht abgedeckt ist
+### 4.2 What is expressly not covered
 
-Diese Liste gehört in die App, nicht nur in dieses Dokument.
+This list belongs in the app, not only in this document.
 
-1. **Kompromittiertes Telefon mit nativer Codeausführung** (T4b) — zwei Schlüssel auf einem Gerät. Kein Multisig-Schema repariert Codeausführung im eigenen Prozess.
-2. **Diebstahl mit beobachteter Passphrase** (T5b) — Gerät + Passphrase = Quorum. Ohne Passphrase greift die Ausgabegrenze (T5a) und der Verlust bleibt auf die Quote begrenzt.
-3. **Beide Papier-Backups am selben Ort** (T12) — die eine Regel, die der Nutzer einhalten muss und die die App nicht prüfen kann.
-4. **Nötigung** (T17).
-5. **Supply-Chain-Angriff auf die App** (T9) — nur reduziert, nicht ausgeschlossen, solange A und B dieselbe Implementierung teilen. Ein Hardware-C verbessert die Lage, löst sie aber nicht.
-6. **Verlust von Descriptor *und* drittem xpub** bei nur zwei vorhandenen Seeds (T11) — kryptografisch unwiederbringlich.
-7. **Nutzer, der die Empfängeradresse nicht liest** (T7, T8).
-8. **RNG-Fehler bei vollständig übersprungener Zusatzentropie und in-App erzeugtem C** (T10) — die Entscheidung, Zusatzentropie optional zu halten (E3), verschiebt diesen Fall bewusst in die Verantwortung des Nutzers. Die App macht das an der Übersprungstelle sichtbar; sie blockiert nicht.
+1. **Compromised phone with native code execution** (T4b) — two keys on one device. No multisig scheme repairs code execution in its own process.
+2. **Theft with observed passphrase** (T5b) — device + passphrase = quorum. Without passphrase the spending limit (T5a) applies and loss stays limited to the share.
+3. **Both paper backups in the same place** (T12) — the one rule the user must keep and that the app cannot check.
+4. **Coercion** (T17).
+5. **Supply-chain attack on the app** (T9) — only reduced, not excluded, as long as A and B share the same implementation. A hardware-C improves the situation but does not solve it.
+6. **Loss of descriptor *and* third xpub** with only two seeds present (T11) — cryptographically irrecoverable.
+7. **User who does not read the recipient address** (T7, T8).
+8. **RNG failure with fully skipped additional entropy and in-app generated C** (T10) — the decision to keep additional entropy optional (E3) deliberately moves this case into the user's responsibility. The app makes that visible at the skip point; it does not block.
 
-**Und eine Einordnung, die genauso wichtig ist wie die Liste selbst:** Sieben der acht Punkte oben gelten für ein Single-Sig-Setup ebenso — meist in schärferer Form, weil dort schon ein einzelner kompromittierter oder verlorener Schlüssel den Totalverlust bedeutet. Die Liste ist keine Aufzählung von Schwächen gegenüber der Ausgangslage des Nutzers, sondern gegenüber dem theoretischen Optimum aus drei Hardware-Wallets an drei Orten (0.1). Dieser Unterschied gehört in die Nutzerkommunikation, sonst liest sich ehrliche Offenlegung wie eine Warnung vor dem eigenen Produkt.
+**And a framing that is as important as the list itself:** Seven of the eight points above apply to a single-sig setup equally — usually in sharper form, because there already a single compromised or lost key means total loss. The list is not an enumeration of weaknesses versus the user's starting position, but versus the theoretical optimum of three hardware wallets in three places (0.1). That difference belongs in user communication, otherwise honest disclosure reads like a warning against the own product.
 
 ---
 
-## 5. Teststrategie
+## 5. Test strategy
 
-### 5.1 Differential-Test-Matrix
+### 5.1 Differential test matrix
 
-Der Grundgedanke: Eigene Assertions belegen, dass der Code tut, was der Autor dachte. Differential Testing belegt, dass er dasselbe tut wie eine unabhängige Referenzimplementierung. Nur das zweite ist hier eine Aussage über Korrektheit.
+The core idea: Own assertions evidence that the code does what the author thought. Differential testing evidences that it does the same as an independent reference implementation. Only the second is here a statement about correctness.
 
-**Referenz: Bitcoin Core 30.2** (nicht 30.0/30.1 — Wallet-Migrations-Bug, Binaries zurückgezogen; siehe 0.3).
+**Reference: Bitcoin Core 30.2** (not 30.0/30.1 — wallet-migration bug, binaries withdrawn; see 0.3).
 
-| ID | Was | Unser Pfad | Referenz | Vergleichskriterium | Umfang |
+| ID | What | Our path | Reference | Comparison criterion | Scope |
 |---|---|---|---|---|---|
-| **D1** | Descriptor-Checksum | eigener BIP-380-Impl in `trinity-verify` | `getdescriptorinfo` | Checksum bitgleich | 10.000 zufällige Descriptoren |
-| **D2** | Receive-Adressen | `trinity-watch` (BDK/miniscript) | `deriveaddresses(desc, [0,999])` | Alle 1.000 Adressen identisch | 500 zufällige 2-von-3-Setups |
-| **D3** | Change-Adressen | `trinity-watch`, `/1/*` | `deriveaddresses` | identisch | wie D2 |
-| **D4** | **Verifier gegen Referenz** | `trinity-verify` (eigener Parser + eigene BIP-32) | `deriveaddresses` | identisch | wie D2 — **der wichtigste Test: er prüft die Unabhängigkeit selbst** |
-| **D5** | **Verifier gegen Builder** | `trinity-verify` | `trinity-watch` | identisch | wie D2 — Divergenz ist ein Alarm, kein Testfehler |
-| **D6** | BIP-67-Sortierung | eigene Sortierung | `sortedmulti` in Core | Adressen identisch bei permutierter Schlüsselreihenfolge | alle 6 Permutationen je Setup |
-| **D7** | PSBT-Signatur A | `sign_a` | `walletprocesspsbt` mit importiertem xprv_A | Signatur **bitgleich** (RFC 6979 ⇒ deterministisch) | 1.000 PSBTs |
-| **D8** | PSBT-Signatur B | `sign_b` | `walletprocesspsbt` mit xprv_B | bitgleich | 1.000 PSBTs |
-| **D9** | PSBT-Signatur C | Sparrow / Core mit C | `walletprocesspsbt` | bitgleich | 200 PSBTs |
-| **D10** | Finalisierung | `finalize` | `finalizepsbt` | Raw-Tx-Hex bitgleich | 1.000 PSBTs |
-| **D11** | Konsens-Validität | `finalize` + lokale Prüfung | `testmempoolaccept` | `allowed = true` | alle finalisierten Tx |
-| **D12** | BIP-39-Ableitung | `trinity-entropy` | BIP-39-Testvektoren + unabhängiges Tool | Mnemonic und Seed identisch | offizielle Vektoren + 1.000 zufällige |
-| **D13** | Entropie-Nachrechenbarkeit | angezeigte Formelkette | `openssl dgst -sha512 -hmac` in einem Shell-Skript | `entropy` identisch | 1.000 Fälle |
-| **D14** | Descriptor-Import Sparrow | `export_sparrow` | Sparrow-Import, Adressvergleich | erste 20 Receive- und Change-Adressen identisch | manuell je Release, dokumentiert |
-| **D15** | BSMS-Record | `export_bsms` | Sparrow-BSMS-Import (≥ v1.7.3) | Wallet identisch rekonstruiert | manuell je Release |
-| **D16** | Argon2id | `argon2 0.5.3` | RFC-9106-Testvektoren + `argon2` CLI | Output bitgleich für beide Profile | Vektoren + 100 zufällige |
-| **D17** | **12-Wort-Ableitung** | `trinity-entropy` mit `L=16` | BIP-39-Testvektoren + unabhängiges Tool | Mnemonic und Seed identisch | offizielle Vektoren + 1.000 zufällige |
-| **D18** | **BIP-388 Wallet Policy** | `trinity-export` Policy-Serialisierung | Bitcoin Core `importdescriptors` aus dem expandierten Template **und** Gerätedisplay-Abgleich | Expandierte Policy ergibt bitgleiche Adressen wie der Descriptor | 200 Setups + 1 manueller Geräteabgleich je Release |
-| **D19** | **BBQr / UR Roundtrip** | `bbqr 0.5.0`, `ur 0.5.2` | Coldcard Q bzw. Keystone: PSBT hin, signiertes PSBT zurück | PSBT nach Roundtrip bytegleich; Signatur valide | 200 PSBTs, inkl. mehrframiger 5–20 KB Multisig-PSBTs |
+| **D1** | Descriptor checksum | own BIP-380 impl in `trinity-verify` | `getdescriptorinfo` | checksum bit-identical | 10,000 random descriptors |
+| **D2** | Receive addresses | `trinity-watch` (BDK/miniscript) | `deriveaddresses(desc, [0,999])` | all 1,000 addresses identical | 500 random 2-of-3 setups |
+| **D3** | Change addresses | `trinity-watch`, `/1/*` | `deriveaddresses` | identical | as D2 |
+| **D4** | **Verifier against reference** | `trinity-verify` (own parser + own BIP-32) | `deriveaddresses` | identical | as D2 — **the most important test: it checks independence itself** |
+| **D5** | **Verifier against builder** | `trinity-verify` | `trinity-watch` | identical | as D2 — divergence is an alarm, not a test failure |
+| **D6** | BIP-67 sorting | own sorting | `sortedmulti` in Core | addresses identical under permuted key order | all 6 permutations per setup |
+| **D7** | PSBT signature A | `sign_a` | `walletprocesspsbt` with imported xprv_A | signature **bit-identical** (RFC 6979 ⇒ deterministic) | 1,000 PSBTs |
+| **D8** | PSBT signature B | `sign_b` | `walletprocesspsbt` with xprv_B | bit-identical | 1,000 PSBTs |
+| **D9** | PSBT signature C | Sparrow / Core with C | `walletprocesspsbt` | bit-identical | 200 PSBTs |
+| **D10** | Finalization | `finalize` | `finalizepsbt` | raw-tx hex bit-identical | 1,000 PSBTs |
+| **D11** | Consensus validity | `finalize` + local check | `testmempoolaccept` | `allowed = true` | all finalized tx |
+| **D12** | BIP-39 derivation | `trinity-entropy` | BIP-39 test vectors + independent tool | mnemonic and seed identical | official vectors + 1,000 random |
+| **D13** | Entropy re-computability | displayed formula chain | `openssl dgst -sha512 -hmac` in a shell script | `entropy` identical | 1,000 cases |
+| **D14** | Descriptor import Sparrow | `export_sparrow` | Sparrow import, address comparison | first 20 receive and change addresses identical | manual per release, documented |
+| **D15** | BSMS record | `export_bsms` | Sparrow BSMS import (≥ v1.7.3) | wallet identically reconstructed | manual per release |
+| **D16** | Argon2id | `argon2 0.5.3` | RFC-9106 test vectors + `argon2` CLI | output bit-identical for both profiles | vectors + 100 random |
+| **D17** | **12-word derivation** | `trinity-entropy` with `L=16` | BIP-39 test vectors + independent tool | mnemonic and seed identical | official vectors + 1,000 random |
+| **D18** | **BIP-388 wallet policy** | `trinity-export` policy serialization | Bitcoin Core `importdescriptors` from the expanded template **and** device-display comparison | expanded policy yields bit-identical addresses as the descriptor | 200 setups + 1 manual device comparison per release |
+| **D19** | **BBQr / UR roundtrip** | `bbqr 0.5.0`, `ur 0.5.2` | Coldcard Q or Keystone: PSBT out, signed PSBT back | PSBT after roundtrip byte-identical; signature valid | 200 PSBTs, incl. multi-frame 5–20 KB multisig PSBTs |
 
-**D7/D8 verdienen eine Erklärung:** Dass zwei unabhängige Implementierungen *bitgleiche* Signaturen erzeugen, ist nur wegen RFC 6979 möglich. Wäre die Nonce zufällig, könnte man nur „beide verifizieren" prüfen — deutlich schwächer. Der Determinismus ist damit nicht nur eine Sicherheitseigenschaft, sondern auch das, was diesen Test überhaupt scharf macht.
+**D7/D8 deserve an explanation:** That two independent implementations produce *bit-identical* signatures is only possible because of RFC 6979. Were the nonce random, one could only check "both verify" — clearly weaker. Determinism is thus not only a security property, but also what makes this test sharp at all.
 
-### 5.2 Property-based Tests (`proptest`)
+### 5.2 Property-based tests (`proptest`)
 
-| ID | Eigenschaft | Generierte Parameter |
+| ID | Property | Generated parameters |
 |---|---|---|
-| **P1** | Für jedes gültige Setup und jedes daraus gebaute PSBT gilt: `verify(build(req)) == Ok` | Beträge, Fee-Raten, UTXO-Sets, Empfängeranzahl |
-| **P2** | Jede Mutation eines Change-Outputs (Adresse, Betrag, Ableitungspfad) führt zu `verify → Err` | zufällige Bitflips und semantische Mutationen |
-| **P3** | Jede Mutation der Ableitungspfade in `bip32_derivation` führt zu `verify → Err` | zufällige Pfade |
-| **P4** | `sign(k, psbt) == sign(k, psbt)`, bitgleich | zufällige Schlüssel und PSBTs |
-| **P5** | `sortedmulti` ist permutationsinvariant: alle 6 Schlüsselreihenfolgen ergeben identische Adressen | zufällige xpubs |
-| **P6** | Blob-Roundtrip: `decrypt(encrypt(e, kek), kek) == e` für alle Profile; jede Header-Mutation ⇒ AEAD-Fehler | zufällige Entropie, Salts, Nonces, Header-Bitflips |
-| **P7** | **Ein Setup mit zwei identischen Master-Fingerprints wird abgelehnt** | konstruierte Kollisionsfälle — Randbedingung 1 |
-| **P8** | `fee = Σin − Σout` gilt für jedes gebaute PSBT; kein Overflow, kein negativer Wert | Extremwerte nahe `u64::MAX`, Dust-Grenzen |
-| **P9** | Der Verifier akzeptiert **keinen** Descriptor außerhalb der Grammatik `wsh(sortedmulti(2,·,·,·))` | zufällige gültige Miniscript-Descriptoren als Negativfälle |
-| **P10** | Entropie-Kombinierer: bei festem `raw_csprng` sind unterschiedliche Würfelfolgen ⇒ unterschiedliche Entropie (Kollisionsfreiheit in der Stichprobe) | zufällige Würfelfolgen |
-| **P11** | Ein PSBT mit anderem SIGHASH als `SIGHASH_ALL` wird abgelehnt | alle SIGHASH-Werte |
-| **P12** | Ein PSBT mit `non_witness_utxo` statt `witness_utxo` wird abgelehnt (V9) | konstruiert |
-| **P13** | **Jede Mutation von `word_count` im Blob-Header führt zum AEAD-Fehler**, nie zu einer teilweisen Entschlüsselung | Header-Bitflips über beide gültigen Werte |
-| **P14** | **Kanonische `extra_bytes`-Kodierung ist injektiv:** verschiedene Quellkombinationen ergeben nie dieselbe Bytefolge (Separator-Regel aus 2.2.2) | zufällige Kombinationen aus Würfeln, Münzen, Karten, inkl. leerer Teilmengen |
-| **P15** | **Der Entropie-Zähler schreibt Klasse-B-Quellen exakt 0 bit gut**, unabhängig von der Datenmenge | zufällige Sensor-Blobs beliebiger Länge |
-| **P16** | Ein 12-Wort- und ein 24-Wort-Setup mit identischem `raw_csprng` und `extra_bytes` ergeben **verschiedene** Master-Fingerprints | zufällige Eingaben |
+| **P1** | For every valid setup and every PSBT built from it: `verify(build(req)) == Ok` | amounts, fee rates, UTXO sets, recipient count |
+| **P2** | Every mutation of a change output (address, amount, derivation path) leads to `verify → Err` | random bitflips and semantic mutations |
+| **P3** | Every mutation of derivation paths in `bip32_derivation` leads to `verify → Err` | random paths |
+| **P4** | `sign(k, psbt) == sign(k, psbt)`, bit-identical | random keys and PSBTs |
+| **P5** | `sortedmulti` is permutation-invariant: all 6 key orders yield identical addresses | random xpubs |
+| **P6** | Blob roundtrip: `decrypt(encrypt(e, kek), kek) == e` for all profiles; every header mutation ⇒ AEAD error | random entropy, salts, nonces, header bitflips |
+| **P7** | **A setup with two identical master fingerprints is rejected** | constructed collision cases — constraint 1 |
+| **P8** | `fee = Σin − Σout` holds for every built PSBT; no overflow, no negative value | extreme values near `u64::MAX`, dust bounds |
+| **P9** | The verifier accepts **no** descriptor outside the grammar `wsh(sortedmulti(2,·,·,·))` | random valid miniscript descriptors as negative cases |
+| **P10** | Entropy combiner: with fixed `raw_csprng`, different dice sequences ⇒ different entropy (collision-freedom in the sample) | random dice sequences |
+| **P11** | A PSBT with SIGHASH other than `SIGHASH_ALL` is rejected | all SIGHASH values |
+| **P12** | A PSBT with `non_witness_utxo` instead of `witness_utxo` is rejected (V9) | constructed |
+| **P13** | **Every mutation of `word_count` in the blob header leads to AEAD error**, never to a partial decryption | header bitflips over both valid values |
+| **P14** | **Canonical `extra_bytes` encoding is injective:** different source combinations never yield the same byte sequence (separator rule from 2.2.2) | random combinations of dice, coins, cards, incl. empty subsets |
+| **P15** | **The entropy counter credits class-B sources exactly 0 bit**, independent of data volume | random sensor blobs of any length |
+| **P16** | A 12-word and a 24-word setup with identical `raw_csprng` and `extra_bytes` yield **different** master fingerprints | random inputs |
 
-### 5.3 Signet-CI-Szenarien
+### 5.3 Signet CI scenarios
 
-Läuft bei jedem Merge in `main` gegen Signet **und** gegen einen lokalen Regtest-Node (Core 30.2). Signet, weil es echte Netzwerkbedingungen liefert; Regtest, weil es deterministisch und schnell ist.
+Runs on every merge to `main` against Signet **and** against a local regtest node (Core 30.2). Signet because it supplies real network conditions; regtest because it is deterministic and fast.
 
-| ID | Szenario | Erfolgskriterium |
+| ID | Scenario | Success criterion |
 |---|---|---|
-| **S1** | Vollständiges Onboarding: A, B, C erzeugen; Backup-Nachweis simulieren; Descriptor exportieren | Descriptor valide, drei verschiedene Fingerprints, BSMS-Record parst |
-| **S2** | Empfangen: Adresse ableiten, Coins senden, Sync über **alle drei** Backends | Saldo in allen drei identisch |
-| **S3** | Senden: PSBT bauen → verifizieren → A signieren → B signieren → finalisieren → broadcasten → Konfirmation | Transaktion konfirmiert, Empfänger und Betrag stimmen |
-| **S4** | **Recovery-Vollszenario:** `blob_A` und `blob_B` löschen (Geräteverlust simulieren) → frische Installation → B aus Mnemonic + C aus Mnemonic + Descriptor importieren → gesamten Saldo verschieben | **Der zentrale Test.** Erfolgreicher Sweep. Bricht dieser Test, ist das Release blockiert, unabhängig von allem anderen. |
-| **S5** | Recovery **ohne diese App:** Descriptor in Bitcoin Core 30.2 importieren, PSBT bauen, mit B und C signieren, broadcasten — vollständig scriptgesteuert | Sweep erfolgreich. Anforderung 6 der Randbedingungen. |
-| **S6** | Recovery **in Sparrow:** Descriptor importieren, PSBT bauen und signieren | Sweep erfolgreich. **Teilautomatisiert** — Sparrow-Import je Release manuell verifiziert und dokumentiert. |
-| **S7** | Schlüsseltausch nach Kompromittierung: neues 2-von-3 erzeugen, alles vom alten ins neue verschieben | Alter Saldo 0, neuer Saldo = alter minus Gebühr |
-| **S8** | Wechsel Software-B → Hardware-B: neues Setup mit `ExternalSigner`, Sweep | Sweep erfolgreich mit externem Signer im PSBT-Pfad |
-| **S9** | Manipuliertes PSBT: Change-Adresse durch eine fremde ersetzen, `sign_a` aufrufen | `sign_a` gibt `Err(VerifyError::ForeignChangeOutput)` **und** `unwrap_kek` wurde nachweislich **nicht** aufgerufen (Mock-Assertion) |
-| **S10** | Manipuliertes PSBT zwischen A und B: nach `sign_a` das PSBT verändern, `sign_b` aufrufen | `sign_b` lehnt ab — der dritte Verifier-Lauf (3.3) |
-| **S11** | Fee-Angriff: PSBT mit 0,5 BTC Gebühr | Ablehnung durch V5 vor jedem Schlüsselzugriff |
-| **S12** | RBF-Fee-Bump | Neue Transaktion durchläuft die volle Verifikation und konfirmiert |
-| **S13** | Backend-Ausfall: Electrum-Server während des Syncs abschalten | Sauberer Fehler, kein Datenverlust, kein Absturz, kein stiller Fallback auf ein anderes Backend |
-| **S14** | Biometrie-Invalidierung: Enrollment-Änderung simulieren | App erkennt den Zustand, meldet ihn korrekt, bietet Neu-Setup an, verliert **keine** Descriptor-Daten |
-| **S15** | **Gemischte Wortlängen:** A=12, B=12, C=24, vollständig bis zur ersten Adresse, danach S4-Recovery | Quiz zieht 3 aus 12 für B und 4 aus 24 für C; `word_count` je Slot korrekt im Header und in `descriptor.json`; Recovery-UI zeigt **pro Schlüssel** die richtige Feldanzahl; Sweep erfolgreich |
-| **S15b** | **C-Wortlänge ist nicht überschreibbar:** `SetupConfig` mit `word_count.C = 12` ansetzen | Wird abgelehnt (`SetupError::InvalidWordCountForSlotC`); es gibt keinen Codepfad, der ein 12-Wort-C erzeugt |
-| **S16** | **Onboarding mit Hardware-C über QR** (Coldcard-Q-Emulator oder Gerät in der Testbank): xpub importieren, BIP-388-Policy registrieren, Wallet abschließen | Descriptor enthält den Geräte-xpub mit korrekter Origin; `PolicyId` persistiert; erste Adresse identisch zur Core-Referenz |
-| **S17** | **Signatur mit Hardware-C** im Recovery-Fall: PSBT per BBQr raus, signiert zurück | Signatur valide, Transaktion konfirmiert |
-| **S18** | **BIP-388-Change-Erkennung:** Sweep-PSBT mit Change an den Hardware-Signer geben | Gerät zeigt den Change-Output **als eigenen** an, nicht als fremden Empfänger. Schlägt das fehl, ist die Policy-Registrierung fehlerhaft. |
-| **S19** | **Zusatzentropie vollständig übersprungen** für A, B und C | Setup läuft durch (keine Blockade, E3), der T10-Hinweis erscheint genau einmal je Schlüssel, und die Roh-Entropie-Anzeige ist trotzdem vollständig |
-| **S20** | **Entropie-Nachrechnung** aus dem Verifikationsblatt für alle Quellkombinationen | Ein externes Shell-Skript reproduziert `entropy` aus `raw_csprng` und `extra_bytes` für Würfel, Münzen, Karten und Mischformen |
-| **S21** | **Gerätefreigabe:** Coldcard mit gemeldeter Firmware unterhalb und oberhalb der Schwelle (2.7.9) | Unterhalb: bleibt ausgegraut, Grund wird angezeigt, **kein** xpub-Import möglich. Oberhalb: freigeschaltet, Import läuft durch. Mk2/Mk3 bleiben in **jeder** Version gesperrt. |
-| **S22** | **Import eines bestehenden Geräte-Seeds für Slot C** versuchen | Wird abgelehnt — für C ist ausschließlich ein frisch auf dem Gerät erzeugter Seed zulässig (2.7.9), herstellerunabhängig |
-| **S23** | **FFI-Fassade und Schlüsselmaterial:** alle exportierten Funktionen und alle `SlotPolicy`-Werte prüfen | (1) Kein exportierter Aufruf gibt Seed, Mnemonic oder xpriv zurück. (2) Kein exportierter Aufruf entschlüsselt `blob_B`, **ohne dass zuvor die `SpendPolicy` geprüft wurde** (§3.6.3) — unterhalb der Grenze darf `sign_ab` B nach Biometrie öffnen (E7); oberhalb nur mit `SecretBytes`. (3) Kein exportierter Aufruf ändert die `SpendPolicy` oder exportiert Schlüsselmaterial ohne `SecretBytes`. Das ist ein Typ- und Signatur-Check, kein Laufzeittest — er muss den **Build brechen**, nicht eine Assertion auslösen. |
-| **S24** | **Sitzungsfenster:** aktivieren, dann App in den Hintergrund · Gerät sperren · Zeit ablaufen lassen · Verifikation fehlschlagen lassen | KEK_B ist in **allen vier** Fällen sofort genullt; die nächste Signatur verlangt die Passphrase erneut. Zusätzlich Heap-Dump-Prüfung nach Fensterende. |
-| **S25** | **Eingabe-Performance:** 6-Wort-Passphrase mit Autovervollständigung, Zeit bis zur signierbaren Transaktion | ≤ 15 s auf einem Referenzgerät der unteren Leistungsklasse, inklusive Argon2id. Reißt der Wert, ist die Vorziehung der KDF nicht wirksam und die Maßnahme aus 6.2.1 nicht umgesetzt. |
-| **S26** | **NFC-Tap-Performance** mit Hardware-B: Zeit vom Bestätigen bis zum fertig signierten PSBT | ≤ 5 s. Belegt die Kernaussage aus 6.2.1, dass Hardware-B schneller ist als jede Passphrase. |
-| **S27** | **Ein-Gesten-Send** unterhalb der Quote: vom Bestätigen bis zum Broadcast | **Genau ein** biometrischer Prompt. Zwei Prompts sind ein Fehlschlag — dann greift die Kontext-Wiederverwendung (iOS) bzw. das Zeitfenster (Android) nicht. Gesamtdauer ≤ 5 s. |
-| **S28** | **Ausgabegrenze greift:** Transaktion über der Quote ohne Passphrase | `SignError::SpendLimitExceeded`, **und** Mock-Assertion, dass weder `unwrap_kek(A)` noch `unwrap_kek(B)` aufgerufen wurde. Kein Biometrie-Prompt erscheint. |
-| **S29** | **Fenstergrenze greift kumulativ:** viele kleine Transaktionen, bis das 24-h-Fenster ausgeschöpft ist | Ab Überschreitung wird die Passphrase verlangt. **Der Test belegt, dass Stückelung nicht hilft** — genau deshalb gibt es keine Transaktionsgrenze. Zähler überlebt App-Neustart und Gerätereboot und lässt sich nicht durch Löschen JS-lesbarer Dateien zurücksetzen. |
-| **S29b** | **`clamp(Quote, Sockel, Deckel)`:** Guthaben über alle drei Bereiche variieren — unter 1.000 €, zwischen 1.000 und 2.500 €, über 2.500 € | In jedem Bereich greift die richtige Größe. Grenzfälle bei exakt 1.000 € und 2.500 € getestet, ebenso Guthaben **kleiner als der Sockel** (dann begrenzt das Guthaben selbst) und `Sockel == Deckel`. |
-| **S29f** | **Invariante `Sockel ≤ Deckel`:** Sockel über den Deckel setzen, Deckel unter den Sockel senken | Beides wird abgelehnt, nicht zurechtgebogen. Auch direkt über die FFI-Fassade geprüft. |
-| **S29g** | **Sockel anheben ohne Passphrase** versuchen | Wird abgelehnt. Der Sockel ist die wirksamste Lockerung überhaupt, weil er für jedes Guthaben gilt — er unterliegt derselben Asymmetrie wie der Deckel. |
-| **S29h** | **Anrechnung (3.6.7):** Transaktion mit Change, mit absurd hoher Gebühr, Selbstüberweisung, RBF-Bump, und eine nie bestätigte Transaktion | Angerechnet wird jeweils Fremd-Outputs + Gebühr; Change und Selbstüberweisung zählen nicht; der Bump nur mit der Gebührendifferenz; die verworfene Transaktion bleibt bis Fensterende gebucht. |
-| **S29i** | **Bezugsgröße manipulieren:** unbestätigte Fremdzahlung an die Wallet senden, dann sofort ausgeben | Die Quote steigt dadurch **nicht**. Nur bestätigte UTXOs und eigener unbestätigter Change zählen zum Guthaben. |
-| **S29j** | **Fenstergrenze über Kalendergrenze:** Ausgaben um 23:59 und 00:01 | Das gleitende Fenster verhindert die Verdopplung. |
-| **S33** | **Biometrie-Enrollment geändert** (neuer Fingerabdruck) | **A ist weg, B lebt.** Die App erkennt den Zustand, benennt ihn korrekt und bietet die Migration mit B (Gerät) + C (Papier) an — **ohne** das Papier-Backup von B zu verlangen. Descriptor-Daten bleiben vollständig. |
-| **S34** | **Angreifer kennt nur den Gerätepasscode**, nicht die Biometrie | Er öffnet B, aber nicht A. Ein Neu-Enrollment zerstört A endgültig. Ergebnis: **ein** Schlüssel, kein Quorum. |
-| **S35** | **Passphrase-Erinnerungsübung:** Uhr 60 Tage vorstellen | Prompt erscheint einmalig beim Öffnen, ist verschiebbar, blockiert keine Transaktion unterhalb der Grenze, und der Hinweistext „kein Geldverlust" ist vorhanden. |
-| **S36** | **Vergessene Passphrase, vollständig:** Verifier absichtlich nicht treffen, dann Recovery über Backup-B + C | Ausgaben unterhalb der Grenze laufen weiter. Oberhalb wird abgelehnt. Der Sweep in ein frisches Setup gelingt. **Belegt die Aussage aus 3.6.8, dass eine vergessene Passphrase kein Geldverlust ist.** |
-| **S29c** | **Kursmanipulation:** Kursquelle liefert „1 BTC = 1 €", „1 BTC = 10⁹ €", einen Sprung um mehrere Größenordnungen, gar nichts, oder eine Zeitüberschreitung | In **allen** Fällen bleibt die durchgesetzte Sat-Grenze unverändert. Der Plausibilitätsfilter lehnt ab statt zu verrechnen. Es findet zur Signaturzeit **nachweislich kein** Netzwerkabruf statt (Assertion auf dem Netzwerk-Mock). |
-| **S29d** | **Neuverankerung asymmetrisch:** Deckel in Sat senken und anheben | Senken gelingt ohne Passphrase, Anheben wird ohne Passphrase abgelehnt. Auch direkt über die FFI-Fassade geprüft, nicht nur über die UI. |
-| **S29e** | **Signatur im Flugmodus** unterhalb der Grenze | Läuft vollständig durch. Die Ausgabegrenze hat keine Netzwerkabhängigkeit. |
-| **S30** | **Policy-Änderung ohne Passphrase** versuchen — auch direkt über die FFI-Fassade, nicht nur über die UI | Wird abgelehnt. Es existiert kein exportierter Aufruf, der `SpendPolicy` ohne `SecretBytes` schreibt. |
-| **S31** | **Erste Nutzung nach Neuinstallation:** Wallet aus Descriptor + Blobs wiederherstellen, sofort senden | Passphrase wird verlangt, unabhängig vom Betrag und unabhängig von der Policy. Nicht abschaltbar. |
-| **S32** | **Diebstahl-Simulation, vollständig:** entsperrtes Gerät, Angreifer schöpft die Quote aus; danach Recovery mit Backup-B + C auf einem zweiten Gerät | Angreifer kommt an höchstens die Quote. Der Sweep des Restguthabens gelingt. **Das ist der Testfall, der die zentrale Produktaussage aus 3.6.4 belegt** — reißt er, ist die Aussage nicht haltbar. |
+| **S1** | Full onboarding: generate A, B, C; simulate backup evidence; export descriptor | descriptor valid, three different fingerprints, BSMS record parses |
+| **S2** | Receive: derive address, send coins, sync over **all three** backends | balance identical in all three |
+| **S3** | Send: build PSBT → verify → sign A → sign B → finalize → broadcast → confirmation | transaction confirmed, recipient and amount match |
+| **S4** | **Full recovery scenario:** delete `blob_A` and `blob_B` (simulate device loss) → fresh install → import B from mnemonic + C from mnemonic + descriptor → move entire balance | **The central test.** Successful sweep. If this test breaks, the release is blocked, independent of everything else. |
+| **S5** | Recovery **without this app:** import descriptor into Bitcoin Core 30.2, build PSBT, sign with B and C, broadcast — fully script-driven | sweep successful. Requirement 6 of the constraints. |
+| **S6** | Recovery **in Sparrow:** import descriptor, build and sign PSBT | sweep successful. **Partly automated** — Sparrow import manually verified and documented per release. |
+| **S7** | Key rotation after compromise: generate new 2-of-3, move everything from old to new | old balance 0, new balance = old minus fee |
+| **S8** | Switch software-B → hardware-B: new setup with `ExternalSigner`, sweep | sweep successful with external signer in the PSBT path |
+| **S9** | Manipulated PSBT: replace change address with a foreign one, call `sign_a` | `sign_a` returns `Err(VerifyError::ForeignChangeOutput)` **and** `unwrap_kek` was evidentially **not** called (mock assertion) |
+| **S10** | Manipulated PSBT between A and B: after `sign_a` alter the PSBT, call `sign_b` | `sign_b` rejects — the third verifier run (3.3) |
+| **S11** | Fee attack: PSBT with 0.5 BTC fee | rejection by V5 before any key access |
+| **S12** | RBF fee bump | new transaction runs full verification and confirms |
+| **S13** | Backend failure: shut down Electrum server during sync | clean error, no data loss, no crash, no silent fallback to another backend |
+| **S14** | Biometric invalidation: simulate enrollment change | app detects the state, reports it correctly, offers re-setup, loses **no** descriptor data |
+| **S15** | **Mixed word lengths:** A=12, B=12, C=24, fully through first address, then S4 recovery | quiz draws 3 of 12 for B and 4 of 24 for C; `word_count` per slot correct in header and in `descriptor.json`; recovery UI shows **per key** the right field count; sweep successful |
+| **S15b** | **C word length is not overwritable:** apply `SetupConfig` with `word_count.C = 12` | is rejected (`SetupError::InvalidWordCountForSlotC`); there is no code path that generates a 12-word C |
+| **S16** | **Onboarding with hardware-C over QR** (Coldcard-Q emulator or device in the test bank): import xpub, register BIP-388 policy, complete wallet | descriptor contains the device xpub with correct origin; `PolicyId` persisted; first address identical to Core reference |
+| **S17** | **Signature with hardware-C** in the recovery case: PSBT out via BBQr, signed back | signature valid, transaction confirmed |
+| **S18** | **BIP-388 change recognition:** give sweep PSBT with change to the hardware signer | device shows the change output **as own**, not as foreign recipient. If that fails, policy registration is faulty. |
+| **S19** | **Additional entropy fully skipped** for A, B, and C | setup completes (no block, E3), the T10 notice appears exactly once per key, and the raw-entropy display is still complete |
+| **S20** | **Entropy re-computation** from the verification sheet for all source combinations | an external shell script reproduces `entropy` from `raw_csprng` and `extra_bytes` for dice, coins, cards, and mixtures |
+| **S21** | **Device release:** Coldcard with reported firmware below and above the threshold (2.7.9) | below: stays greyed out, reason shown, **no** xpub import possible. Above: unlocked, import completes. Mk2/Mk3 stay locked in **every** version. |
+| **S22** | **Import of an existing device seed for slot C** attempt | is rejected — for C exclusively a seed freshly generated on the device is allowed (2.7.9), vendor-independent |
+| **S23** | **FFI facade and key material:** check all exported functions and all `SlotPolicy` values | (1) No exported call returns seed, mnemonic, or xpriv. (2) No exported call decrypts `blob_B` **without the `SpendPolicy` having been checked first** (§3.6.3) — below the limit `sign_ab` may open B after biometrics (E7); above only with `SecretBytes`. (3) No exported call changes the `SpendPolicy` or exports key material without `SecretBytes`. This is a type and signature check, not a runtime test — it must **break the build**, not trigger an assertion. |
+| **S24** | **Session window:** activate, then background the app · lock device · let time expire · let verification fail | KEK_B is immediately zeroed in **all four** cases; the next signature requires the passphrase again. Additionally heap-dump check after window end. |
+| **S25** | **Input performance:** 6-word passphrase with autocomplete, time until signable transaction | ≤ 15 s on a lower-tier reference device, including Argon2id. If the value is missed, KDF prefetch is not effective and the measure from 6.2.1 is not implemented. |
+| **S26** | **NFC tap performance** with hardware-B: time from confirm to fully signed PSBT | ≤ 5 s. Evidences the core claim from 6.2.1 that hardware-B is faster than any passphrase. |
+| **S27** | **One-gesture send** below the share: from confirm to broadcast | **Exactly one** biometric prompt. Two prompts are a failure — then context reuse (iOS) or the time window (Android) is not working. Total duration ≤ 5 s. |
+| **S28** | **Spending limit applies:** transaction above the share without passphrase | `SignError::SpendLimitExceeded`, **and** mock assertion that neither `unwrap_kek(A)` nor `unwrap_kek(B)` was called. No biometric prompt appears. |
+| **S29** | **Window limit applies cumulatively:** many small transactions until the 24 h window is exhausted | from exceedance the passphrase is required. **The test evidences that splitting does not help** — exactly why there is no transaction limit. Counter survives app restart and device reboot and cannot be reset by deleting JS-readable files. |
+| **S29b** | **`clamp(share, floor, cap)`:** vary balance over all three ranges — under €1,000, between €1,000 and €2,500, over €2,500 | in every range the right quantity applies. Edge cases at exactly €1,000 and €2,500 tested, also balance **smaller than the floor** (then the balance itself limits) and `floor == cap`. |
+| **S29f** | **Invariant `floor ≤ cap`:** set floor above cap, lower cap under floor | both are rejected, not reshaped. Also checked directly over the FFI facade. |
+| **S29g** | **Raise floor without passphrase** attempt | is rejected. The floor is the most effective relaxation of all, because it applies for every balance — it is subject to the same asymmetry as the cap. |
+| **S29h** | **Counting (3.6.7):** transaction with change, with absurdly high fee, self-transfer, RBF bump, and a never-confirmed transaction | counted are foreign outputs + fee each time; change and self-transfer do not count; the bump only with the fee difference; the dropped transaction stays booked until window end. |
+| **S29i** | **Manipulate reference size:** send unconfirmed foreign payment to the wallet, then spend immediately | the share does **not** rise from that. Only confirmed UTXOs and own unconfirmed change count toward balance. |
+| **S29j** | **Window limit across calendar boundary:** spends at 23:59 and 00:01 | the sliding window prevents the doubling. |
+| **S33** | **Biometric enrollment changed** (new fingerprint) | **A is gone, B lives.** The app detects the state, names it correctly, and offers migration with B (device) + C (paper) — **without** requiring the paper backup of B. Descriptor data remains complete. |
+| **S34** | **Attacker knows only the device passcode**, not biometrics | they open B, but not A. A re-enrollment destroys A permanently. Result: **one** key, no quorum. |
+| **S35** | **Passphrase reminder drill:** pretend clock 60 days ahead | prompt appears once on open, is deferrable, blocks no transaction below the limit, and the notice text "no fund loss" is present. |
+| **S36** | **Forgotten passphrase, full:** deliberately miss the verifier, then recovery via backup-B + C | spends below the limit continue. Above is rejected. The sweep into a fresh setup succeeds. **Evidences the claim from 3.6.8 that a forgotten passphrase is not fund loss.** |
+| **S29c** | **Rate manipulation:** rate source delivers "1 BTC = €1", "1 BTC = 10⁹ €", a jump of several orders of magnitude, nothing, or a timeout | in **all** cases the enforced sat limit stays unchanged. The plausibility filter rejects instead of applying. At signature time there is **evidentially no** network fetch (assertion on the network mock). |
+| **S29d** | **Re-anchor asymmetrically:** lower and raise cap in sats | lowering succeeds without passphrase, raising is rejected without passphrase. Also checked directly over the FFI facade, not only over the UI. |
+| **S29e** | **Signature in airplane mode** below the limit | runs fully through. The spending limit has no network dependence. |
+| **S30** | **Policy change without passphrase** attempt — also directly over the FFI facade, not only over the UI | is rejected. There exists no exported call that writes `SpendPolicy` without `SecretBytes`. |
+| **S31** | **First use after reinstall:** restore wallet from descriptor + blobs, send immediately | passphrase is required, independent of amount and independent of policy. Not disableable. |
+| **S32** | **Theft simulation, full:** unlocked device, attacker drains the share; then recovery with backup-B + C on a second device | attacker gets at most the share. The sweep of the remaining balance succeeds. **That is the test case that evidences the central product claim from 3.6.4** — if it breaks, the claim is not tenable. |
 
-### 5.4 Weitere Testebenen
+### 5.4 Further test levels
 
-| Ebene | Inhalt |
+| Level | Content |
 |---|---|
-| **Fuzzing** | `cargo-fuzz` auf: Descriptor-Parser in `trinity-verify` (**höchste Priorität** — er ist Eigenbau), PSBT-Deserialisierung, Blob-Header-Parser. Kontinuierlich, mindestens 24 h pro Release-Kandidat. |
-| **Speicher-Hygiene-Tests** | Nach `sign_*`: Heap-Dump des Testprozesses nach der bekannten Entropie durchsuchen. Muss leer sein. Läuft unter Linux mit `gcore`; auf Android per Instrumentierung. Auf iOS **nur eingeschränkt möglich** — Lücke ehrlich benennen. |
-| **FFI-Grenz-Test** | Automatisierter Vergleich aller `#[uniffi::export]`-Signaturen gegen `ffi-allowlist.toml` (1.3). |
-| **Reproducible-Build-Test** | Zwei unabhängige CI-Runner bauen dasselbe Tag; Artefakt-Hashes müssen übereinstimmen. |
-| **Dependency-Gates** | `cargo-deny`, `cargo-audit`, `cargo-vet`; Dependency-Zahl des Signaturpfads ≤ 45, gemessen (1.7). |
-| **Interop-Regression** | Bei jedem Sparrow- und Core-Update: D14, D15, S5, S6 erneut. Bei jedem Firmware-Update eines unterstützten Hardware-Signers: D18, D19, S16–S18 erneut. Ein Descriptor oder ein QR-Format, das gestern funktionierte, kann es morgen nicht mehr tun. |
-| **Hardware-Testbank** | Physische Geräte in CI-Reichweite für die QR-Pfade (Kamera-Rig oder Frame-Injection auf Protokollebene). Für BLE/USB ab v1.1 zusätzlich BitBox02 Nova und Ledger Nano X. Ohne echte Geräte ist der `ExternalSigner`-Pfad nicht als getestet zu behaupten. |
+| **Fuzzing** | `cargo-fuzz` on: descriptor parser in `trinity-verify` (**highest priority** — it is custom-built), PSBT deserialization, blob-header parser. Continuous, at least 24 h per release candidate. |
+| **Memory-hygiene tests** | After `sign_*`: search heap dump of the test process for the known entropy. Must be empty. Runs under Linux with `gcore`; on Android via instrumentation. On iOS **only limited possible** — name the gap honestly. |
+| **FFI boundary test** | Automated comparison of all `#[uniffi::export]` signatures against `ffi-allowlist.toml` (1.3). |
+| **Reproducible-build test** | Two independent CI runners build the same tag; artifact hashes must match. |
+| **Dependency gates** | `cargo-deny`, `cargo-audit`, `cargo-vet`; dependency count of the signature path ≤ 45, measured (1.7). |
+| **Interop regression** | On every Sparrow and Core update: D14, D15, S5, S6 again. On every firmware update of a supported hardware signer: D18, D19, S16–S18 again. A descriptor or QR format that worked yesterday may not work tomorrow. |
+| **Hardware test bank** | Physical devices in CI reach for the QR paths (camera rig or frame injection at protocol level). For BLE/USB from v1.1 additionally BitBox02 Nova and Ledger Nano X. Without real devices the `ExternalSigner` path is not to be claimed as tested. |
 
-### 5.5 „Release-fähig" — Definition of Done
+### 5.5 "Release-ready" — definition of done
 
-Ein Release-Kandidat ist freigabefähig, wenn **alle** Punkte erfüllt sind. Kein Punkt ist verhandelbar oder per Ausnahme überspringbar.
+A release candidate is release-ready when **all** criteria are met. No criterion is negotiable or skippable by exception.
 
-| # | Kriterium |
+| # | Criterion |
 |---|---|
-| 1 | D1–D19 grün. **Null** Divergenzen gegen Bitcoin Core 30.2. |
-| 2 | P1–P16 grün mit ≥ 100.000 Fällen je Property. |
-| 3 | S1–S36 grün auf Signet **und** Regtest (inkl. S29b–S29j). |
-| 3b | **Beide Wortlängen** (24 und 12) sowie **gemischte Kombinationen** durchlaufen S1, S3, S4 und S5 vollständig — eine Wahlmöglichkeit, die nur in einer Variante getestet ist, ist keine. |
-| 3c | **Mindestens ein realer Hardware-Signer** über QR in der Testbank: S16, S17, S18 grün. Emulator allein genügt nicht, weil BIP-388-Displayverhalten nur am Gerät prüfbar ist. |
-| 4 | **S4 und S5 grün** — Recovery mit und ohne diese App. Diese beiden allein sind ein Veto. |
-| 5 | S9 grün **inklusive** der Assertion, dass kein Schlüsselzugriff stattfand. |
-| 5b | **S28, S30, S31, S32 grün** — die Ausgabegrenze greift, ist nicht ohne Passphrase änderbar, und der Diebstahlsfall endet nachweislich mit gerettetem Restguthaben. Das ist die zentrale Produktaussage (3.6.4); bricht einer dieser vier, ist das Release blockiert. |
-| 5c | **S27 grün** — genau ein biometrischer Prompt pro Send unterhalb der Quote. Zwei Prompts sind ein Produktfehler, kein Schönheitsfehler. |
-| 6 | Fuzzing ≥ 24 h ohne Crash oder Timeout auf allen drei Zielen. |
-| 7 | Speicher-Hygiene-Test grün auf Linux und Android; iOS-Lücke dokumentiert. |
-| 8 | Reproducible Build durch ≥ 2 unabhängige Verifizierer bestätigt, Hashes veröffentlicht. |
-| 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` ohne offene Findings; Signaturpfad innerhalb der Budget-Grenze 45 (`scripts/dep_budget.py`; gemessen **40 externe Crates**). |
-| 9b | **Lizenzprüfung:** jede Abhängigkeit entspricht der Allowlist in `deny.toml` und der Unterscheidung aus §1.7 — **Datei-Copyleft (MPL-2.0) zugelassen**, **Projekt-Copyleft (GPL/AGPL/SSPL/BUSL) und alles mit Nutzungsgebühr ausgeschlossen**; kein Dienst mit laufenden Kosten im Signatur- oder Chain-Pfad. `cargo-deny [licenses]` mit Allowlist statt Denylist, damit eine unbekannte Lizenz den Build bricht statt durchzurutschen. |
-| 10 | FFI-Allowlist unverändert **oder** Änderung mit dokumentierter Sicherheitsbegründung und Zweit-Review. |
-| 11 | D14/D15/S6 manuell gegen die **aktuelle** Sparrow-Version durchgeführt und protokolliert. |
-| 12 | `docs/RECOVERY.md` gegen diesen Build verifiziert — jemand, der die App nicht kennt, führt S5 nur anhand des Dokuments durch. |
-| 13 | Externes Security-Audit des Signaturpfads (`trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi`) für v1.0. Findings der Schweregrade kritisch und hoch geschlossen. |
-| 14 | Alle Coldcard-bezogenen Angaben gegen die Primärquelle verifiziert (0.3, Lücke 2), bevor sie in nutzersichtbaren Texten erscheinen. |
-| 15 | **Onboarding-Abbruchquote in einem moderierten Nutzertest mit ≥ 10 Teilnehmern erhoben** (T20), Instrumentierung rein lokal ohne Telemetrie nach außen. Kein Zielwert als Gate — aber die Zahl muss vorliegen und die drei häufigsten Abbruchstellen benannt sein. Ein Setup, das niemand zu Ende bringt, schützt niemanden. |
-| 16 | **S25 und S26 grün** — die Bedienbarkeitszusagen aus 6.2.1 sind gemessen, nicht behauptet. |
+| 1 | D1–D19 green. **Zero** divergences against Bitcoin Core 30.2. |
+| 2 | P1–P16 green with ≥ 100,000 cases per property. |
+| 3 | S1–S36 green on Signet **and** regtest (incl. S29b–S29j). |
+| 3b | **Both word lengths** (24 and 12) as well as **mixed combinations** complete S1, S3, S4, and S5 fully — a choice that is only tested in one variant is none. |
+| 3c | **At least one real hardware signer** over QR in the test bank: S16, S17, S18 green. Emulator alone does not suffice, because BIP-388 display behavior is only checkable on device. |
+| 4 | **S4 and S5 green** — recovery with and without this app. These two alone are a veto. |
+| 5 | S9 green **including** the assertion that no key access occurred. |
+| 5b | **S28, S30, S31, S32 green** — the spending limit applies, is not changeable without passphrase, and the theft case ends evidentially with rescued remaining balance. That is the central product claim (3.6.4); if one of these four breaks, the release is blocked. |
+| 5c | **S27 green** — exactly one biometric prompt per send below the share. Two prompts are a product bug, not a cosmetic flaw. |
+| 6 | Fuzzing ≥ 24 h without crash or timeout on all three targets. |
+| 7 | Memory-hygiene test green on Linux and Android; iOS gap documented. |
+| 8 | Reproducible build confirmed by ≥ 2 independent verifiers, hashes published. |
+| 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` without open findings; signature path within budget limit 45 (`scripts/dep_budget.py`; measured **40 external crates**). |
+| 9b | **License check:** every dependency matches the allowlist in `deny.toml` and the distinction from §1.7 — **file copyleft (MPL-2.0) admitted**, **project copyleft (GPL/AGPL/SSPL/BUSL) and everything with a usage fee excluded**; no service with ongoing costs in the signature or chain path. `cargo-deny [licenses]` with allowlist instead of denylist, so an unknown license breaks the build instead of slipping through. |
+| 10 | FFI allowlist unchanged **or** change with documented security rationale and second review. |
+| 11 | D14/D15/S6 manually against the **current** Sparrow version performed and logged. |
+| 12 | `docs/RECOVERY.md` verified against this build — someone who does not know the app completes S5 only from the document. |
+| 13 | External security audit of the signature path (`trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi`) for v1.0. Critical and high severity findings closed. |
+| 14 | All Coldcard-related statements verified against the primary source (0.3, gap 2) before they appear in user-visible texts. |
+| 15 | **Onboarding abandonment rate collected in a moderated user test with ≥ 10 participants** (T20), instrumentation purely local without outward telemetry. No target value as gate — but the number must exist and the three most common abandonment points named. A setup nobody finishes protects nobody. |
+| 16 | **S25 and S26 green** — the usability commitments from 6.2.1 are measured, not claimed.
 
 ---
 
-## 6. UX-Flows
+## 6. UX flows
 
 ### 6.1 Onboarding
 
 ```mermaid
 flowchart TD
-    A0["Start"] --> A1["Aufklärung: 3 Schlüssel, 2 genügen<br/>Was NICHT geschützt ist (T4b, T5b, T12, T17)<br/>— nicht überspringbar, Verweildauer erzwungen"]
-    A1 --> A1b{"Wortlänge für A und B wählen<br/>je 24 (Default) oder 12<br/>C ist immer 24 — unveränderlich"}
-    A1b --> A1c{"Herkunft von C wählen<br/>optional, Hardware empfohlen"}
-    A1c -->|"Hardware-Signer ⭐"| HW1
-    A1c -->|"in dieser App"| A2
+    A0["Start"] --> A1["Briefing: 3 keys, 2 suffice<br/>What is NOT protected (T4b, T5b, T12, T17)<br/>— not skippable, dwell time enforced"]
+    A1 --> A1b{"Choose word length for A and B<br/>each 24 (default) or 12<br/>C is always 24 — immutable"}
+    A1b --> A1c{"Choose origin of C<br/>optional, hardware recommended"}
+    A1c -->|"Hardware signer ⭐"| HW1
+    A1c -->|"in this app"| A2
 
-    A2["Schlüssel A erzeugen<br/>CSPRNG + optionale Zusatzentropie<br/>Roh-Entropie anzeigbar"]
-    A2 --> A3["Biometrie einrichten<br/>SE/StrongBox provisionieren<br/>blob_A schreiben, zeroize"]
-    A3 --> A4["Passphrase für B<br/>Diceware-Generator, min. 6 Wörter<br/>ODER Eigenwahl mit harter Entropieprüfung"]
-    A4 --> A5["Schlüssel B erzeugen<br/>CSPRNG + optionale Zusatzentropie"]
-    A5 --> A6["B: Wörter + Descriptor anzeigen<br/>NATIV gerendert, Screenshot gesperrt<br/>Druck/Stahl-Anleitung"]
-    A6 --> A7{"Backup-Nachweis B<br/>4 von 24 bzw. 3 von 12 Positionen"}
-    A7 -->|falsch| A6
-    A7 -->|richtig| A8["blob_B schreiben, zeroize"]
-    A8 --> A9["⚠️ PROZESS-NEUSTART<br/>A und B sind aus dem Speicher"]
-    A9 --> A10["Schlüssel C in-App — immer 24 Wörter<br/>Zusatzentropie OPTIONAL<br/>beim Überspringen: ein Satz zu T10<br/>Flugmodus empfohlen"]
-    A10 --> A11["C: 24 Wörter + Descriptor anzeigen<br/>nativ, Screenshot gesperrt"]
-    A11 --> A12{"Backup-Nachweis C<br/>4 von 24 Positionen"}
-    A12 -->|falsch| A11
-    A12 -->|richtig| A13
+    A2["Generate key A<br/>CSPRNG + optional additional entropy<br/>raw entropy displayable"]
+    A2 --> A3["Set up biometrics<br/>provision SE/StrongBox<br/>write blob_A, zeroize"]
+    A3 --> A4["Passphrase for B<br/>Diceware generator, min. 6 words<br/>OR self-choice with hard entropy check"]
+    A4 --> A5["Generate key B<br/>CSPRNG + optional additional entropy"]
+    A5 --> A6["B: show words + descriptor<br/>NATIVELY rendered, screenshot blocked<br/>print/steel instructions"]
+    A6 --> A7{"Backup evidence B<br/>4 of 24 or 3 of 12 positions"}
+    A7 -->|wrong| A6
+    A7 -->|right| A8["write blob_B, zeroize"]
+    A8 --> A9["⚠️ PROCESS RESTART<br/>A and B are out of memory"]
+    A9 --> A10["Key C in-app — always 24 words<br/>additional entropy OPTIONAL<br/>on skip: one sentence on T10<br/>airplane mode recommended"]
+    A10 --> A11["C: show 24 words + descriptor<br/>native, screenshot blocked"]
+    A11 --> A12{"Backup evidence C<br/>4 of 24 positions"}
+    A12 -->|wrong| A11
+    A12 -->|right| A13
 
-    HW1["Gerät verbinden<br/>QR · NFC · BLE · USB<br/>Freigabezustand prüfen (2.7.9)"] --> HW1b{"Gerät freigegeben?"}
-    HW1b -->|"ausgegraut / gesperrt"| HW1c["Grund anzeigen<br/>ggf. Firmware-Prüfung am Gerät"]
+    HW1["Connect device<br/>QR · NFC · BLE · USB<br/>check release state (2.7.9)"] --> HW1b{"Device released?"}
+    HW1b -->|"greyed out / locked"| HW1c["Show reason<br/>optionally firmware check on device"]
     HW1c --> HW1b
-    HW1b -->|"ja"| HW2["C auf dem Gerät NEU erzeugen<br/>eigener RNG, fremde Codebasis<br/>⚠️ kein Import bestehender Seeds"]
-    HW2 --> HW3["xpub_C importieren<br/>⚠️ auf dem GERÄTEDISPLAY bestätigen"]
-    HW3 --> A2b["A und B wie links erzeugen<br/>kein Prozess-Neustart nötig —<br/>C war nie in diesem Prozess"]
-    A2b --> HW4["BIP-388 Wallet Policy<br/>auf dem Gerät registrieren<br/>alle 3 xpubs auf Gerätedisplay prüfen"]
-    HW4 --> HW5["PolicyId speichern<br/>→ descriptor.json + Ausdruck"]
+    HW1b -->|"yes"| HW2["Generate C NEW on the device<br/>own RNG, foreign codebase<br/>⚠️ no import of existing seeds"]
+    HW2 --> HW3["Import xpub_C<br/>⚠️ confirm on the DEVICE DISPLAY"]
+    HW3 --> A2b["Generate A and B as on the left<br/>no process restart needed —<br/>C was never in this process"]
+    A2b --> HW4["Register BIP-388 wallet policy<br/>on the device<br/>check all 3 xpubs on device display"]
+    HW4 --> HW5["Store PolicyId<br/>→ descriptor.json + printout"]
     HW5 --> A13
 
-    A13["⚠️ ORTSTRENNUNG<br/>Backup-B und C NIE am selben Ort<br/>Zwei Orte benennen lassen (Freitext)"]
-    A13 --> A14{"Bestätigung: getrennte Orte?"}
-    A14 -->|nein| A13
-    A14 -->|ja| A15["Descriptor exportieren:<br/>Druck, BSMS, Sparrow, Core<br/>Ausdruck bestätigen"]
-    A15 --> A16["C zeroize — nur xpub_C bleibt"]
-    A16 --> A17["✅ Erste Empfangsadresse freigeschaltet"]
+    A13["⚠️ LOCATION SEPARATION<br/>Backup-B and C NEVER in the same place<br/>Have two places named (free text)"]
+    A13 --> A14{"Confirm: separate places?"}
+    A14 -->|no| A13
+    A14 -->|yes| A15["Export descriptor:<br/>print, BSMS, Sparrow, Core<br/>confirm printout"]
+    A15 --> A16["C zeroize — only xpub_C remains"]
+    A16 --> A17["✅ First receive address unlocked"]
 
     style A7 fill:#3a1010,stroke:#c0392b,color:#fff
     style A12 fill:#3a1010,stroke:#c0392b,color:#fff
@@ -1749,53 +1749,53 @@ flowchart TD
     style HW1c fill:#3a1010,stroke:#c0392b,color:#fff
 ```
 
-**Zwei Wahlpunkte ganz vorn, und beide sind unveränderlich:** Wortlänge für A und B (E3b) und Herkunft von C (E6). Beide bestimmen das Backup-Format und das Datenmodell; sie nachträglich zu ändern heißt, ein neues Setup zu erzeugen und zu sweepen. Deshalb stehen sie vor der ersten Schlüsselerzeugung und nicht in einem Einstellungsmenü.
+**Two choice points right at the front, and both are immutable:** word length for A and B (E3b) and origin of C (E6). Both determine the backup format and the data model; changing them later means generating a new setup and sweeping. Hence they stand before the first key generation and not in a settings menu.
 
-**Beide Wahlpunkte sind echte Optionen, keine Hürden.** Die Wortlänge ist mit 24 vorbelegt; die Hardware-Option ist empfohlen, aber der In-App-Weg steht gleichberechtigt daneben und ist nicht mit Warnungen verstellt. Wer nichts anfasst, bekommt ein vollständig funktionierendes 24/24/24-Setup ohne Zusatzgerät.
+**Both choice points are real options, not hurdles.** Word length is pre-set to 24; the hardware option is recommended, but the in-app path stands equally beside it and is not blocked with warnings. Whoever touches nothing gets a fully working 24/24/24 setup without an extra device.
 
-**Der Hardware-Zweig spart den Prozess-Neustart.** Wird C auf einem externen Gerät erzeugt, war sein Schlüsselmaterial nie im Speicher dieser App — die Session-Trennung, die Weg (b) mühsam herstellt, ist hier strukturell gegeben.
+**The hardware branch saves the process restart.** If C is generated on an external device, its key material was never in this app's memory — the session separation that path (b) laboriously creates is given structurally here.
 
-**Der Backup-Nachweis — ohne dass die App die Seeds sieht:**
+**Backup evidence — without the app seeing the seeds:**
 
-Die App **kennt** die Wörter zu diesem Zeitpunkt ohnehin (sie hat sie erzeugt). Die Anforderung „ohne dass die App die Seeds sieht" ist deshalb präzise so zu lesen: **die JS-Schicht** sieht sie nicht, und **nach** dem Onboarding sieht sie niemand mehr.
+The app **knows** the words at this point anyway (it generated them). The requirement "without the app seeing the seeds" is therefore to be read precisely as: **the JS layer** does not see them, and **after** onboarding nobody sees them anymore.
 
-Umsetzung:
-- `quiz_challenge(slot)` gibt zufällige **Wortpositionen** zurück (z.B. `[3, 9, 17, 22]`) — nur `u32`, keine Wörter, über FFI. Anzahl abhängig von `word_count`: **4 bei 24 Wörtern, 3 bei 12**.
-- Der Nutzer tippt vier Wörter in ein natives Eingabefeld (nicht React Native — die Wörter dürfen den JS-Heap nicht berühren).
-- `quiz_answer(slot, answers)` vergleicht in Rust **in konstanter Zeit** gegen die Wortindizes und gibt nur `QuizResult{passed: bool, wrong_positions: Vec<u32>}` zurück.
-- Bei Fehlschlag: neue, **andere** Positionen. Kein Erraten durch Wiederholung.
-- **Blockierend:** ohne bestandenen Nachweis für B **und** C gibt `reveal_next_address()` einen Fehler zurück. Es gibt keine Empfangsadresse und damit keine Möglichkeit, Geld in eine ungesicherte Wallet zu schicken. Das ist die technische Durchsetzung von Randbedingung 2 — nicht ein Hinweistext.
+Implementation:
+- `quiz_challenge(slot)` returns random **word positions** (e.g. `[3, 9, 17, 22]`) — only `u32`, no words, over FFI. Count depends on `word_count`: **4 for 24 words, 3 for 12**.
+- The user types four words into a native input field (not React Native — the words must not touch the JS heap).
+- `quiz_answer(slot, answers)` compares in Rust **in constant time** against the word indices and returns only `QuizResult{passed: bool, wrong_positions: Vec<u32>}`.
+- On failure: new, **different** positions. No guessing by repetition.
+- **Blocking:** without passed evidence for B **and** C, `reveal_next_address()` returns an error. There is no receive address and thus no way to send money into an unsecured wallet. That is the technical enforcement of constraint 2 — not a notice text.
 
-**Warum eine Stichprobe und nicht alle Wörter:** Alle 24 abzutippen führt zu Abbruch oder zum Abfotografieren des Bildschirms. Vier zufällige Positionen aus 24 (bzw. drei aus 12) belegen mit hinreichender Wahrscheinlichkeit, dass eine vollständige Abschrift existiert, und sind zumutbar. Bei Fehlschlag wird mit anderen Positionen wiederholt.
+**Why a sample and not all words:** Typing all 24 leads to abandonment or photographing the screen. Four random positions of 24 (or three of 12) evidence with sufficient probability that a full write-down exists, and are tolerable. On failure it is repeated with other positions.
 
-**Beim Hardware-Zweig entfällt der Nachweis für C.** Das Gerät hat den Seed erzeugt und führt seinen eigenen Backup-Ablauf (Wortliste bzw. microSD); unsere App sieht die Wörter nie und kann folglich nichts abfragen. An diese Stelle tritt der Hinweis, das Geräte-Backup nach dessen Anleitung anzulegen — **plus dieselbe Ortstrennungs-Abfrage**, denn Backup-B und das Geräte-Backup von C dürfen ebenso wenig zusammenliegen (T12).
+**On the hardware branch, evidence for C drops away.** The device generated the seed and runs its own backup flow (word list or microSD); our app never sees the words and thus cannot quiz anything. In its place comes the notice to create the device backup per its instructions — **plus the same location-separation prompt**, because backup-B and the device backup of C must not sit together either (T12).
 
-**Descriptor-Ausdruck:** Der Backup-Ausdruck enthält immer beides — die 24 Wörter **und** den vollständigen Descriptor mit allen drei xpubs und Origin-Informationen — plus einen QR-Code des Descriptors und die Kurzanleitung „Wiederherstellung in Sparrow". Randbedingung 5 wird damit zu einem Layout, nicht zu einer Empfehlung.
+**Descriptor printout:** The backup printout always contains both — the 24 words **and** the full descriptor with all three xpubs and origin information — plus a QR code of the descriptor and the short guide "Recovery in Sparrow". Constraint 5 thus becomes a layout, not a recommendation.
 
-### 6.2 Senden
+### 6.2 Send
 
 ```mermaid
 flowchart TD
-    B0["Betrag + Empfänger"] --> B1{"Adresse aus Historie kopiert?"}
-    B1 -->|"ja"| B1a["🚫 Blockiert — Address Poisoning (T8)"]
-    B1 -->|"nein"| B2{"Ähnlich zu bekannter Adresse,<br/>aber nicht identisch?"}
-    B2 -->|"ja"| B2a["⚠️ Poisoning-Warnung,<br/>Zeichenvergleich anzeigen"]
+    B0["Amount + recipient"] --> B1{"Address copied from history?"}
+    B1 -->|"yes"| B1a["🚫 Blocked — address poisoning (T8)"]
+    B1 -->|"no"| B2{"Similar to known address,<br/>but not identical?"}
+    B2 -->|"yes"| B2a["⚠️ Poisoning warning,<br/>show character comparison"]
     B2a --> B3
-    B2 -->|"nein"| B3["Fee-Ziel wählen"]
+    B2 -->|"no"| B3["Choose fee target"]
     B3 --> B4["build_psbt()"]
-    B4 --> B5["verify_psbt() — Rust, unabhängig"]
+    B4 --> B5["verify_psbt() — Rust, independent"]
     B5 --> B6{"Verdict ok?"}
-    B6 -->|"nein"| B6a["🚫 Abbruch mit konkretem Grund<br/>KEIN Schlüsselzugriff"]
-    B6 -->|"ja"| B7["NATIVER Bestätigungsdialog<br/>aus PsbtVerdict, nicht aus JS-State<br/>Adresse in 4er-Gruppen<br/>Betrag · Gebühr · sat/vB · Change"]
-    B7 --> B8{"Bestätigt?"}
-    B8 -->|"nein"| B0
-    B8 -->|"ja"| B8a{"SpendPolicy im Rust-Kern<br/>Betrag ≤ Quote?<br/>Fenster nicht ausgeschöpft?<br/>nicht erste Nutzung?"}
-    B8a -->|"ja — Regelfall"| B9["EINE biometrische Auswertung<br/>öffnet A und B (3.6.2)<br/>sign_ab, je Slot mit verify"]
-    B8a -->|"nein"| B10["Passphrase-Eingabe<br/>nativ, Data/ByteArray, kein String<br/>Autovervollständigung, KDF vorgezogen<br/>Screenshot gesperrt, kein Autofill"]
-    B10 --> B11["sign_ab(psbt, Some(pass)), je Slot mit verify"]
-    B9 --> B12["finalize + Konsensprüfung"]
+    B6 -->|"no"| B6a["🚫 Abort with concrete reason<br/>NO key access"]
+    B6 -->|"yes"| B7["NATIVE confirmation dialog<br/>from PsbtVerdict, not from JS state<br/>address in groups of 4<br/>amount · fee · sat/vB · change"]
+    B7 --> B8{"Confirmed?"}
+    B8 -->|"no"| B0
+    B8 -->|"yes"| B8a{"SpendPolicy in Rust core<br/>amount ≤ share?<br/>window not exhausted?<br/>not first use?"}
+    B8a -->|"yes — normal case"| B9["ONE biometric evaluation<br/>opens A and B (3.6.2)<br/>sign_ab, per slot with verify"]
+    B8a -->|"no"| B10["Passphrase input<br/>native, Data/ByteArray, no String<br/>autocomplete, KDF prefetched<br/>screenshot blocked, no autofill"]
+    B10 --> B11["sign_ab(psbt, Some(pass)), per slot with verify"]
+    B9 --> B12["finalize + consensus check"]
     B11 --> B12
-    B12 --> B13["broadcast — separates Backend"]
+    B12 --> B13["broadcast — separate backend"]
     B13 --> B14["✅ txid"]
 
     style B6a fill:#3a1010,stroke:#c0392b,color:#fff
@@ -1803,99 +1803,99 @@ flowchart TD
     style B7 fill:#102a18,stroke:#27ae60,color:#fff
 ```
 
-**Der native Bestätigungsdialog ist keine Kosmetik.** Er ist die Stelle, an der T7 bricht. Würde er in React Native gerendert, könnte eine kompromittierte JS-Schicht eine andere Adresse anzeigen als die, die im PSBT steht. Der Dialog wird deshalb aus dem `PsbtVerdict` gebaut, das der Rust-Verifier aus dem PSBT selbst gelesen hat — nicht aus dem, was die UI zu wissen glaubt.
+**The native confirmation dialog is not cosmetics.** It is the place where T7 breaks. Were it rendered in React Native, a compromised JS layer could show a different address than the one in the PSBT. The dialog is therefore built from the `PsbtVerdict` that the Rust verifier read from the PSBT itself — not from what the UI believes it knows.
 
-**Der Regelfall ist eine Geste.** Unterhalb der Ausgabegrenze (3.6) öffnet eine biometrische Auswertung A und B; der Nutzer sieht einen Face-ID-Prompt und danach die Bestätigung. Ein Send dauert damit etwa so lang wie in einem gängigen Software-Wallet.
+**The normal case is one gesture.** Below the spending limit (3.6) one biometric evaluation opens A and B; the user sees a Face ID prompt and then the confirmation. A send thus takes about as long as in a common software wallet.
 
-#### 6.2.1 Wenn die Passphrase doch verlangt wird, muss sie schnell gehen
+#### 6.2.1 When the passphrase is required after all, it must be fast
 
-Oberhalb der Grenze, bei der ersten Nutzung nach einer Installation und bei jeder Policy-Änderung ist die Passphrase unumgehbar. Das sind die Momente, in denen die App entweder überzeugt oder verloren geht — sechs Diceware-Wörter zu tippen und dann zwei Sekunden zu warten, ist der unangenehmste Moment der ganzen Anwendung. Die Antwort darauf ist **nicht**, die Anforderung an die Passphrase zu senken: Sie ist das Einzige, was ein Dieb mit entsperrtem Telefon nicht hat, und damit die Grundlage der gesamten Ausgabegrenze. Die Antwort ist, den Weg dorthin zu verkürzen.
+Above the limit, on first use after an install, and on every policy change the passphrase is unavoidable. Those are the moments in which the app either convinces or is lost — typing six Diceware words and then waiting two seconds is the most unpleasant moment of the whole application. The answer is **not** to lower the passphrase requirement: it is the only thing a thief with an unlocked phone does not have, and thus the foundation of the entire spending limit. The answer is to shorten the path there.
 
-| Maßnahme | Wirkung | Sicherheitskosten |
+| Measure | Effect | Security cost |
 |---|---|---|
-| **Diceware-Autovervollständigung** | Die EFF-Long-Wordlist (7776 Wörter) liegt im Rust-Kern. Nach 3–4 Zeichen ist ein Wort eindeutig. Tippaufwand sinkt um grob 60 %. | **Keine.** Die Entropie liegt in der *Wahl* der Wörter, nicht im Tippen. Wer den Präfix mitliest, liest ohnehin die ganze Eingabe mit. Jede BIP-39-Eingabe funktioniert seit Jahren genauso. |
-| **Argon2id vorziehen** | Die KDF startet, sobald das letzte Wort eindeutig ist — parallel zur Bestätigungsanzeige, nicht danach. Die 2 Sekunden verschwinden hinter einer Interaktion, die ohnehin stattfindet. | **Keine.** Reine Nebenläufigkeit. Bei Abbruch wird das Ergebnis verworfen und genullt. |
-| **Wortweises Feedback** | Ein Häkchen je erkanntem Wort statt einer Fehlermeldung am Ende. Tippfehler fallen sofort auf statt nach zwei Sekunden KDF. | **Keine.** Die Wortliste ist öffentlich. |
-| **Optionales Sitzungsfenster** | Nach erfolgreicher Eingabe bleibt B für eine konfigurierbare Zeit entsperrt. Für Folge-Transaktionen. | ⚠️ **Real.** Siehe unten. |
+| **Diceware autocomplete** | The EFF Long Wordlist (7776 words) sits in the Rust core. After 3–4 characters a word is unique. Typing effort drops by roughly 60 %. | **None.** Entropy sits in the *choice* of words, not in the typing. Whoever reads the prefix is reading the whole input anyway. Every BIP-39 entry has worked that way for years. |
+| **Prefetch Argon2id** | The KDF starts as soon as the last word is unique — parallel to the confirmation display, not after. The 2 seconds disappear behind an interaction that happens anyway. | **None.** Pure concurrency. On abort the result is discarded and zeroed. |
+| **Per-word feedback** | A checkmark per recognized word instead of an error at the end. Typos show immediately instead of after two seconds of KDF. | **None.** The word list is public. |
+| **Optional session window** | After successful entry B stays unlocked for a configurable time. For follow-up transactions. | ⚠️ **Real.** See below. |
 
-**Zusammen bringt das einen Sendevorgang von grob 45 auf 10–15 Sekunden** — ohne ein einziges Bit Sicherheit aufzugeben. Die ersten drei Maßnahmen sind deshalb Pflicht, nicht Kür.
+**Together that brings a send from roughly 45 to 10–15 seconds** — without giving up a single bit of security. The first three measures are therefore mandatory, not optional.
 
-**Zum Sitzungsfenster, weil es das einzige mit echten Kosten ist:**
+**On the session window, because it is the only one with real cost:**
 
-- **Default: aus.** Wer es einschaltet, wählt eine Dauer (Vorschlag: 1, 5 oder 15 Minuten). Es betrifft nur die Fälle *oberhalb* der Ausgabegrenze — unterhalb wird ohnehin keine Passphrase verlangt.
-- Während des Fensters liegt der abgeleitete KEK_B im Speicher des Rust-Kerns — nicht die Passphrase selbst, aber funktional gleichwertig.
-- **Was das kostet:** In diesem Fenster ist die Ausgabegrenze faktisch aufgehoben. Wird das Telefon dann im entsperrten Zustand gestohlen, greift T5a nicht mehr.
-- Das Fenster endet **hart** bei: App im Hintergrund, Gerätesperre, Ablauf der Zeit, jedem Fehlschlag einer Verifikation. Kein Verlängern durch Aktivität.
-- Es gilt **nie** für Policy-Änderungen, Export, Schlüsseltausch und die erste Nutzung nach Installation.
+- **Default: off.** Whoever enables it chooses a duration (suggestion: 1, 5, or 15 minutes). It only affects cases *above* the spending limit — below, no passphrase is required anyway.
+- During the window the derived KEK_B sits in the Rust core's memory — not the passphrase itself, but functionally equivalent.
+- **What that costs:** In this window the spending limit is factually lifted. If the phone is then stolen in the unlocked state, T5a no longer applies.
+- The window ends **hard** on: app backgrounded, device lock, time expiry, every verification failure. No extension by activity.
+- It **never** applies to policy changes, export, key rotation, and first use after install.
 
-> **Der Weg zu zwei echten Faktoren ohne Reibung ist Hardware-B** (6.6). Ein NFC-Tap dauert etwa zwei Sekunden — ungefähr so lang wie die biometrische Auswertung — und liefert dabei einen zweiten, physisch getrennten Faktor mit eigener PIN und eigener Brute-Force-Bremse. Das ist die einzige Konfiguration, in der ein Send *gleichzeitig* eine Geste kostet und zwei Faktoren hat. Die App sollte darauf hinarbeiten, ohne es vorauszusetzen.
+> **The path to two real factors without friction is hardware-B** (6.6). An NFC tap takes about two seconds — roughly as long as the biometric evaluation — and delivers a second, physically separate factor with its own PIN and its own brute-force brake. That is the only configuration in which a send *simultaneously* costs one gesture and has two factors. The app should work toward that without presupposing it.
 
-### 6.3 Empfangen
+### 6.3 Receive
 
-| Element | Verhalten |
+| Element | Behavior |
 |---|---|
-| Adresse | Immer der nächste unbenutzte Index aus dem Receive-Descriptor. Nie Wiederverwendung. |
-| Anzeige | QR + Text in Vierergruppen. |
-| **Verifikation** | Ein-Tipp-Prüfung: die angezeigte Adresse wird von `trinity-verify` aus dem gespeicherten Descriptor **unabhängig** neu abgeleitet und verglichen. Schützt gegen eine manipulierte Anzeige-Schicht, die eine fremde Empfangsadresse zeigt — ein Angriff, der oft übersehen wird, weil er kein Geld bewegt, sondern eingehendes Geld umleitet. |
-| Gap-Limit | 20 (Standard). Bei Überschreitung Warnung, weil Recovery in Fremdsoftware sonst Adressen übersieht. |
+| Address | Always the next unused index from the receive descriptor. Never reuse. |
+| Display | QR + text in groups of four. |
+| **Verification** | One-tap check: the displayed address is **independently** re-derived by `trinity-verify` from the stored descriptor and compared. Protects against a manipulated display layer that shows a foreign receive address — an attack often overlooked because it moves no money but redirects incoming money. |
+| Gap limit | 20 (standard). On exceedance warning, because recovery in foreign software otherwise misses addresses. |
 
-### 6.4 Geräteverlust-Recovery
+### 6.4 Device-loss recovery
 
 ```mermaid
 sequenceDiagram
-    participant U as Nutzer
-    participant NEU as Frische Installation
+    participant U as User
+    participant NEU as Fresh install
     participant CH as Chain
 
-    U->>NEU: „Wallet wiederherstellen"
-    NEU->>U: Descriptor eingeben (QR, Text oder BSMS)
-    Note over U,NEU: Ohne Descriptor: alle drei xpubs eingeben.<br/>Ohne beides: nicht wiederherstellbar (T11).
-    NEU->>NEU: Descriptor validieren, Checksum prüfen
-    NEU->>CH: Full Scan ab Birthday-Höhe
-    CH-->>NEU: UTXOs, Saldo
-    NEU->>U: Saldo anzeigen — Watch-only, noch kein Schlüssel
-    U->>NEU: Ziel-Adresse (neues Setup oder Fremd-Wallet)
+    U->>NEU: "Restore wallet"
+    NEU->>U: enter descriptor (QR, text, or BSMS)
+    Note over U,NEU: Without descriptor: enter all three xpubs.<br/>Without both: not recoverable (T11).
+    NEU->>NEU: validate descriptor, check checksum
+    NEU->>CH: full scan from birthday height
+    CH-->>NEU: UTXOs, balance
+    NEU->>U: show balance — watch-only, still no key
+    U->>NEU: target address (new setup or foreign wallet)
     NEU->>NEU: build_psbt(sweep) → verify_psbt
-    NEU->>U: Mnemonic B eingeben (nativ, kein String)
-    NEU->>NEU: sign_with_recovery_key(B) → Ableiten, verify, signieren, zeroize
-    NEU->>U: Mnemonic C eingeben (nativ, kein String)
-    NEU->>NEU: sign_with_recovery_key(C) → Ableiten, verify, signieren, zeroize
-    NEU->>NEU: finalize + Konsensprüfung
+    NEU->>U: enter mnemonic B (native, no String)
+    NEU->>NEU: sign_with_recovery_key(B) → derive, verify, sign, zeroize
+    NEU->>U: enter mnemonic C (native, no String)
+    NEU->>NEU: sign_with_recovery_key(C) → derive, verify, sign, zeroize
+    NEU->>NEU: finalize + consensus check
     NEU->>CH: broadcast
-    CH-->>U: ✅ Mittel gesichert
+    CH-->>U: ✅ funds secured
 ```
 
-**Wichtig:** Bei der Recovery werden B und C **nicht** persistiert. Sie werden für genau eine Signatur abgeleitet und sofort genullt. Das Ergebnis der Recovery ist eine Transaktion in ein frisches Setup, nicht eine wiederhergestellte alte Wallet. Begründung: nach einem Geräteverlust ist unbekannt, ob das alte Gerät kompromittiert wurde — die alten Schlüssel gelten als potenziell exponiert. **`sign_with_recovery_key` ist der einzige exportierte Pfad, auf dem eine Wortliste in den Kern gelangt** — als `SecretBytes` aus der nativen Schicht, nie aus JS, nie persistiert (S4).
+**Important:** On recovery B and C are **not** persisted. They are derived for exactly one signature and immediately zeroed. The result of recovery is a transaction into a fresh setup, not a restored old wallet. Rationale: after device loss it is unknown whether the old device was compromised — the old keys are treated as potentially exposed. **`sign_with_recovery_key` is the only exported path on which a word list enters the core** — as `SecretBytes` from the native layer, never from JS, never persisted (S4).
 
-**Alternativer Weg, der ohne diese App funktionieren muss** (`docs/RECOVERY.md`, Testfall S5/S6): Descriptor in Sparrow oder Bitcoin Core 30.2 importieren, PSBT bauen, mit B und C signieren, broadcasten. Dieser Weg ist die eigentliche Versicherung — er funktioniert auch, wenn es diese App nicht mehr gibt.
+**Alternative path that must work without this app** (`docs/RECOVERY.md`, test cases S5/S6): import descriptor into Sparrow or Bitcoin Core 30.2, build PSBT, sign with B and C, broadcast. This path is the real insurance — it works even if this app no longer exists.
 
-### 6.5 Schlüsseltausch nach Kompromittierung
+### 6.5 Key rotation after compromise
 
-Auslöser: ein Seed wurde exponiert, ein Gerät ging verloren, oder der Verdacht besteht auch nur.
+Trigger: a seed was exposed, a device was lost, or the suspicion merely exists.
 
 ```mermaid
 flowchart LR
-    C0["Verdacht"] --> C1["Vollständig NEUES 2-von-3<br/>drei frische Seeds; Zusatzentropie empfohlen, überspringbar (E3)"]
-    C1 --> C2["Neues Onboarding komplett<br/>inkl. beider Backup-Nachweise"]
-    C2 --> C3["Sweep-PSBT: ALLE UTXOs alt → neu"]
-    C3 --> C4["verify gegen ALTEN Descriptor<br/>Ziel gegen NEUEN Descriptor"]
-    C4 --> C5["Mit den zwei verbliebenen<br/>alten Schlüsseln signieren"]
+    C0["Suspicion"] --> C1["Fully NEW 2-of-3<br/>three fresh seeds; additional entropy recommended, skippable (E3)"]
+    C1 --> C2["New onboarding complete<br/>incl. both backup evidences"]
+    C2 --> C3["Sweep PSBT: ALL UTXOs old → new"]
+    C3 --> C4["verify against OLD descriptor<br/>target against NEW descriptor"]
+    C4 --> C5["Sign with the two remaining<br/>old keys"]
     C5 --> C6["Broadcast"]
-    C6 --> C7{"≥ 6 Konfirmationen?"}
-    C7 -->|"nein"| C7
-    C7 -->|"ja"| C8["Alte blob_A/blob_B löschen<br/>alte SE/Keystore-Schlüssel destroy<br/>alten Descriptor als 'stillgelegt' markieren,<br/>NICHT löschen"]
+    C6 --> C7{"≥ 6 confirmations?"}
+    C7 -->|"no"| C7
+    C7 -->|"yes"| C8["Delete old blob_A/blob_B<br/>destroy old SE/Keystore keys<br/>mark old descriptor as 'retired',<br/>do NOT delete"]
 ```
 
-**Zwei Regeln, die häufig falsch gemacht werden:**
-1. **Kein „Schlüssel ersetzen" im bestehenden Descriptor.** Ein Descriptor mit zwei alten und einem neuen Schlüssel bedeutet: der Angreifer mit dem alten Schlüssel braucht nur noch einen weiteren. Ein Tausch ist immer ein vollständig neues Setup und ein Sweep.
-2. **Der alte Descriptor wird nicht gelöscht.** Nachzügler-Transaktionen an alte Adressen müssen noch abholbar sein. Er wird als stillgelegt markiert und weiterhin überwacht.
+**Two rules that are often done wrong:**
+1. **No "replace key" in the existing descriptor.** A descriptor with two old and one new key means: the attacker with the old key only needs one more. A rotation is always a fully new setup and a sweep.
+2. **The old descriptor is not deleted.** Late transactions to old addresses must still be collectable. It is marked retired and continues to be watched.
 
-### 6.6 Wechsel von Software-B auf Hardware-B (Anforderung 7, Entscheidung E5)
+### 6.6 Switch from software-B to hardware-B (Requirement 7, Decision E5)
 
-Das ist der Weg aus R2 heraus und der Grund, warum PSBT von Anfang an der interne Signaturweg ist.
+This is the path out of R2 and the reason PSBT is the internal signature path from the start.
 
 ```rust
-// crates/trinity-signer/src/lib.rs — ab v1, nicht nachgerüstet
+// crates/trinity-signer/src/lib.rs — from v1, not retrofitted
 pub trait Signer: Send + Sync {
     fn fingerprint(&self) -> Fingerprint;
     fn sign(&self, psbt: Psbt) -> Result<Psbt, SignError>;
@@ -1906,125 +1906,125 @@ pub struct LocalSigner   { slot: KeySlot, keystore: Arc<Keystore> }
 pub struct ExternalSigner{ transport: Box<dyn PsbtTransport> }  // NFC, QR (BBQr/UR), USB
 ```
 
-Weil `sign_b` intern nur `Signer::sign(psbt) -> psbt` aufruft, ist der Austausch ein Konfigurationswechsel, keine Architekturänderung. **Der `ExternalSigner`-Pfad ist in v1 real durchgetestet** (Testfälle S8, S16–S18) — über den QR-Transport, der ohnehin für Hardware-C gebaut wird (Abschnitt 2.7). Transporte, Gerätematrix und die BIP-388-Registrierung sind dort spezifiziert und gelten hier unverändert.
+Because `sign_b` internally only calls `Signer::sign(psbt) -> psbt`, the swap is a configuration change, not an architecture change. **The `ExternalSigner` path is real-tested in v1** (test cases S8, S16–S18) — over the QR transport that is built for hardware-C anyway (Section 2.7). Transports, device matrix, and BIP-388 registration are specified there and apply here unchanged.
 
-**Der Wechselvorgang:**
+**The switch procedure:**
 
 ```mermaid
 flowchart TD
-    D0["Hardware-Signer vorhanden"] --> D1["xpub_B' vom Gerät importieren<br/>BSMS (BIP-129) oder QR"]
-    D1 --> D2["NEUEN Descriptor bilden:<br/>wsh(sortedmulti(2, A', B'_hw, C'))"]
-    D2 --> D3["A' und C' ebenfalls neu erzeugen"]
-    D3 --> D4["Neues Onboarding, Backup-Nachweise"]
-    D4 --> D5["Descriptor auf das Hardware-Gerät registrieren<br/>(Coldcard u.a. verlangen das für Change-Erkennung)"]
-    D5 --> D6["Sweep alt → neu, mit A und B signiert"]
-    D6 --> D7["Nach Konfirmation: altes Setup stilllegen"]
-    D7 --> D8["✅ Quorum hat jetzt zwei Implementierungen"]
+    D0["Hardware signer present"] --> D1["Import xpub_B' from device<br/>BSMS (BIP-129) or QR"]
+    D1 --> D2["Form NEW descriptor:<br/>wsh(sortedmulti(2, A', B'_hw, C'))"]
+    D2 --> D3["Also generate A' and C' anew"]
+    D3 --> D4["New onboarding, backup evidences"]
+    D4 --> D5["Register descriptor on the hardware device<br/>(Coldcard et al. require that for change recognition)"]
+    D5 --> D6["Sweep old → new, signed with A and B"]
+    D6 --> D7["After confirmation: retire old setup"]
+    D7 --> D8["✅ Quorum now has two implementations"]
 
     style D8 fill:#102a18,stroke:#27ae60,color:#fff
 ```
 
-**Warum auch hier ein komplett neues Setup:** Nur `xpub_B` zu tauschen hieße, die alten A und C weiterzuverwenden — beide aus derselben Codebasis. Der Gewinn an Implementierungsdiversität wäre dann auf einen von drei Schlüsseln beschränkt, und der alte Software-B bliebe als Papier-Backup gültig, das den alten Descriptor weiterhin bedienen kann. Ein sauberer Schnitt ist teurer und richtig.
+**Why a fully new setup here too:** Only swapping `xpub_B` would mean continuing to use the old A and C — both from the same codebase. The gain in implementation diversity would then be limited to one of three keys, and the old software-B would remain valid as a paper backup that can still serve the old descriptor. A clean cut is more expensive and correct.
 
-**Nach dem Wechsel gilt:** A ist Software (Telefon, Biometrie), B ist Hardware (separates Gerät, eigene Firmware, eigener RNG, eigene PIN), C ist Papier oder ein zweites Gerät. Damit ist T9 (Supply-Chain) erstmals nicht mehr „trifft beide gleichzeitig", und T4b (kompromittiertes Telefon) verliert den zweiten Schlüssel. **Das ist die eigentliche Zielkonfiguration dieses Produkts** — die reine Software-Variante ist der Einstieg, nicht das Ziel. Diese Einordnung sollte auch die Produktkommunikation tragen.
+**After the switch:** A is software (phone, biometrics), B is hardware (separate device, own firmware, own RNG, own PIN), C is paper or a second device. Thus T9 (supply chain) is for the first time no longer "hits both at once", and T4b (compromised phone) loses the second key. **That is the actual target configuration of this product** — the pure software variant is the entry, not the goal. That framing should also carry the product communication.
 
-#### 6.6.1 Diebstahl des Hardware-Signers — die Gegenrechnung
+#### 6.6.1 Theft of the hardware signer — the counter-check
 
-Der naheliegende Einwand gegen Hardware-B lautet: dann kann eben das Gerät gestohlen werden. Stimmt — aber die Rechnung fällt deutlich zugunsten der Hardware aus, und zwar in jedem der drei Fälle.
+The obvious objection to hardware-B is: then the device can just be stolen. True — but the calculation falls clearly in favor of the hardware, and in each of the three cases.
 
-| Szenario | Software-B (Passphrase) | Software-B mit Biometrie-Pfad | **Hardware-B** |
+| Scenario | Software-B (passphrase) | Software-B with biometric path | **Hardware-B** |
 |---|---|---|---|
-| **Nur Telefon gestohlen**, entsperrt | Angreifer hat **A**. B braucht die Passphrase aus deinem Kopf. | 🔴 Angreifer hat **A und B** → Quorum | ✅ Angreifer hat **A**. B liegt gar nicht auf dem Gerät. |
-| **Nur Signer gestohlen** | — | — | ✅ Angreifer hat **B**, geschützt durch die Geräte-PIN mit Secure Element und Wipe nach N Fehlversuchen. Das ist T1, vom Modell abgedeckt. |
-| **Telefon und Signer zusammen** (gleiche Tasche) | Angreifer hat **A**, braucht die Passphrase | 🔴 **Quorum** | ⚠️ Angreifer hat **A**, braucht zusätzlich die **Geräte-PIN**. Zwei unabhängige Geheimnisse, eines davon auf Hardware mit echter Brute-Force-Bremse. |
+| **Only phone stolen**, unlocked | Attacker has **A**. B needs the passphrase from your head. | 🔴 Attacker has **A and B** → quorum | ✅ Attacker has **A**. B does not sit on the device at all. |
+| **Only signer stolen** | — | — | ✅ Attacker has **B**, protected by the device PIN with secure element and wipe after N failed attempts. That is T1, covered by the model. |
+| **Phone and signer together** (same bag) | Attacker has **A**, needs the passphrase | 🔴 **Quorum** | ⚠️ Attacker has **A**, additionally needs the **device PIN**. Two independent secrets, one of them on hardware with a real brute-force brake. |
 
-**Der entscheidende Unterschied zur Passphrase:** Eine Passphrase kann offline und beliebig schnell durchprobiert werden, sobald der Angreifer an den Blob und den hardware-gebundenen KEK kommt — Argon2id verlangsamt das nur um einen konstanten Faktor. Eine Geräte-PIN wird von einem Secure Element durchgesetzt, das nach einer festen Zahl von Fehlversuchen den Seed löscht. **Gegen Brute-Force ist die Hardware-PIN strukturell stärker als jede Passphrase**, obwohl sie kürzer ist.
+**The decisive difference from the passphrase:** A passphrase can be tried offline and arbitrarily fast once the attacker gets the blob and the hardware-bound KEK — Argon2id only slows that by a constant factor. A device PIN is enforced by a secure element that deletes the seed after a fixed number of failed attempts. **Against brute-force the hardware PIN is structurally stronger than any passphrase**, even though it is shorter.
 
-**Was Hardware-B nicht löst:** Verlust *beider* Geräte. Dann greift derselbe Weg wie bei Geräteverlust heute — Backup-B (die Wortliste des Signers) plus C, an getrennten Orten. Randbedingung 3 gilt unverändert, nur heißt „Backup-B" jetzt „das Backup, das der Signer nach seiner eigenen Anleitung anlegt".
+**What hardware-B does not solve:** loss of *both* devices. Then the same path as device loss today applies — backup-B (the signer's word list) plus C, in separate places. Constraint 3 remains unchanged, only "backup-B" now means "the backup the signer creates per its own instructions".
 
-**Und die ehrliche Unbequemlichkeit:** Wer Telefon und Signer immer zusammen trägt, gibt einen Teil des Vorteils der letzten Zeile wieder her. Die Empfehlung „getrennt aufbewahren" kollidiert mit „schnell unterwegs senden". Das ist ein echter Zielkonflikt, den die App benennen und nicht wegmoderieren sollte — sie kann ihn nicht auflösen.
+**And the honest inconvenience:** Whoever always carries phone and signer together gives away part of the last-row advantage again. The recommendation "store separately" collides with "send quickly on the go". That is a real goal conflict that the app should name and not moderate away — it cannot resolve it.
 
 ---
 
-## 7. Offene Entscheidungen
+## 7. Open decisions
 
-| ID | Frage | Optionen | Trade-off | **Empfehlung** |
+| ID | Question | Options | Trade-off | **Recommendation** |
 |---|---|---|---|---|
-| ~~**O1**~~ | ~~Wo wird C erzeugt?~~ | — | — | ✅ **Entschieden (E6):** Nutzer wählt bei der Erstellung; Hardware-Signer ist hervorgehobener Default, in-App bleibt möglich. Umgesetzt in 2.2.5 und 2.7. |
-| ~~**O2**~~ | ~~Zusatzentropie verpflichtend?~~ | — | — | ✅ **Entschieden (E3): durchgehend optional**, auch für C — abweichend von meiner Empfehlung. Konsequenz ist in T10 und 4.2 Punkt 8 dokumentiert: Wer für alle drei Schlüssel überspringt und C in der App erzeugt, ist gegen den Coldcard-Fehlertyp ungeschützt. Die App macht das an der Übersprungstelle sichtbar und blockiert nicht. |
-| ~~**O15**~~ | ~~Default-Grenze der `SpendPolicy`~~ | — | — | ✅ **Entschieden: `clamp(20 % des Guthabens, 200 €, 500 €)` je 24 h** (Quote + Sockel aus O17 + Deckel), keine Transaktionsgrenze. Die frühere Fassung war `min(20 %, 500 €)` ohne Sockel; O17 ergänzte den 200-€-Sockel. Umgesetzt in 3.6.3 und 3.6.5. Die Zahlen bleiben im Nutzertest zu überprüfen (5.5, Punkt 15) — sie sind die Parameter des Entwurfs, die Sicherheit und Bedienbarkeit direkt gegeneinander stellen. |
-| ~~**O17**~~ | ~~Sockelbetrag für kleine Guthaben~~ | — | — | ✅ **Entschieden: 200 €.** Zusammen mit Quote und Deckel ergibt sich `clamp(20 %, 200 €, 500 €)`. Umgesetzt in 3.6.3; im Nutzertest (5.5, Punkt 15) mit zu überprüfen, weil der Sockel die einzige bewusste Lockerung des Entwurfs ist. |
-| ~~**O16**~~ | ~~Absoluter Deckel zusätzlich zur Quote?~~ | — | — | ✅ **Entschieden: ja, 500 € als Default.** Der Kurs setzt die Grenze einmalig, durchgesetzt wird ausschließlich ein gespeicherter Sat-Wert — Herleitung und Manipulationsschutz in 3.6.6. Gefragt wird beim ersten Greifen der Grenze, nicht im Onboarding. |
-| **O13** | Umfang der Zusatzentropie-Quellen in v1 | (a) nur Würfel · (b) Würfel + Münzen + Karten · (c) zusätzlich Klasse-B-Sensorquellen | Jede Quelle ist eigener Code, eigene kanonische Kodierung und eigene Testvektoren. Klasse B bringt keine anrechenbaren Bit und verleitet zu falscher Sicherheit (2.2.1). | **(b).** Würfel, Münzen und Karten sind alle drei zählbar, teilen dieselbe ASCII-Kodierungslogik und decken die realistischen Fälle ab („ich habe keine Würfel, aber ein Kartendeck"). Klasse B **nicht in v1** — der Nutzen ist null anrechenbare Bit, das Risiko ist ein Fortschrittsbalken, der lügt. |
-| **O14** | BLE-Transport: Reihenfolge BitBox02 Nova vs. Ledger | (a) BitBox zuerst · (b) Ledger zuerst · (c) parallel | `bitbox-api 0.13.0` ist aktuell gepflegt; für Ledger existiert **kein** Rust-Crate auf App-Ebene, BIP-388-Registrierung und Signatur wären selbstgeschriebene APDU-Sequenzen ohne gepflegte Referenz (2.7.6). | **(a) BitBox02 Nova zuerst.** Erst klären, ob `bitbox-api` den Whisper-BLE-Transport abdeckt (Anhang B, Punkt 8). Ledger danach, mit eigenem Review-Budget für den APDU-Code. |
-| **O3** | Default-Chain-Backend | (a) CBF (Kyoto) · (b) Nutzer muss wählen, kein Default · (c) Electrum mit eingetragenem Server | (a) bester Kompromiss aus Privacy und Bequemlichkeit, aber der Privacy-Anspruch ist noch unbelegt (0.3, Lücke 3). (b) höchste Ehrlichkeit, höchste Abbruchrate. | **(a) CBF als Default**, mit ehrlichem Label („privater als ein fremder Server, nicht anonym") — **aber erst, nachdem Lücke 3 geschlossen ist.** Bis dahin (b). |
-| **O4** | Argon2id-Profilwahl | (a) automatisch nach RAM · (b) Nutzer wählt · (c) fest `LOW` für alle | (a) beste Sicherheit auf gutem Gerät, aber unterschiedliche Niveaus zwischen Nutzern. (c) einheitlich, verschenkt aber Sicherheit auf modernen Geräten. | **(a) automatisch**, Profil sichtbar in den Einstellungen, `kdf_profile` im Policy-Record. Ein Profilwechsel ist seit der Korrektur in 2.4 **keine** Blob-Migration mehr, sondern nur eine Neuberechnung des Verifiers bei der nächsten Passphrase-Eingabe — deutlich billiger als vorher. |
-| ~~**O5**~~ | ~~KEK-Kombinierer für B~~ | — | — | ⛔ **Hinfällig durch E7.** Die Passphrase geht nicht mehr in KEK_B ein; es gibt nichts zu kombinieren. Korrektur und ihr Preis in 2.4. |
-| **O6** | Crash-Reporting | (a) keins · (b) nur Metadaten, kein Speicherinhalt, opt-in · (c) Standard-SDK | (c) ist ausgeschlossen — Speicherzugriff über dem Rust-Kern widerspricht Anforderung 1 direkt. (a) macht Fehlerdiagnose in Produktion praktisch unmöglich. | **(b), opt-in, ohne Fremd-SDK.** Eigenbau, nur Crash-Typ, Stack-Symbol und Build-Hash; niemals Speicherinhalte, niemals Registerdumps. `panic = "abort"` bleibt. |
-| **O7** | Konsensvalidierung vor Broadcast | (a) `bitcoinconsensus`-Dependency · (b) nur Skript-Prüfung in Rust · (c) keine | (a) eine Dependency mehr im kritischen Pfad, aber libbitcoinconsensus ist Core-Code und schließt eine ganze Fehlerklasse (fehlerhafte Finalisierung) aus. | **(a).** Der Zugewinn — eine finalisierte, aber ungültige Transaktion wird nie gesendet — überwiegt die eine zusätzliche, sehr gut geprüfte Dependency. |
-| **O8** | Receive-/Change-Descriptor: getrennt oder Multipath (BIP-389) | (a) zwei getrennte Descriptoren · (b) ein Multipath-Descriptor (`bdk_wallet` ≥ 2.1.0 unterstützt es) | (b) ist kompakter und ein Backup-Eintrag weniger. (a) hat die deutlich breitere Interop-Unterstützung — und Interop ist hier die eigentliche Versicherung (S5/S6). | **(a).** Zwei Zeilen mehr auf dem Ausdruck sind billiger als ein Descriptor, den Sparrow oder Core in fünf Jahren nicht mehr importieren. |
-| ~~**O9**~~ | ~~Wortlänge der Mnemonics~~ | — | — | ✅ **Entschieden (E3b): pro Wallet wählbar** bei der Erstellung, Default 24, danach unveränderlich. Umgesetzt in 2.2.3; `word_count` liegt im Blob-Header und in `descriptor.json`. |
-| **O10** | Gap-Limit | (a) 20 (Standard) · (b) 100 · (c) konfigurierbar | Ein höheres Limit erlaubt mehr unbenutzte Adressen, kostet aber Scan-Zeit und bricht Recovery in Fremdsoftware, die bei 20 stehenbleibt. | **(a) 20**, mit Warnung bei Annäherung. Kompatibilität mit Sparrow und Core schlägt Flexibilität. |
-| **O11** | Zeitpunkt des externen Security-Audits | (a) vor v1.0 · (b) nach v1.0 mit begrenztem Beta-Kreis · (c) keins | Ein Audit vor v1.0 verzögert; eines danach setzt echtes Geld einem ungeprüften Signaturpfad aus. | **(a) vor v1.0**, Scope: `trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi` und beide Plattform-Keystore-Implementierungen. Kritische und hohe Findings sind Release-Blocker (5.5, Punkt 13). |
-| **O12** | Umgang mit den ⟨API-VERIFY⟩-Stellen | (a) Spike-Woche vor Implementierungsbeginn · (b) im Verlauf klären | Die betroffenen Stellen (BDK-3.1-Signaturen, uniffi-`RustBuffer`-Nullung, Kyoto-Peer-Verhalten) berühren Architekturentscheidungen, nicht nur Details. | **(a) Spike-Woche.** Ergebnis ist ein Update dieses Dokuments, das alle ⟨API-VERIFY⟩-Marken auflöst, bevor Produktionscode entsteht. |
+| ~~**O1**~~ | ~~Where is C generated?~~ | — | — | ✅ **Decided (E6):** user chooses at creation; hardware signer is highlighted default, in-app remains possible. Implemented in 2.2.5 and 2.7. |
+| ~~**O2**~~ | ~~Additional entropy mandatory?~~ | — | — | ✅ **Decided (E3): optional throughout**, also for C — diverging from my recommendation. Consequence is documented in T10 and 4.2 point 8: whoever skips for all three keys and generates C in the app is unprotected against the Coldcard failure type. The app makes that visible at the skip point and does not block. |
+| ~~**O15**~~ | ~~Default limit of the `SpendPolicy`~~ | — | — | ✅ **Decided: `clamp(20 % of balance, €200, €500)` per 24 h** (share + floor from O17 + cap), no transaction limit. The earlier version was `min(20 %, €500)` without floor; O17 added the €200 floor. Implemented in 3.6.3 and 3.6.5. The numbers remain to be checked in the user test (5.5, criterion 15) — they are the design parameters that place security and usability directly against each other. |
+| ~~**O17**~~ | ~~Floor amount for small balances~~ | — | — | ✅ **Decided: €200.** Together with share and cap yields `clamp(20 %, €200, €500)`. Implemented in 3.6.3; to re-check in the user test (5.5, criterion 15), because the floor is the only deliberate relaxation of the design. |
+| ~~**O16**~~ | ~~Absolute cap in addition to the share?~~ | — | — | ✅ **Decided: yes, €500 as default.** The rate sets the limit once; enforcement is exclusively a stored sat value — derivation and manipulation protection in 3.6.6. Asked when the limit first applies, not in onboarding. |
+| **O13** | Scope of additional-entropy sources in v1 | (a) dice only · (b) dice + coins + cards · (c) additionally class-B sensor sources | Every source is own code, own canonical encoding, and own test vectors. Class B brings no credit bits and tempts to false security (2.2.1). | **(b).** Dice, coins, and cards are all three countable, share the same ASCII encoding logic, and cover the realistic cases ("I have no dice, but a card deck"). Class B **not in v1** — the benefit is zero credit bits, the risk is a progress bar that lies. |
+| **O14** | BLE transport: order BitBox02 Nova vs. Ledger | (a) BitBox first · (b) Ledger first · (c) parallel | `bitbox-api 0.13.0` is currently maintained; for Ledger there exists **no** Rust crate at app level, BIP-388 registration and signing would be self-written APDU sequences without a maintained reference (2.7.6). | **(a) BitBox02 Nova first.** First clarify whether `bitbox-api` covers the Whisper BLE transport (Appendix B, point 8). Ledger after, with its own review budget for the APDU code. |
+| **O3** | Default chain backend | (a) CBF (Kyoto) · (b) user must choose, no default · (c) Electrum with entered server | (a) best compromise of privacy and convenience, but the privacy claim is still unproven (0.3, gap 3). (b) highest honesty, highest abandonment rate. | **(a) CBF as default**, with honest label ("more private than a third-party server, not anonymous") — **but only after gap 3 is closed.** Until then (b). |
+| **O4** | Argon2id profile choice | (a) automatic by RAM · (b) user chooses · (c) fixed `LOW` for all | (a) best security on good device, but different levels between users. (c) uniform, but wastes security on modern devices. | **(a) automatic**, profile visible in settings, `kdf_profile` in the policy record. A profile change is since the correction in 2.4 **no longer** a blob migration, but only a recomputation of the verifier on the next passphrase entry — clearly cheaper than before. |
+| ~~**O5**~~ | ~~KEK combiner for B~~ | — | — | ⛔ **Moot through E7.** The passphrase no longer enters KEK_B; there is nothing to combine. Correction and its price in 2.4. |
+| **O6** | Crash reporting | (a) none · (b) only metadata, no memory content, opt-in · (c) standard SDK | (c) is excluded — memory access over the Rust core contradicts requirement 1 directly. (a) makes production error diagnosis practically impossible. | **(b), opt-in, without third-party SDK.** Custom-built, only crash type, stack symbol, and build hash; never memory contents, never register dumps. `panic = "abort"` remains. |
+| **O7** | Consensus validation before broadcast | (a) `bitcoinconsensus` dependency · (b) only script check in Rust · (c) none | (a) one more dependency in the critical path, but libbitcoinconsensus is Core code and excludes a whole error class (faulty finalization). | **(a).** The gain — a finalized but invalid transaction is never sent — outweighs the one additional, very well reviewed dependency. |
+| **O8** | Receive/change descriptor: separate or multipath (BIP-389) | (a) two separate descriptors · (b) one multipath descriptor (`bdk_wallet` ≥ 2.1.0 supports it) | (b) is more compact and one fewer backup entry. (a) has clearly broader interop support — and interop is here the real insurance (S5/S6). | **(a).** Two more lines on the printout are cheaper than a descriptor that Sparrow or Core will not import in five years. |
+| ~~**O9**~~ | ~~Word length of the mnemonics~~ | — | — | ✅ **Decided (E3b): choosable per wallet** at creation, default 24, thereafter immutable. Implemented in 2.2.3; `word_count` sits in the blob header and in `descriptor.json`. |
+| **O10** | Gap limit | (a) 20 (standard) · (b) 100 · (c) configurable | A higher limit allows more unused addresses but costs scan time and breaks recovery in foreign software that stops at 20. | **(a) 20**, with warning on approach. Compatibility with Sparrow and Core beats flexibility. |
+| **O11** | Timing of the external security audit | (a) before v1.0 · (b) after v1.0 with limited beta circle · (c) none | An audit before v1.0 delays; one after exposes real money to an unaudited signature path. | **(a) before v1.0**, scope: `trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi`, and both platform keystore implementations. Critical and high findings are release blockers (5.5, criterion 13). |
+| **O12** | Handling of the ⟨API-VERIFY⟩ places | (a) spike week before implementation start · (b) clarify along the way | The affected places (BDK-3.1 signatures, uniffi `RustBuffer` zeroing, Kyoto peer behavior) touch architecture decisions, not only details. | **(a) spike week.** Result is an update of this document that resolves all ⟨API-VERIFY⟩ marks before production code arises. |
 
 ---
 
-## Anhang A — Quellen
+## Appendix A — Sources
 
-**Versionsstände** (direkt gegen die crates.io-API abgefragt, 2026-08-08):
-`bdk_wallet` 3.1.0 · `bdk_chain` 0.23.3 · `bdk_core` 0.6.3 · `bdk_electrum` 0.24.0 · `bdk_esplora` 0.22.2 · `bdk_bitcoind_rpc` 0.22.0 · `bdk_kyoto` 0.17.0 · `bip157` 0.6.3 · `bitcoin` 0.32.11 · `miniscript` 12.3.7 / 13.1.0 · `secp256k1` 0.29.1 (transitiv) · `bip39` 2.2.2 · `zeroize` 1.9.0 · `argon2` 0.5.3 · `getrandom` 0.4.3 · `uniffi` 0.32.0 · `electrum-client` 0.25.0 · `bitcoincore-rpc` 0.19.0
+**Version states** (queried directly against the crates.io API, 2026-08-08):
+`bdk_wallet` 3.1.0 · `bdk_chain` 0.23.3 · `bdk_core` 0.6.3 · `bdk_electrum` 0.24.0 · `bdk_esplora` 0.22.2 · `bdk_bitcoind_rpc` 0.22.0 · `bdk_kyoto` 0.17.0 · `bip157` 0.6.3 · `bitcoin` 0.32.11 · `miniscript` 12.3.7 / 13.1.0 · `secp256k1` 0.29.1 (transitive) · `bip39` 2.2.2 · `zeroize` 1.9.0 · `argon2` 0.5.3 · `getrandom` 0.4.3 · `uniffi` 0.32.0 · `electrum-client` 0.25.0 · `bitcoincore-rpc` 0.19.0
 
 **Standards:**
 [BIP-32](https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki) · [BIP-39](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki) · [BIP-48](https://github.com/bitcoin/bips/blob/master/bip-0048.mediawiki) · [BIP-67](https://github.com/bitcoin/bips/blob/master/bip-0067.mediawiki) · [BIP-125](https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki) · [BIP-129 BSMS](https://bips.dev/129/) · [BIP-157/158](https://bitcoinops.org/en/topics/compact-block-filters/) · [BIP-174 PSBT](https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki) · [BIP-380 Descriptors](https://github.com/bitcoin/bips/blob/master/bip-0380.mediawiki) · [RFC 6979](https://datatracker.ietf.org/doc/html/rfc6979) · [RFC 5869 HKDF](https://datatracker.ietf.org/doc/html/rfc5869) · [RFC 9106 Argon2](https://datatracker.ietf.org/doc/html/rfc9106)
 
-**Bibliotheken und Projekte:**
+**Libraries and projects:**
 [Bitcoin Dev Kit](https://bitcoindevkit.org/) · [BDK Q1-2026-Update](https://bitcoindevkit.org/blog/2026_q1_update/) · [bdk_wallet Releases](https://github.com/bitcoindevkit/bdk_wallet/releases) · [Book of BDK — Bindings](https://bookofbdk.com/design/bindings/) · [Kyoto (BIP-157/158)](https://github.com/rustaceanrob/kyoto) · [BDK Compact-Filters-Demo](https://bitcoindevkit.org/blog/compact-filters-demo/) · [UniFFI User Guide](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html)
 
-**Plattform:**
+**Platform:**
 [kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly](https://developer.apple.com/documentation/security/ksecattraccessiblewhenpasscodesetthisdeviceonly) · [Android Keystore System](https://developer.android.com/privacy-and-security/keystore) · [AOSP Keystore Features](https://source.android.com/docs/security/features/keystore/features)
 
 **Bitcoin Core:**
-[Wallet-Migrations-Bug in 30.0/30.1 (2026-01-05)](https://bitcoincore.org/en/2026/01/05/wallet-migration-bug/) · [Release-Notes 30.2](https://github.com/bitcoin/bitcoin/blob/master/doc/release-notes/release-notes-30.2.md) · [listdescriptors 30.0 RPC](https://bitcoincore.org/en/doc/30.0.0/rpc/wallet/listdescriptors/) · [descriptors.md](https://github.com/bitcoin/bitcoin/blob/master/doc/descriptors.md)
+[Wallet-migration bug in 30.0/30.1 (2026-01-05)](https://bitcoincore.org/en/2026/01/05/wallet-migration-bug/) · [Release notes 30.2](https://github.com/bitcoin/bitcoin/blob/master/doc/release-notes/release-notes-30.2.md) · [listdescriptors 30.0 RPC](https://bitcoincore.org/en/doc/30.0.0/rpc/wallet/listdescriptors/) · [descriptors.md](https://github.com/bitcoin/bitcoin/blob/master/doc/descriptors.md)
 
-**Coldcard-Entropie-Vorfall 2026** ⚠️ *nur Sekundärquellen — Primäradvisory war aus der Recherche-Umgebung nicht abrufbar:*
-[Coinkite Advisory (Primärquelle, nicht gelesen)](https://blog.coinkite.com/coldcard-mk3-seed-generation-warning/) · [Coinkite Technical Backgrounder (Primärquelle, nicht gelesen)](https://blog.coinkite.com/entropy-technical-backgrounder/) · [Bitcoin Magazine](https://bitcoinmagazine.com/business/coinkite-releases-fixed-firmware-after-coldcard-bug-ai-likely-involved-in-the-hack) · [Casa](https://blog.casa.io/coldcard-vulnerability/) · [crypto.news](https://crypto.news/coldcard-firmware-bug-drains-38-million-bitcoin/)
+**Coldcard entropy incident 2026** ⚠️ *secondary sources only — primary advisory was not reachable from the research environment:*
+[Coinkite Advisory (primary source, not read)](https://blog.coinkite.com/coldcard-mk3-seed-generation-warning/) · [Coinkite Technical Backgrounder (primary source, not read)](https://blog.coinkite.com/entropy-technical-backgrounder/) · [Bitcoin Magazine](https://bitcoinmagazine.com/business/coinkite-releases-fixed-firmware-after-coldcard-bug-ai-likely-involved-in-the-hack) · [Casa](https://blog.casa.io/coldcard-vulnerability/) · [crypto.news](https://crypto.news/coldcard-firmware-bug-drains-38-million-bitcoin/)
 
-**Address Poisoning:**
+**Address poisoning:**
 [Chainalysis](https://www.chainalysis.com/blog/address-poisoning-scam/) · [Blockaid](https://www.blockaid.io/blog/address-poisoning-the-growing-threat-draining-millions-from-crypto-users)
 
-**Wallet-Interoperabilität:**
-[Sparrow Features](https://sparrowwallet.com/features/) · [Sparrow v1.7.3 (BSMS)](https://www.nobsbitcoin.com/sparrow-wallet-v1-7-3/) · [Coldcard BSMS-Doku](https://coldcard.com/docs/bsms/)
+**Wallet interoperability:**
+[Sparrow Features](https://sparrowwallet.com/features/) · [Sparrow v1.7.3 (BSMS)](https://www.nobsbitcoin.com/sparrow-wallet-v1-7-3/) · [Coldcard BSMS docs](https://coldcard.com/docs/bsms/)
 
-**Hardware-Signer-Anbindung:**
-[BIP-388 Wallet Policies](https://bips.dev/388/) · [BIP-388 PR #1389](https://github.com/bitcoin/bips/pull/1389) · [Bitcoin Core PR #33008 — BIP-388 mit External Signer](https://github.com/bitcoin/bitcoin/pull/33008) · [BBQr-Spezifikation](https://bbqr.org/) · [BBQr auf GitHub](https://github.com/coinkite/BBQr) · [Blockchain Commons — Animated QRs / UR](https://developer.blockchaincommons.com/animated-qrs/) · [Coldcard Air-Gap-Signing](https://coldcard.com/learn/advanced-concepts/air-gap-signing-methods) · [Whisper — BitBox02 Nova BLE](https://blog.bitbox.swiss/en/whisper-how-the-secure-bluetooth-integration-of-the-bitbox02-nova-works/) · [BitBox Support: Nova auf iOS](https://support.bitbox.swiss/en_US/use-bitboxapp-ios-bitbox02-nova) · [Apple Developer Forums: USB-C ohne MFi](https://developer.apple.com/forums/thread/756763) · [Apple Developer Forums: Custom HID über USB](https://developer.apple.com/forums/thread/756692) · [Apple MFi-Programm FAQ](https://mfi.apple.com/en/faqs.html)
+**Hardware-signer integration:**
+[BIP-388 Wallet Policies](https://bips.dev/388/) · [BIP-388 PR #1389](https://github.com/bitcoin/bips/pull/1389) · [Bitcoin Core PR #33008 — BIP-388 with External Signer](https://github.com/bitcoin/bitcoin/pull/33008) · [BBQr specification](https://bbqr.org/) · [BBQr on GitHub](https://github.com/coinkite/BBQr) · [Blockchain Commons — Animated QRs / UR](https://developer.blockchaincommons.com/animated-qrs/) · [Coldcard Air-Gap Signing](https://coldcard.com/learn/advanced-concepts/air-gap-signing-methods) · [Whisper — BitBox02 Nova BLE](https://blog.bitbox.swiss/en/whisper-how-the-secure-bluetooth-integration-of-the-bitbox02-nova-works/) · [BitBox Support: Nova on iOS](https://support.bitbox.swiss/en_US/use-bitboxapp-ios-bitbox02-nova) · [Apple Developer Forums: USB-C without MFi](https://developer.apple.com/forums/thread/756763) · [Apple Developer Forums: Custom HID over USB](https://developer.apple.com/forums/thread/756692) · [Apple MFi Program FAQ](https://mfi.apple.com/en/faqs.html)
 
 **Passphrase:**
-[OWASP Password Storage Cheat Sheet](https://github.com/OWASP/CheatSheetSeries) · EFF Long Wordlist (7776 Wörter)
+[OWASP Password Storage Cheat Sheet](https://github.com/OWASP/CheatSheetSeries) · EFF Long Wordlist (7776 words)
 
 ---
 
-## Anhang B — Offene ⟨API-VERIFY⟩-Punkte
+## Appendix B — Open ⟨API-VERIFY⟩ items
 
-Vor Implementierungsbeginn in der Spike-Woche (O12) zu klären. Bewusst **nicht** geraten.
+To clarify before implementation start in the spike week (O12). Deliberately **not** guessed.
 
-| # | Offen | Betrifft | Warum es Architektur berührt |
+| # | Open | Affects | Why it touches architecture |
 |---|---|---|---|
-| 1 | Exakte Signaturen von `bdk_wallet::Wallet` und `TxBuilder` in 3.1.0: Coin-Selection-Enum, `finish()`, `sign_with_signers`, `reveal_next_address`, Persistenz-API | 1.3, 3.2 | Bestimmt die FFI-Fassade und die Allowlist |
-| 2 | Bietet `uniffi 0.32.0` einen Hook zur Nullung des `RustBuffer` beim `Vec<u8>`-Transfer, oder ist manuelles `destroy` nötig? | 1.3 | Entscheidet, ob die Passphrase eine nicht-nullbare Zwischenkopie hat |
-| 3 | Lädt `bip157 0.6.3` Match-Blöcke von einem anderen Peer als den Filter-Peer? | 1.6, O3 | Entscheidet, ob CBF als Default beworben werden darf |
-| 4 | Überleben Keychain-Items mit `…ThisDeviceOnly` eine App-Deinstallation unter iOS 17/18/19? | 2.6 | Bestimmt, ob ein zusätzlicher Löschpfad nötig ist |
-| 5 | Sind für `secp256k1 0.29.1` (2024-09-06) Advisories offen? | 0.3 | `cargo-audit` in der Spike-Woche |
-| 6 | Coldcard-Advisory-Details gegen die Primärquelle | 0.3, 2.1 | Bevor Versionsnummern in nutzersichtbaren Texten erscheinen |
-| 7 | Verhalten von `bdk_wallet` bei `sortedmulti` mit permutierter Descriptor-Reihenfolge — identische Adressen garantiert? | D6 | Sollte gelten, ist aber zu belegen statt anzunehmen |
-| 8 | Deckt `bitbox-api 0.13.0` den **Whisper-BLE-Transport** ab oder nur USB? | 2.7.6, O14 | Falls nur USB: BLE-Protokoll selbst nachbauen — und ohne BLE gibt es **keine** BitBox-Unterstützung auf iOS |
-| 9 | Existiert eine gepflegte Rust- oder Swift/Kotlin-Referenz für die **Ledger-Bitcoin-App auf App-Ebene** (BIP-388-Registrierung, PSBT-Signatur), oder sind die APDU-Sequenzen selbst zu schreiben? | 2.7.6, O14 | Bestimmt Aufwand und Review-Budget des teuersten Postens der Transportliste |
-| 10 | Genügt Apples **CoreNFC** für die ISO-7816-Kommunikation mit Coldcard Mk4/Q und Tapsigner, und welches Entitlement ist nötig? | 2.7.4 | Entscheidet, ob NFC wirklich in v1 passt oder ob v1 rein QR wird |
-| 11 | Verhalten der Hardware-Signer bei **12-Wort-Setups** in einer BIP-388-Policy — akzeptieren alle Geräte gemischte und kurze Seeds ohne Sonderfall? | 2.2.3, D18 | Wortlänge ist jetzt pro Schlüssel wählbar; eine nur mit 24 getestete Gerätekette wäre eine Lücke |
-| 12 | **Melden Coldcard Q/Mk4 ihre Firmware-Version** über QR bzw. NFC in einer Form, die vor dem xpub-Import auswertbar ist? | 2.7.9 | Ohne auswertbare Versionsmeldung ist das Freigabe-Gate nicht automatisierbar und fällt auf `Manual` zurück |
-| 13 | **Whisper-Kryptografie im Detail:** welcher Schlüsselaustausch, welches AEAD, wie ist der Pairing-Code an den Kanal gebunden? | 0.3, 2.7.4 | Bestimmt, ob wir dem BLE-Kanal für BitBox in v1.1 ohne eigene Zusatzschicht vertrauen |
-| 14 | Kann die App bei **Slot B auf Fremd-Hardware** die Firmware-Version ebenfalls auslesen, oder bleibt es bei der Nutzerabfrage? | 2.7.9 | Bestimmt, ob der Hardware-B-Wechsel geprüft oder nur protokolliert werden kann |
+| 1 | Exact signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0: coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API | 1.3, 3.2 | Determines the FFI facade and the allowlist |
+| 2 | Does `uniffi 0.32.0` offer a hook to zero the `RustBuffer` on `Vec<u8>` transfer, or is manual `destroy` needed? | 1.3 | Decides whether the passphrase has a non-zeroable intermediate copy |
+| 3 | Does `bip157 0.6.3` load match blocks from a different peer than the filter peer? | 1.6, O3 | Decides whether CBF may be advertised as default |
+| 4 | Do Keychain items with `…ThisDeviceOnly` survive an app uninstall under iOS 17/18/19? | 2.6 | Determines whether an additional wipe path is needed |
+| 5 | Are advisories open for `secp256k1 0.29.1` (2024-09-06)? | 0.3 | `cargo-audit` in the spike week |
+| 6 | Coldcard advisory details against the primary source | 0.3, 2.1 | Before version numbers appear in user-visible texts |
+| 7 | Behavior of `bdk_wallet` with `sortedmulti` under permuted descriptor order — identical addresses guaranteed? | D6 | Should hold, but must be evidenced rather than assumed |
+| 8 | Does `bitbox-api 0.13.0` cover the **Whisper BLE transport** or only USB? | 2.7.6, O14 | If only USB: reimplement BLE protocol — and without BLE there is **no** BitBox support on iOS |
+| 9 | Does a maintained Rust or Swift/Kotlin reference exist for the **Ledger Bitcoin app at app level** (BIP-388 registration, PSBT signing), or must the APDU sequences be written ourselves? | 2.7.6, O14 | Determines effort and review budget of the most expensive item on the transport list |
+| 10 | Does Apple's **CoreNFC** suffice for ISO-7816 communication with Coldcard Mk4/Q and Tapsigner, and which entitlement is needed? | 2.7.4 | Decides whether NFC really fits in v1 or whether v1 becomes pure QR |
+| 11 | Behavior of hardware signers with **12-word setups** in a BIP-388 policy — do all devices accept mixed and short seeds without special case? | 2.2.3, D18 | Word length is now choosable per key; a device chain only tested with 24 would be a gap |
+| 12 | **Do Coldcard Q/Mk4 report their firmware version** over QR or NFC in a form evaluable before xpub import? | 2.7.9 | Without evaluable version report the release gate is not automatable and falls back to `Manual` |
+| 13 | **Whisper cryptography in detail:** which key exchange, which AEAD, how is the pairing code bound to the channel? | 0.3, 2.7.4 | Determines whether we trust the BLE channel for BitBox in v1.1 without our own extra layer |
+| 14 | Can the app also read the firmware version for **slot B on foreign hardware**, or does it stay at the user query? | 2.7.9 | Determines whether the hardware-B switch can be checked or only logged |
 
 ---
 
-*Ende der Spezifikation. Alle Sicherheitsaussagen sind mit Angriffskette und Bruchstelle belegt; wo die Kette nicht bricht, ist das ausdrücklich vermerkt. Alle Lücken der Recherche sind in 0.3 und Anhang B benannt statt gefüllt.*
+*End of the specification. All security claims are evidenced with attack chain and break point; where the chain does not break, that is expressly noted. All research gaps are named in 0.3 and Appendix B rather than filled.*
