@@ -821,7 +821,7 @@ Harness for Signet/Regtest scenarios. Creates the Cargo feature `signet` and
 ### M6 — App and UX
 
 #### WP-60 · RN scaffold
-**Spec:** 1.7, 6.1 · **Needs:** WP-43, WP-06 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 1.7, 6.1 · **Needs:** WP-43, WP-06 · **State:** OPEN
 
 Scope depends on **WP-06**: after the base decision either empty Expo/RN scaffold
 (null variant) or adopt/hollow out a chosen shell — see
@@ -841,7 +841,7 @@ adopting wallet halves that hold seed/xpriv as a JS string (§1.3).
 ---
 
 #### WP-61 · Onboarding
-**Spec:** 6.1 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 6.1 · **Needs:** WP-60 · **State:** OPEN
 
 Scope (which screens new vs. from a template) depends on **WP-06** via WP-60.
 
@@ -858,7 +858,7 @@ Scope (which screens new vs. from a template) depends on **WP-06** via WP-60.
 ---
 
 #### WP-62 · Native confirmation dialog
-**Spec:** 6.2 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 6.2 · **Needs:** WP-60 · **State:** OPEN
 
 Scope of app wiring depends on **WP-06** via WP-60.
 
@@ -874,7 +874,7 @@ Scope of app wiring depends on **WP-06** via WP-60.
 ---
 
 #### WP-63 · Passphrase entry
-**Spec:** 6.2.1 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 6.2.1 · **Needs:** WP-60 · **State:** OPEN
 
 Scope of app wiring depends on **WP-06** via WP-60.
 
@@ -890,7 +890,7 @@ Scope of app wiring depends on **WP-06** via WP-60.
 ---
 
 #### WP-64 · Receive
-**Spec:** 6.3 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 6.3 · **Needs:** WP-60 · **State:** OPEN
 
 Scope depends on **WP-06** via WP-60.
 
@@ -905,7 +905,7 @@ Scope depends on **WP-06** via WP-60.
 ---
 
 #### WP-65 · Recovery flow
-**Spec:** 6.4 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 6.4 · **Needs:** WP-60 · **State:** OPEN
 
 Scope depends on **WP-06** via WP-60.
 
@@ -921,7 +921,7 @@ Scope depends on **WP-06** via WP-60.
 ---
 
 #### WP-66 · Key rotation
-**Spec:** 6.5 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 6.5 · **Needs:** WP-60 · **State:** OPEN
 
 Scope depends on **WP-06** via WP-60.
 
@@ -936,7 +936,7 @@ Scope depends on **WP-06** via WP-60.
 ---
 
 #### WP-67 · Address-poisoning protection
-**Spec:** 4.1 (T8), 6.3 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 4.1 (T8), 6.3 · **Needs:** WP-60 · **State:** OPEN
 
 Scope of the UI depends on **WP-06** via WP-60.
 
@@ -951,7 +951,7 @@ Scope of the UI depends on **WP-06** via WP-60.
 ---
 
 #### WP-68 · Settings
-**Spec:** 1.6, 3.6.5 · **Needs:** WP-60 · **State:** OPEN
+**Spec:** UX_CONCEPT.md · 1.6, 3.6.5 · **Needs:** WP-60 · **State:** OPEN
 
 Scope depends on **WP-06** via WP-60.
 
