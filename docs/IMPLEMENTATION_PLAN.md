@@ -243,7 +243,7 @@ production code.
 - Each of the 14 points has a result in the Spec or a justified deferral
 - All ⟨API-VERIFY⟩ marks are resolved or explicitly extended
 - Especially: B.2 (uniffi buffer zeroing), B.3 (Kyoto peer behaviour), B.9 (Ledger APDU reference), B.13 (Whisper crypto) — they touch architecture
-- Coldcard version claims verified against the **primary source** (B.6) — until then WP-54 must not start
+- Coldcard version claims verified against the **primary source** (B.6) — ✅ done 2026-08-10; WP-54 is no longer blocked on that
 
 **Tests:** —
 
@@ -802,7 +802,7 @@ Harness for Signet/Regtest scenarios. Creates the Cargo feature `signet` and
 ---
 
 #### WP-54 · Device allowlisting
-**Spec:** 2.7.9 · **Needs:** WP-50 · **State:** BLOCKED (Appendix B.6 — Coldcard primary source)
+**Spec:** 2.7.9 · **Needs:** WP-50 · **State:** OPEN
 
 **Files:** `crates/trinity-transport/**`, `crates/trinity-export/**`, device allowlist data
 **Prohibited:** Do not allowlist Mk2/Mk3 in any version; do not import existing device seeds for slot C.
@@ -812,7 +812,7 @@ Harness for Signet/Regtest scenarios. Creates the Cargo feature `signet` and
 - **S21** (firmware gate applies, Mk2/Mk3 remain blocked in every version)
 - **S22** (import of an existing device seed for slot C is rejected, **vendor-independent**)
 - **S17** (signature with hardware C in the recovery case)
-- **BLOCKED until Appendix B.6** — Coldcard version claims against the primary source
+- Version thresholds match Spec 2.7.9 / 0.3 (primary source resolved 2026-08-10; Appendix B.6 closed)
 
 **Tests:** D9, S17, S21, S22
 
@@ -1066,7 +1066,7 @@ Scope depends on **WP-06** via WP-60.
 | Blocker | Affects | Resolution |
 |---|---|---|
 | ⟨API-VERIFY⟩ open | WP-12, WP-13, WP-40 | WP-05 |
-| Appendix B.6 (Coldcard primary source) | **WP-54** | WP-05 |
+| ~~Appendix B.6 (Coldcard primary source)~~ | ~~**WP-54**~~ | ✅ Resolved 2026-08-10 — WP-54 OPEN |
 | Appendix B.3 (Kyoto peers) | CBF as default (O3) | WP-05 |
 | O13 (entropy sources) | WP-30 | Decision before WP-30 |
 | O6 (crash reporting) | WP-60 | Decision before WP-60 |
