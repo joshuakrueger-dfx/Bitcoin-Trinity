@@ -602,13 +602,15 @@ self-verification after every signature. Crate-internal `sign_a`/`sign_b`; later
 ---
 
 #### WP-34 · `SpendPolicy` and window counter
-**Spec:** 3.6.3, 3.6.5, 3.6.7 · **Needs:** WP-33 · **State:** OPEN
+**Spec:** 3.6.3, 3.6.5, 3.6.7, O18 · **Needs:** WP-33 · **State:** OPEN
 
 `clamp(20 % of balance, 200 €, 500 €)` per 24 h, sliding window, counter in
-encrypted core state. Accounting **exactly** per 3.6.7.
+encrypted core state. Accounting **exactly** per 3.6.7. Window time source per O18
+(open); fail-closed on wall-clock jump per 3.6.7 in every case.
 
 **Files:** `crates/trinity-signer/**` (SpendPolicy), optionally `crates/trinity-types/**`
-**Prohibited:** No policy enforcement in the JS layer; no rate fetch at signature time.
+**Prohibited:** No policy enforcement in the JS layer; no rate fetch at signature time;
+no wall-clock-only advancement of the spend window.
 
 **Acceptance**
 - **S28** (limit applies, no `unwrap_kek`, no biometry prompt)
@@ -616,10 +618,11 @@ encrypted core state. Accounting **exactly** per 3.6.7.
 - **S29h** (accounting: fee, change, self-transfer, RBF delta, dropped tx)
 - **S29i** (unconfirmed external payment does **not** raise the reference size)
 - **S29j** (sliding window across calendar boundary)
+- **S29k** (device-clock +24 h / backward / auto-sync off never resets the window; no `unwrap_kek`)
 - Counter survives restart and reboot; not resettable by deleting JS-readable files
 - Coverage 100 %, `cargo-mutants` without survivors
 
-**Tests:** S28, S29, S29b, S29f, S29h, S29i, S29j
+**Tests:** S28, S29, S29b, S29f, S29h, S29i, S29j, S29k
 
 ---
 
@@ -1122,6 +1125,7 @@ Scope depends on **WP-06** via WP-60.
 | Appendix B.3 (Kyoto peers) | CBF as default (O3) | WP-05 |
 | Appendix B.4 (Keychain after uninstall) | WP-41 wipe path | WP-05 |
 | O13 (entropy sources) | WP-30 | Decision before WP-30 |
+| O18 (window time source) | WP-34 | Decision before WP-34 implements the source; fail-closed rule in 3.6.7 is fixed either way |
 | O6 (crash reporting) | WP-60 | Decision before WP-60 |
 | Base decision open | M6 | WP-06 |
 | O14 (BLE order) | v1.1, not v1 | after WP-54 |
@@ -1150,11 +1154,11 @@ in §3. `scripts/check_plan.py` enforces:
 | **E4** | Argon2id profiles, profile ID in policy record | **WP-35** | D16 |
 | **E5** | B as swappable signer from day 1 | **WP-33** (trait), **WP-50** (transport), WP-51 | S8, S17 |
 | **E6** | Hardware signer optional for C, four transports, BIP-388 | **WP-50 … WP-54** | D18, D19, S16–S18, S21, S22 |
-| **E7** | One-gesture signature with spending limit in the Rust core | **WP-34** (limit), **WP-35** (passphrase), **WP-43** (one gesture) | S27, S28, S29–S29j, S30, S31, **S32**, S35, S36 |
+| **E7** | One-gesture signature with spending limit in the Rust core | **WP-34** (limit), **WP-35** (passphrase), **WP-43** (one gesture) | S27, S28, S29–S29k, S30, S31, **S32**, S35, S36 |
 
 ### 5.2 Every threat is touched
 
-22 threats (T1–T20, with T4a/T4b and T5a/T5b). The mapping is **not** maintained here,
+23 threats (T1–T21, with T4a/T4b and T5a/T5b). The mapping is **not** maintained here,
 but produced by `just check-plan` from SPECIFICATION.md §4.1 and §4.2: every threat must
 either name at least one test or be listed in §4.2 explicitly as "not covered".
 If both are missing, the check fails. Currently explicitly **not covered**: T4b, T5b,

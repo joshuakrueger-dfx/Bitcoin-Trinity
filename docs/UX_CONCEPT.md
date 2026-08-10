@@ -60,6 +60,11 @@ first time the limit actually stops something (§3.6.6). That is a teaching mome
 state: explain, ask for the passphrase, proceed — and only then offer to adjust the limit.
 Offering the adjustment as the way out of the dialog would make the limit self-defeating.
 
+When the window was **not** advanced because the device clock jumped (travel, daylight-saving,
+or a manual set — fail-closed per §3.6.7 / T21), the user sees a passphrase prompt they did not
+expect: one sentence must name that the phone's clock moved and the daily limit stayed put for
+safety — otherwise it reads as a bug.
+
 ### 1.5 Key A invalidated
 
 A new biometric enrolment destroys key A. That is the property that stops someone holding the
