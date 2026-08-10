@@ -81,7 +81,7 @@ this project no longer exists. The flows in it are the target test cases S5
 none of these tests exist yet — they are acceptance of WP-46 and WP-71.
 
 **→ [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)** — the work list.
-53 work packages in 8 milestones, each with dependencies, spec reference, acceptance criteria
+54 work packages in 8 milestones, each with dependencies, spec reference, acceptance criteria
 and the tests that must be green. Each package is cut so it can be worked
 without follow-up questions.
 
@@ -89,9 +89,13 @@ without follow-up questions.
 100 % lines and branches for the security cores, mutation testing as the real gate,
 exceptions only with justification in a checked-in file.
 
-All four documents are checked against each other by `just check-plan`: every test ID has
-exactly one work package, every decision has an implementing package, every section reference
-points to an existing section. If that runs red, the plan is incomplete.
+**→ [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md)** — execution handbook for taking a work package
+from `OPEN` to `DONE`: branch rules, test-first loop, counter-probes, waves, local gates.
+
+Specification, plan, testing, and recovery docs are checked against each other by
+`just check-plan`: every test ID has exactly one work package, every decision has an
+implementing package, every section reference points to an existing section. If that runs
+red, the plan is incomplete.
 
 Before implementation starts: resolve the 14 points in Appendix B of the specification — that is
 WP-05 and blocks milestones M1 through M5.

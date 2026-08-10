@@ -7,7 +7,8 @@ specification reference, acceptance criteria, and the tests that must pass.
 **Reference documents:**
 [`SPECIFICATION.md`](SPECIFICATION.md) — the what and why ·
 [`TESTING.md`](TESTING.md) — test environment, coverage policy, CI ·
-[`RECOVERY.md`](RECOVERY.md) — user document, test cases S5/S6
+[`RECOVERY.md`](RECOVERY.md) — user document, test cases S5/S6 ·
+[`BUILD_PLAN.md`](BUILD_PLAN.md) — how an executing agent takes a WP from OPEN to DONE
 
 ---
 
@@ -42,12 +43,14 @@ specification reference, acceptance criteria, and the tests that must pass.
 | WP-02 | IN PROGRESS | `test-env.sh` (syntax checked, Core version lock implemented) and `docker/compose.yml` (valid; images still by tag) | **Never started.** Image-**digests missing**. No `bitcoind`, no `electrs` pulled. |
 | WP-03 | IN PROGRESS | `coverage_gate.py`, `check_plan.py`, `dep_budget.py` fail-closed: missing branch data and missing crate entries are findings; test assignment from WP blocks; number checks. | `cargo-llvm-cov`/`cargo-mutants` — real coverage/mutation run pending; branch coverage feasibility of the pinned toolchain documented in TESTING.md §3.1. |
 | WP-04 | **OPEN** | — | `vendor/`, `.cargo/config.toml`, build without network in container, reproducible-build proof via two runners. |
+| WP-07 | **OPEN** | — | Workflow runs end after **0 s** with `conclusion=failure` and **zero jobs** on every branch measured so far; YAML is valid; root cause is outside the repo (account Actions minutes or spending limit suspected). |
 
 **So: no, M0 is not done.** What is done is WP-00. The three packages in progress all hang
-on tools and containers missing in this environment — not on unwritten code.
+on tools and containers missing in this environment — not on unwritten code. CI has never
+executed a job on a runner (WP-07).
 
-**Next step: WP-05.** It is the only package that advances content now, and it
-unlocks M1 through M5.
+**Next step: WP-05** (content unlock for M1–M5), **WP-07** (make gates measurable), and
+**WP-04** (vendoring) — see [`BUILD_PLAN.md`](BUILD_PLAN.md) §3 for waves.
 
 ---
 
@@ -55,7 +58,7 @@ unlocks M1 through M5.
 
 | M | Name | Goal | Contains |
 |---|---|---|---|
-| **M0** | Foundation | Repo builds reproducibly, CI runs, test environment stands | WP-00 … WP-06 |
+| **M0** | Foundation | Repo builds reproducibly, CI runs, test environment stands | WP-00 … WP-07 |
 | **M1** | Watch-only core | Descriptor, addresses, UTXOs, PSBT build — **without any key material** | WP-10 … WP-16 |
 | **M2** | Verifier | Independent checking, aligned against Bitcoin Core | WP-20 … WP-23 |
 | **M3** | Keys and signature | Entropy, blobs, keystore, signature, spending limit | WP-30 … WP-36 |
@@ -79,6 +82,7 @@ flowchart LR
         W00 --> W04["WP-04 Vendoring"]
         W02 --> W05["WP-05 Spike week"]
         W00 --> W06["WP-06 Base app shell"]
+        W07["WP-07 CI executes"]
     end
     subgraph M1["M1 Watch-only"]
         W05 --> W10["WP-10 Types"]
@@ -270,6 +274,40 @@ candidates; no change to `docs/SPECIFICATION.md`; no decision in JK's place
   recommendation including counter-arguments, revision costs, "not measured" list
 - M6 packages (at least WP-60) reference dependency on this package's result
 - `python3 scripts/check_plan.py` green
+
+**Tests:** —
+
+---
+
+#### WP-07 · Make CI actually execute
+**Spec:** 5.4, 5.5 · **Needs:** — · **State:** OPEN
+
+Find and remove the cause that makes every GitHub Actions workflow run end after **zero
+seconds** with **no job ever scheduled**. WP-01 delivered a valid pipeline (eight jobs,
+YAML parses locally); that is not enough while runners never start.
+
+**Measured finding (2026-08-10, not estimated):** across **all** workflow runs since the
+first commit, on `main`, on the original branch, and on later branches — with both the
+unchanged and the edited `ci.yml` — every run has `conclusion=failure`, duration **0 s**,
+and `total_count=0` for jobs. The workflow file is valid. The cause is therefore suspected
+**outside the repository** (GitHub Actions minutes exhausted, or an account spending
+limit / billing block). The executor starts from this evidence; do not re-discover from
+scratch.
+
+**Files:** `.github/workflows/ci.yml` (read-only diagnosis only unless a repo-side fix is
+proven necessary), documentation of the root cause in this plan's status table and/or
+`docs/TESTING.md` §5
+**Prohibited:** Do not change jobs only to make them "green"; the goal is a **run that
+actually executes**, not a skipped or hollow success. Do not disable checks, soft-fail
+gates, or remove steps to dodge a red result.
+
+**Acceptance**
+- At least one workflow run on a real runner with **at least one job that executed**
+  (non-zero job duration or completed steps — not `total_count=0`)
+- Root cause named and written down (status table or TESTING.md §5)
+- If the cause is an **account setting** (minutes, spending limit, plan), record it as such
+  — not as a repository defect
+- Fast path remains under **10 minutes** once it runs (same bound as WP-01)
 
 **Tests:** —
 
@@ -1071,6 +1109,7 @@ Scope depends on **WP-06** via WP-60.
 
 | Blocker | Affects | Resolution |
 |---|---|---|
+| CI never executes jobs (0 s runs, `total_count=0`) | **All gates** — differential, coverage, mutants, signet, check-plan in CI, release evidence | **WP-07** (root cause outside the repo suspected; document if account-side) |
 | ⟨API-VERIFY⟩ open (BDK signatures) | WP-12, WP-13 | WP-05 (B.1 still open) |
 | ~~⟨API-VERIFY⟩ uniffi passphrase / B.2~~ | ~~**WP-40**~~ | ✅ Resolved 2026-08-10 — borrowed `&[u8]`; WP-40 implements the new facade |
 | ~~Appendix B.6 (Coldcard primary source)~~ | ~~**WP-54**~~ | ✅ Resolved 2026-08-10 — WP-54 OPEN |
