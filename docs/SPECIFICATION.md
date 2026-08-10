@@ -183,9 +183,9 @@ All version states below were queried on **2026-08-08** directly against `crates
 
 ### Known gaps of this research
 
-Named honestly rather than filled. Two of the four original gaps are closed; two remain:
+Named honestly rather than filled. Three of the four original gaps are closed; one remains:
 
-1. **`docs.rs` was blocked by egress proxy.** Concrete method signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0 (coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API) are **intentionally not invented** in this document. They are marked with `⟨API-VERIFY⟩` and must be fixed against the docs in the first implementation week. **Still open.**
+1. ~~**`docs.rs` was blocked by egress proxy**~~ — ✅ **Resolved 2026-08-10.** Signatures of `bdk_wallet 3.1.0` read from the **pinned crate source** (`~/.cargo/registry/src/…/bdk_wallet-3.1.0/`), not from docs.rs. Concrete methods, coin-selection types, `finish` / `finish_with_aux_rand`, persistence, and `KeychainKind` are recorded in 1.3, 1.6, 3.2, and Appendix B.1. Two consequences beyond signatures: build path draws RNG via `thread_rng` unless `finish_with_aux_rand` is used; sixteen `Wallet` methods take `&mut self`, so the uniffi facade needs interior mutability.
 2. ~~**Coldcard primary advisory not read directly**~~ — ✅ **Resolved 2026-08-10.** Coinkite advisory and Block Bitcoin Engineering analysis recorded in 0.3. What remains is applying the same claims to **user-visible app texts** (5.5, criterion 14) — those texts do not exist yet.
 3. **Kyoto peer selection on block download** — whether a match block is loaded from a *different* peer than the filter peer could not be evidenced. That is relevant for the privacy claim in 1.6 and **must be read in the source of `bip157 0.6.3`** before CBF is advertised as a "private default". **Still open.**
 4. ~~**`secp256k1 0.29.1` advisories**~~ — ✅ **Resolved 2026-08-10.** `cargo audit` against the full lockfile: **174 crates scanned, zero findings**, exit 0. Advisory database was freshly loaded (1190 advisories).
@@ -214,6 +214,7 @@ btc-trinity/
 │   │                              #    Sees only PSBTs, xpubs, BIP-388 policies.
 │   ├── trinity-verify/            # ⬜ INDEPENDENT PSBT verifier. Must NOT use `miniscript`.
 │   ├── trinity-watch/             # ⬜ BDK wallet, descriptor persistence, TxBuilder, addresses
+│   │                              #    KeychainKind::External = receive, ::Internal = change
 │   ├── trinity-chain/             # ⬜ ChainBackend trait + Electrum / Core-RPC / CBF
 │   ├── trinity-export/            # ⬜ Sparrow JSON, BSMS (BIP-129), Core `importdescriptors`,
 │   │                              #    backup PDF/print view
@@ -350,18 +351,38 @@ pub struct SecretBytes(zeroize::Zeroizing<Vec<u8>>);
 
 #### The exported facade
 
+**Interior mutability is part of the facade, not an implementation detail.** In
+`bdk_wallet 3.1.0`, sixteen `Wallet` methods take `&mut self` (including
+`reveal_next_address`, `build_tx`, and `apply_update` — source:
+`wallet/mod.rs`). uniffi objects are shared behind `Arc`, and
+`#[uniffi::export]` methods take `&self`. Therefore `TrinityCore` holds the BDK
+wallet behind a `Mutex` or `RwLock`. The lock is acquired for short wallet
+mutations only and **must not** be held across a signing call that waits on
+user input (biometrics, passphrase, hardware confirmation). Holding the lock
+over that wait would freeze every other facade call for the duration of the
+prompt.
+
 ```rust
 // crates/trinity-ffi/src/lib.rs — full exported surface
 
 #[derive(uniffi::Object)]
-pub struct TrinityCore { /* Wallet, Backend, Keystore handles */ }
+pub struct TrinityCore {
+    // Wallet behind Mutex/RwLock: BDK Wallet has 16 &mut self methods;
+    // uniffi exports take &self on an Arc-shared object.
+    /* Wallet, Backend, Keystore handles */
+}
 
 #[uniffi::export]
 impl TrinityCore {
     // ── Watch-only ─────────────────────────────────────────────────
     pub fn descriptor(&self) -> String;
     pub fn balance(&self) -> Balance;
-    pub fn reveal_next_address(&self) -> AddressInfo;              // ⟨API-VERIFY⟩ BDK-3.1 signature
+    // BDK 3.1.0 (`wallet/mod.rs:651`):
+    //   pub fn reveal_next_address(&mut self, keychain: KeychainKind) -> AddressInfo
+    // Facade locks the wallet briefly; receive path passes KeychainKind::External.
+    pub fn reveal_next_address(&self) -> AddressInfo;
+    // BDK returns impl Iterator + '_ (list_unspent / list_output / transactions);
+    // the facade collects into Vec before crossing the FFI boundary.
     pub fn list_transactions(&self) -> Vec<TxSummary>;
     pub fn sync(&self) -> Result<SyncReport, ChainError>;
 
@@ -510,9 +531,23 @@ Not sharing the shared cryptography would mean writing secp256k1 or SHA-256 your
 
 ```rust
 // crates/trinity-chain/src/lib.rs
+// BDK 3.1.0 flow (`wallet/mod.rs`):
+//   full:  Wallet::start_full_scan() -> FullScanRequestBuilder<KeychainKind>
+//   sync:  Wallet::start_sync_with_revealed_spks()
+//          -> SyncRequestBuilder<(KeychainKind, u32)>
+//   apply: Wallet::apply_update(&mut self, update: impl Into<Update>)
+//          -> Result<(), CannotConnectError>
+// The trait runs the network half; the wallet still builds the request and
+// applies the returned Update. Role unchanged — types match the pinned crate.
 pub trait ChainBackend: Send + Sync {
-    fn full_scan(&self, req: FullScanRequest) -> Result<Update, ChainError>;   // ⟨API-VERIFY⟩
-    fn sync(&self, req: SyncRequest) -> Result<Update, ChainError>;            // ⟨API-VERIFY⟩
+    fn full_scan(
+        &self,
+        req: FullScanRequest<KeychainKind>,
+    ) -> Result<Update, ChainError>;
+    fn sync(
+        &self,
+        req: SyncRequest<(KeychainKind, u32)>,
+    ) -> Result<Update, ChainError>;
     fn broadcast(&self, tx: &Transaction) -> Result<Txid, ChainError>;
     fn fee_estimates(&self) -> Result<FeeEstimates, ChainError>;
     fn tip_height(&self) -> Result<u32, ChainError>;
@@ -725,12 +760,19 @@ wsh(sortedmulti(2,
 Descriptor (change):  identical, /1/* instead of /0/*
 ```
 
+In `bdk_wallet 3.1.0` these map to `KeychainKind` (`types.rs:24`):
+`KeychainKind::External` (0) = receive descriptor `/0/*`,
+`KeychainKind::Internal` (1) = change descriptor `/1/*`.
+Decision O8 (two separate descriptors, not multipath) is what BDK consumes via
+`public_descriptor(&self, keychain: KeychainKind) -> &ExtendedDescriptor`
+(`wallet/mod.rs:1875`).
+
 | Rule | Rationale |
 |---|---|
 | `sortedmulti`, not `multi` | BIP-67: keys are sorted lexicographically by the 33-byte compressed pubkey. Key order in the descriptor thus becomes irrelevant for address derivation — one fewer recovery error. Sparrow and Nunchuk sort automatically anyway. **Measured 2026-08-10** with `miniscript 12.3.7` and `bitcoin 0.32.11`: three keys from fixed seeds at `m/48'/0'/0'/2'`, all **six** permutations, five addresses each — **identical** addresses in every case (first address always `bc1quvscw5l6klcfukf0g32n4dlx8k6zee95k8vm6elwrstwrnnwz6gqay4u74`). **Counter-check:** the same construction with `multi` instead of `sortedmulti` yields **different** addresses under reordered keys — the test exercises the sort, not a vacuous truth. |
 | Origin info `[fingerprint/path]` **always** | Without it a foreign signer cannot know which derivation path to take. Its absence is one of the most common causes of failed multisig recovery. |
 | Checksum (BIP-380) **always** export with it | Bitcoin Core requires it for `importdescriptors` and `deriveaddresses`. |
-| Separate receive/change descriptors | Explicit instead of BIP-389 multipath. `bdk_wallet 2.1.0+` supports multipath, but interop support in other wallets is weaker. Two lines on paper are cheaper than a failed recovery. |
+| Separate receive/change descriptors | Explicit instead of BIP-389 multipath. `bdk_wallet 2.1.0+` supports multipath, but interop support in other wallets is weaker. Two lines on paper are cheaper than a failed recovery. BDK keychains: External = receive, Internal = change (O8 ↔ `KeychainKind`). |
 | Three separate master seeds | Constraint 1. One seed with three derivation paths makes the quorum worthless: whoever has the seed has all three keys. **CI test:** setup is rejected if two of the three master fingerprints are identical (Section 5.2, P7). |
 | Network separation | Signet/Testnet use coin type `1'` and a separate descriptor store. No shared state with mainnet. |
 
@@ -1191,9 +1233,9 @@ sequenceDiagram
 
     U->>JS: recipient + amount + fee target
     JS->>FFI: build_psbt(SendRequest)
-    FFI->>W: TxBuilder ⟨API-VERIFY⟩
-    W->>W: coin selection (BnB, fallback SRD)
-    W->>W: change address from change descriptor /1/i
+    FFI->>W: TxBuilder (tests: finish_with_aux_rand; prod: finish)
+    W->>W: coin selection (BranchAndBound, fallback SingleRandomDraw)
+    W->>W: change address from change descriptor /1/i (KeychainKind::Internal)
     W->>W: nLockTime = tip_height (anti-fee-sniping)
     W-->>FFI: PSBT (unsigned)
     FFI-->>JS: psbt_b64
@@ -1257,10 +1299,11 @@ sequenceDiagram
 
 | Aspect | Specification | Rationale |
 |---|---|---|
-| Coin selection | BDK default: Branch-and-Bound, fallback Single Random Draw ⟨API-VERIFY: exact enum name in `bdk_wallet 3.1.0`⟩ | BnB finds changeless solutions when possible — no change output means no change attack vector and no fingerprint. |
+| Coin selection | BDK default confirmed in `bdk_wallet 3.1.0`: `BranchAndBoundCoinSelection<Cs = SingleRandomDraw>` (`wallet/coin_selection.rs:404`); also `DefaultCoinSelectionAlgorithm = BranchAndBoundCoinSelection<SingleRandomDraw>` (`:121`). Adjacent algorithms: `LargestFirstCoinSelection`, `OldestFirstCoinSelection`. Fallback is the **type-parameter default**, not a separate runtime switch. | BnB finds changeless solutions when possible — no change output means no change attack vector and no fingerprint. Spec claim in this table was already correct; the enum/struct names are now fixed from source. |
+| **Build determinism** | `TxBuilder::finish()` is a thin wrapper around `finish_with_aux_rand(&mut thread_rng())` (`wallet/tx_builder.rs:748–762`). Production may use `finish()`. **Every test that bit-compares a built PSBT or raw tx against a reference** (differential D2/D3/D10 where construction is in the path; property P1/P8) **must** call `finish_with_aux_rand` with a fixed seeded RNG. Fixed seeds are already required by `TESTING.md` §2.4. | Same request built twice can otherwise pick different UTXOs and output order — incomparable to Bitcoin Core or to a second run. **Does not touch the signature path:** §3.4 and RFC 6979 remain unchanged; this is only about comparability of the **build result**. |
 | `nLockTime` | `= current tip height`, `nSequence = 0xFFFFFFFE` | Anti-fee-sniping: a reorg miner cannot pull the transaction into an older block. Standard behavior of Core and Sparrow — deviation would be a fingerprint. |
 | RBF | `nSequence` signals replaceability | Fee increase without new key access possible; fee-bump flow runs the same verification. |
-| Change derivation | Always from the change descriptor `/1/*`, next unused index | Never reuse. |
+| Change derivation | Always from the change descriptor `/1/*` (`KeychainKind::Internal`), next unused index | Never reuse. |
 | Dust threshold | Change below the dust threshold goes into the fee | No unspendable output. |
 | Fee caps | `max_absolute_fee` and `max_feerate` in `VerifyPolicy`, user-configurable with conservative defaults | V5. Protects against a compromised fee estimator. |
 | **Consolidation after poisoning** | UTXOs that arrive as dust below a threshold are by default **not** taken into coin selection and are marked in the UI | Address poisoning deposits dust in the history; see threat T8. |
@@ -1568,15 +1611,15 @@ The core idea: Own assertions evidence that the code does what the author though
 | ID | What | Our path | Reference | Comparison criterion | Scope |
 |---|---|---|---|---|---|
 | **D1** | Descriptor checksum | own BIP-380 impl in `trinity-verify` | `getdescriptorinfo` | checksum bit-identical | 10,000 random descriptors |
-| **D2** | Receive addresses | `trinity-watch` (BDK/miniscript) | `deriveaddresses(desc, [0,999])` | all 1,000 addresses identical | 500 random 2-of-3 setups |
-| **D3** | Change addresses | `trinity-watch`, `/1/*` | `deriveaddresses` | identical | as D2 |
+| **D2** | Receive addresses | `trinity-watch` (BDK/miniscript); `KeychainKind::External` | `deriveaddresses(desc, [0,999])` | all 1,000 addresses identical | 500 random 2-of-3 setups. Where the path builds a PSBT, finish via `finish_with_aux_rand` with a fixed seed (TESTING.md §2.4 / §3.2) |
+| **D3** | Change addresses | `trinity-watch`, `/1/*`; `KeychainKind::Internal` | `deriveaddresses` | identical | as D2. Where the path builds a PSBT, finish via `finish_with_aux_rand` with a fixed seed |
 | **D4** | **Verifier against reference** | `trinity-verify` (own parser + own BIP-32) | `deriveaddresses` | identical | as D2 — **the most important test: it checks independence itself** |
 | **D5** | **Verifier against builder** | `trinity-verify` | `trinity-watch` | identical | as D2 — divergence is an alarm, not a test failure |
 | **D6** | BIP-67 sorting | own sorting | `sortedmulti` in Core | addresses identical under permuted key order | all 6 permutations per setup. **Pre-verified 2026-08-10** with `miniscript 12.3.7` / `bitcoin 0.32.11` (six permutations identical; `multi` counter-check diverges — §2.3). CI locks the property rather than discovering it. |
 | **D7** | PSBT signature A | `sign_a` | `walletprocesspsbt` with imported xprv_A | signature **bit-identical** (RFC 6979 ⇒ deterministic) | 1,000 PSBTs |
 | **D8** | PSBT signature B | `sign_b` | `walletprocesspsbt` with xprv_B | bit-identical | 1,000 PSBTs |
 | **D9** | PSBT signature C | Sparrow / Core with C | `walletprocesspsbt` | bit-identical | 200 PSBTs |
-| **D10** | Finalization | `finalize` | `finalizepsbt` | raw-tx hex bit-identical | 1,000 PSBTs |
+| **D10** | Finalization | `finalize` | `finalizepsbt` | raw-tx hex bit-identical | 1,000 PSBTs. Input PSBTs built with `finish_with_aux_rand` and a fixed seed so construction is bit-reproducible before finalize (§3.2) |
 | **D11** | Consensus validity | `finalize` + local check | `testmempoolaccept` | `allowed = true` | all finalized tx |
 | **D12** | BIP-39 derivation | `trinity-entropy` | BIP-39 test vectors + independent tool | mnemonic and seed identical | official vectors + 1,000 random |
 | **D13** | Entropy re-computability | displayed formula chain | `openssl dgst -sha512 -hmac` in a shell script | `entropy` identical | 1,000 cases |
@@ -1593,14 +1636,14 @@ The core idea: Own assertions evidence that the code does what the author though
 
 | ID | Property | Generated parameters |
 |---|---|---|
-| **P1** | For every valid setup and every PSBT built from it: `verify(build(req)) == Ok` | amounts, fee rates, UTXO sets, recipient count |
+| **P1** | For every valid setup and every PSBT built from it: `verify(build(req)) == Ok` | amounts, fee rates, UTXO sets, recipient count. Build via `finish_with_aux_rand` with a fixed seed (§3.2; TESTING.md §2.4) so coin selection and output order are reproducible |
 | **P2** | Every mutation of a change output (address, amount, derivation path) leads to `verify → Err` | random bitflips and semantic mutations |
 | **P3** | Every mutation of derivation paths in `bip32_derivation` leads to `verify → Err` | random paths |
 | **P4** | `sign(k, psbt) == sign(k, psbt)`, bit-identical | random keys and PSBTs |
 | **P5** | `sortedmulti` is permutation-invariant: all 6 key orders yield identical addresses | random xpubs |
 | **P6** | Blob roundtrip: `decrypt(encrypt(e, kek), kek) == e` for all profiles; every header mutation ⇒ AEAD error | random entropy, salts, nonces, header bitflips |
 | **P7** | **A setup with two identical master fingerprints is rejected** | constructed collision cases — constraint 1 |
-| **P8** | `fee = Σin − Σout` holds for every built PSBT; no overflow, no negative value | extreme values near `u64::MAX`, dust bounds |
+| **P8** | `fee = Σin − Σout` holds for every built PSBT; no overflow, no negative value | extreme values near `u64::MAX`, dust bounds. Build via `finish_with_aux_rand` with a fixed seed (§3.2) |
 | **P9** | The verifier accepts **no** descriptor outside the grammar `wsh(sortedmulti(2,·,·,·))` | random valid miniscript descriptors as negative cases |
 | **P10** | Entropy combiner: with fixed `raw_csprng`, different dice sequences ⇒ different entropy (collision-freedom in the sample) | random dice sequences |
 | **P11** | A PSBT with SIGHASH other than `SIGHASH_ALL` is rejected | all SIGHASH values |
@@ -1976,7 +2019,7 @@ The obvious objection to hardware-B is: then the device can just be stolen. True
 | ~~**O9**~~ | ~~Word length of the mnemonics~~ | — | — | ✅ **Decided (E3b): choosable per wallet** at creation, default 24, thereafter immutable. Implemented in 2.2.3; `word_count` sits in the blob header and in `descriptor.json`. |
 | **O10** | Gap limit | (a) 20 (standard) · (b) 100 · (c) configurable | A higher limit allows more unused addresses but costs scan time and breaks recovery in foreign software that stops at 20. | **(a) 20**, with warning on approach. Compatibility with Sparrow and Core beats flexibility. |
 | **O11** | Timing of the external security audit | (a) before v1.0 · (b) after v1.0 with limited beta circle · (c) none | An audit before v1.0 delays; one after exposes real money to an unaudited signature path. | **(a) before v1.0**, scope: `trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi`, and both platform keystore implementations. Critical and high findings are release blockers (5.5, criterion 13). |
-| **O12** | Handling of the ⟨API-VERIFY⟩ places | (a) spike week before implementation start · (b) clarify along the way | Remaining open places that still touch architecture: BDK-3.1 signatures, Kyoto peer behavior (uniffi passphrase path and `secp256k1` advisories closed 2026-08-10 — Appendix B). | **(a) spike week.** Result is an update of this document that resolves all ⟨API-VERIFY⟩ marks before production code arises. |
+| **O12** | Handling of the ⟨API-VERIFY⟩ places | (a) spike week before implementation start · (b) clarify along the way | Remaining open places that still touch architecture: Kyoto peer behavior (B.3). BDK-3.1 signatures closed 2026-08-10 (B.1); uniffi passphrase path and `secp256k1` advisories closed 2026-08-10 — Appendix B. | **(a) spike week.** Result is an update of this document that resolves all ⟨API-VERIFY⟩ marks before production code arises. |
 
 ---
 
@@ -2018,11 +2061,11 @@ The obvious objection to hardware-B is: then the device can just be stolen. True
 
 To clarify before implementation start in the spike week (O12). Deliberately **not** guessed.
 
-**Status (2026-08-10):** **6 of 14** points closed (B.2, B.5, B.6, B.7, B.8, B.9); **8 still open**. The open items predominantly need device access or source reading, not registry queries alone.
+**Status (2026-08-10):** **7 of 14** points closed (B.1, B.2, B.5, B.6, B.7, B.8, B.9); **7 still open** (B.3, B.4, B.10–B.14). The open items predominantly need device access or further source reading, not registry queries alone.
 
 | # | Open | Affects | Why it touches architecture |
 |---|---|---|---|
-| 1 | Exact signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0: coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API | 1.3, 3.2 | Determines the FFI facade and the allowlist |
+| ~~**1**~~ | ~~Exact signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0: coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API~~ | 1.3, 1.6, 3.2 | ✅ **Resolved 2026-08-10.** Source: **pinned crate** `bdk_wallet-3.1.0` under `~/.cargo/registry/src/…` (not docs.rs). Recorded signatures include `reveal_next_address(&mut self, KeychainKind) -> AddressInfo` (`wallet/mod.rs:651`), `balance`, `list_unspent` / `list_output` / `transactions` (lifetime-bound iterators), `apply_update`, `start_full_scan` / `start_sync_with_revealed_spks`, `public_descriptor`, `sign`, `load`, `PersistedWallet::{create,load,persist}`, `TxBuilder::finish` / `finish_with_aux_rand` (`tx_builder.rs:748,762`), `KeychainKind::{External,Internal}` (`types.rs:24`), `BranchAndBoundCoinSelection<Cs = SingleRandomDraw>` (`coin_selection.rs:404`). **Two findings beyond signatures:** (1) `finish()` wraps `finish_with_aux_rand(&mut thread_rng())` — build is non-deterministic unless tests inject a seeded RNG; signature path (§3.4 / RFC 6979) is untouched. (2) sixteen `Wallet` methods take `&mut self` while uniffi exports use `&self` on `Arc` — facade needs interior mutability and must not hold the lock over user-waiting sign calls. Iterators must be collected to `Vec` before FFI. Spec sections 1.3, 1.6, 3.2, 5.1/5.2 updated. |
 | ~~**2**~~ | ~~Does `uniffi 0.32.0` offer a hook to zero the `RustBuffer` on `Vec<u8>` transfer, or is manual `destroy` needed?~~ | 1.3 | ✅ **Resolved 2026-08-10.** Probe against uniffi `=0.32.0`: `&[u8]` compiles as a direct argument (foreign-owned borrow, **no** uniffi copy); `Vec<u8>` also compiles; `Option<&[u8]>` does **not** (`Lift`/`TypeId` missing for nested `&[u8]`). Facade therefore uses borrowed `&[u8]` and two separate exports (`sign_ab` / `sign_ab_with_passphrase`); crate-internal `SecretBytes` remains, not exported. Platform zeroing is still mandatory. |
 | 3 | Does `bip157 0.6.3` load match blocks from a different peer than the filter peer? | 1.6, O3 | Decides whether CBF may be advertised as default |
 | 4 | Do Keychain items with `…ThisDeviceOnly` survive an app uninstall under iOS 17/18/19? | 2.6 | Determines whether an additional wipe path is needed |

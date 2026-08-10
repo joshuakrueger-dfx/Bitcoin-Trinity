@@ -234,8 +234,16 @@ which packages own acceptance. No new bans invented here.
 
 - **First:** descriptor build/persist (`wsh(sortedmulti(2,…))`, BIP-48, separate
   receive/change — O8), then wallet/UTXO/`TxBuilder`.
+- **KeychainKind:** `External` = receive descriptor `/0/*`, `Internal` = change `/1/*`
+  (BDK 3.1.0 `types.rs:24`; Spec §1.1 / §2.3).
+- **Build in tests:** finish PSBTs with `finish_with_aux_rand` and a fixed seed
+  (Spec §3.2; TESTING.md §2.4). Production may use `finish()` (wraps `thread_rng`).
+  Signature path (§3.4) is unchanged.
+- **Iterators:** BDK `list_unspent` / `list_output` / `transactions` return
+  lifetime-bound iterators — collect into `Vec` before any FFI export.
 - **Must not:** multipath descriptors; keystore/signer dependencies (`[bans]`).
-- **Blocked on:** WP-05 for BDK `⟨API-VERIFY⟩` signatures before locking WP-12 API shape.
+- **BDK signatures (B.1):** resolved 2026-08-10 from pinned crate source — no longer
+  blocked on WP-05 for BDK marks. Kyoto (B.3) and Keychain uninstall (B.4) remain open.
 - **Accepts:** D1, P5, P7, P9 (WP-11); D2, D3, D6, P8 (WP-12).
 
 ### `trinity-chain` (WP-13 … WP-16)
@@ -376,10 +384,12 @@ means first production WP of that milestone — not idle reading.
 
 ### M1 — Watch-only core (WP-10 … WP-16)
 
-- **WP-05** done far enough that `⟨API-VERIFY⟩` marks affecting **1.1 / 1.6 / 3.2 / BDK**
-  (especially B.1) are resolved or explicitly deferred in the Spec.
+- **WP-05 / B.1:** BDK marks affecting **1.1 / 1.6 / 3.2** are **resolved** (2026-08-10).
+  Remaining WP-05 work is B.3 (Kyoto peers), B.4 (Keychain uninstall), B.10–B.14 —
+  none of those block the BDK wallet API shape for WP-12.
 - **WP-10** needs WP-05; do not open WP-11+ until types exist.
 - O8 / O10 defaults are already written in the Spec; do not reopen them in code.
+- Tests that build PSBTs use `finish_with_aux_rand` with a fixed seed (§3.2).
 
 ### M3 — Keys and signature (WP-30 … WP-36)
 

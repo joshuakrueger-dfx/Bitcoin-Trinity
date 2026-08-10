@@ -248,7 +248,7 @@ production code.
 - All ⟨API-VERIFY⟩ marks are resolved or explicitly extended
 - Especially: B.2 (uniffi buffer zeroing), B.3 (Kyoto peer behaviour), B.9 (Ledger APDU reference), B.13 (Whisper crypto) — they touch architecture
 - Coldcard version claims verified against the **primary source** (B.6) — ✅ done 2026-08-10; WP-54 is no longer blocked on that
-- **Progress 2026-08-10:** **6 of 14 closed** — B.2 (borrowed `&[u8]`, no RustBuffer intermediate), B.5 (`cargo audit` clean), B.6 (Coldcard primary), B.7 (`sortedmulti` permutation invariance), B.8 (`bitbox-api` has no BLE), B.9 (no Ledger Bitcoin app crate). **8 still open** (B.1, B.3, B.4, B.10–B.14). Package stays **OPEN** until all 14 are answered.
+- **Progress 2026-08-10:** **7 of 14 closed** — B.1 (BDK 3.1.0 signatures from pinned crate source; build RNG + interior mutability recorded), B.2 (borrowed `&[u8]`, no RustBuffer intermediate), B.5 (`cargo audit` clean), B.6 (Coldcard primary), B.7 (`sortedmulti` permutation invariance), B.8 (`bitbox-api` has no BLE), B.9 (no Ledger Bitcoin app crate). **7 still open** (B.3, B.4, B.10–B.14). Package stays **OPEN** until all 14 are answered.
 
 **Tests:** —
 
@@ -360,7 +360,10 @@ do not export `SecretBytes` via uniffi.
 **Spec:** 1.1, 3.2 · **Needs:** WP-11 · **State:** OPEN
 
 Wallet build from descriptor, address derivation, UTXO management, `TxBuilder`, persistence.
-Gap limit 20 (O10). ⟨API-VERIFY from WP-05 insert⟩
+Gap limit 20 (O10). BDK 3.1.0 signatures resolved (Appendix B.1, 2026-08-10):
+`KeychainKind::External` = receive, `::Internal` = change;
+`BranchAndBoundCoinSelection<SingleRandomDraw>` default;
+iterators collected before any higher layer.
 
 **Files:** `crates/trinity-watch/**`
 **Prohibited:** No access to `trinity-keystore`/`trinity-signer` — enforced via `[bans]`.
@@ -369,9 +372,10 @@ Gap limit 20 (O10). ⟨API-VERIFY from WP-05 insert⟩
 - **D2**, **D3** (addresses against `deriveaddresses`, 500 setups × 1,000 addresses)
 - **D6** (BIP-67 across all 6 permutations)
 - `nLockTime = tip height`, `nSequence = 0xFFFFFFFE` (anti-fee-sniping)
-- Coin selection: BnB with SRD fallback; changeless solution preferred
+- Coin selection: `BranchAndBoundCoinSelection` with `SingleRandomDraw` type-parameter default; changeless solution preferred
 - **P8** (fee identity, overflow edge cases)
 - Dust change goes into the fee
+- **In tests that build a PSBT, finish via `finish_with_aux_rand` with a fixed seed** (Spec §3.2; TESTING.md §2.4) — production may use `finish()`; signature path unchanged
 
 **Tests:** D2, D3, D6, P8
 
@@ -678,6 +682,8 @@ uniffi facade **exactly** per the signature list in 1.3 (`sign_ab`, `sign_ab_wit
 - **S23** is a **build-breaking** signature check (no secret export; `blob_B` only after SpendPolicy; no policy/key exports without a passphrase parameter)
 - `sign_ab`, `sign_ab_with_passphrase`, and `sign_with_recovery_key` are exported and on the allowlist
 - Result from Appendix B.2 is implemented: facade uses **borrowed** platform buffers (`&[u8]`); `SecretBytes` is **crate-internal only**; **no** exported `SecretBytes` type; uniffi does not introduce a passphrase intermediate copy
+- **Interior mutability (Appendix B.1):** `TrinityCore` holds the BDK wallet behind a `Mutex`/`RwLock` (sixteen `Wallet` methods take `&mut self`; uniffi exports take `&self` on an `Arc`-shared object). The lock **must not** be held across a signing call that waits on user input (biometrics, passphrase, hardware confirmation)
+- BDK iterators (`list_unspent` / `list_output` / `transactions`) are collected into `Vec` before export
 
 **Tests:** S23
 
@@ -1110,10 +1116,11 @@ Scope depends on **WP-06** via WP-60.
 | Blocker | Affects | Resolution |
 |---|---|---|
 | CI never executes jobs (0 s runs, `total_count=0`) | **All gates** — differential, coverage, mutants, signet, check-plan in CI, release evidence | **WP-07** (root cause outside the repo suspected; document if account-side) |
-| ⟨API-VERIFY⟩ open (BDK signatures) | WP-12, WP-13 | WP-05 (B.1 still open) |
+| ~~⟨API-VERIFY⟩ open (BDK signatures) / B.1~~ | ~~WP-12, WP-13, WP-40~~ | ✅ Resolved 2026-08-10 — signatures + build RNG + interior mutability in Spec; WP-12/WP-13/WP-40 implement against recorded types |
 | ~~⟨API-VERIFY⟩ uniffi passphrase / B.2~~ | ~~**WP-40**~~ | ✅ Resolved 2026-08-10 — borrowed `&[u8]`; WP-40 implements the new facade |
 | ~~Appendix B.6 (Coldcard primary source)~~ | ~~**WP-54**~~ | ✅ Resolved 2026-08-10 — WP-54 OPEN |
 | Appendix B.3 (Kyoto peers) | CBF as default (O3) | WP-05 |
+| Appendix B.4 (Keychain after uninstall) | WP-41 wipe path | WP-05 |
 | O13 (entropy sources) | WP-30 | Decision before WP-30 |
 | O6 (crash reporting) | WP-60 | Decision before WP-60 |
 | Base decision open | M6 | WP-06 |
