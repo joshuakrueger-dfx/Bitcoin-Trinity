@@ -3,11 +3,17 @@
 Bitcoin-only 2-von-3 Multisig-Wallet. Drei gleichberechtigte Schlüssel, kein Timelock, kein
 Zustand, keine Serverdienste, keine laufende Wartung.
 
-| Schlüssel | Speicherort | Entsperrfaktor |
-|---|---|---|
-| **A** | verschlüsselter Blob, Schlüssel hardware-gebunden (Keychain / Android Keystore) | Biometrie |
-| **B** | verschlüsselter Blob, Schlüssel hardware-gebunden ⊕ Argon2id(Passphrase) | Passphrase |
-| **C** | Seed auf Papier/Stahl, offline | — |
+| Schlüssel | Speicherort | Entsperrfaktor | Backup |
+|---|---|---|---|
+| **A** | verschlüsselter Blob, KEK hardware-gebunden (Keychain / Android Keystore), `.biometryCurrentSet` | Biometrie | bewusst keines |
+| **B** | verschlüsselter Blob, KEK hardware-gebunden, `.userPresence` | Biometrie **oder** Gerätepasscode | Wortliste, Pflicht |
+| **C** | Seed auf Papier/Stahl, offline — oder auf einem Hardware-Signer erzeugt | — | ist selbst das Backup |
+
+> **Die Passphrase entschlüsselt nichts.** Seit Entscheidung E7 geht sie nicht mehr in KEK_B
+> ein — sie **autorisiert** Ausgaben oberhalb der Ausgabegrenze, jede Lockerung der Policy,
+> Export und Schlüsseltausch. Was das kostet und was an ihre Stelle tritt, steht in
+> Abschnitt 2.4 der Spezifikation; die Folge für den Nutzer steht unten unter „Wie es sich
+> anfühlen soll".
 
 Script: `wsh(sortedmulti(2, ...))` auf BIP-48-Pfaden (`m/48'/0'/0'/2'`), drei unabhängige
 Master-Seeds.
@@ -53,9 +59,16 @@ Daraus folgt die Eigenschaft, die ein gängiges Software-Wallet nicht hat:
 
 Bei Single-Sig ist derselbe Vorfall ein Totalverlust ohne Handlungsoption.
 
+**Und wenn du die Passphrase vergisst:** kein Geldverlust. Unterhalb der Grenze sendest du
+weiter; für alles darüber gehst du den Weg aus `docs/RECOVERY.md` mit den Wortlisten B und C.
+Damit sie nicht einrostet, fragt die App alle 60 Tage einmal danach — ohne Transaktion,
+verschiebbar.
+
 ## Status
 
-Spezifikationsphase. Es existiert noch kein Code.
+Spezifikationsphase abgeschlossen. Meilenstein M0 ist angefangen: Workspace mit zehn
+Crate-Gerüsten, CI-Pipeline und Gate-Skripte stehen; Fachlogik ist noch nicht begonnen
+(WP-00 fertig, WP-01 bis WP-03 in Arbeit, WP-04 und WP-05 offen).
 
 **→ [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md)** — vollständige technische Spezifikation:
 Modulschnitt, Schlüssel-Lebenszyklus, Signaturfluss, Bedrohungsmodell, Teststrategie,
@@ -63,11 +76,12 @@ UX-Flows, offene Entscheidungen.
 
 **→ [`docs/RECOVERY.md`](docs/RECOVERY.md)** — Wiederherstellung **ohne** diese App, mit
 Sparrow und Bitcoin Core. Das ist die eigentliche Versicherung: Sie funktioniert auch dann,
-wenn es dieses Projekt nicht mehr gibt. Die Abläufe darin sind Testfälle S5 und S6 und laufen
-bei jedem Merge in CI.
+wenn es dieses Projekt nicht mehr gibt. Die Abläufe darin sind die Ziel-Testfälle S5
+(automatisiert in CI vorgesehen) und S6 (je Release manuell gegen Sparrow). Heute existiert
+noch kein einziger dieser Tests — sie sind Abnahme von WP-46 und WP-71.
 
 **→ [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)** — die Arbeitsliste.
-28 Arbeitspakete in 8 Meilensteinen, jedes mit Abhängigkeiten, Spec-Verweis, Abnahmekriterien
+52 Arbeitspakete in 8 Meilensteinen, jedes mit Abhängigkeiten, Spec-Verweis, Abnahmekriterien
 und den Tests, die grün sein müssen. Jedes Paket ist so geschnitten, dass es ohne Rückfragen
 abgearbeitet werden kann.
 

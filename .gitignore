@@ -1,4 +1,6 @@
 /target
 **/*.rs.bk
 .DS_Store
-/vendor
+# vendor/ wird laut SPECIFICATION.md §1.7 und WP-04 eingecheckt
+# (cargo vendor, replace-with = "vendored-sources"), damit der Build
+# nichts aus dem Netz zieht. Deshalb hier bewusst nicht ignoriert.

@@ -7,9 +7,11 @@ du ihr schlicht nicht mehr vertraust.
 Es setzt **nichts** von dieser App voraus. Alles unten funktioniert mit frei verfügbarer
 Standardsoftware und Werkzeugen, die auch in zehn Jahren noch existieren werden.
 
-> **Verifiziert gegen jeden Release.** Die Abläufe hier sind Testfälle S5 (Bitcoin Core) und
-> S6 (Sparrow) der Spezifikation und laufen bei jedem Merge in CI. Ein Release, bei dem sie
-> nicht durchlaufen, wird nicht ausgeliefert — siehe `SPECIFICATION.md`, Abschnitt 5.5.
+> **Ziel: verifiziert gegen jeden Release.** Die Abläufe hier sind die Testfälle S5 (Bitcoin
+> Core, automatisiert in CI vorgesehen) und S6 (Sparrow, je Release manuell verifiziert und
+> dokumentiert — siehe `TESTING.md` §2.2 und SPECIFICATION.md §5.3). Heute ist noch kein
+> Test implementiert; sobald sie laufen, blockiert ein Fehlschlag die Freigabe
+> (`SPECIFICATION.md`, Abschnitt 5.5).
 
 ---
 
@@ -58,8 +60,8 @@ gebaut.
    der Datei** — die Anleitung dazu steht auf derselben Seite.
 2. *File → New Wallet*, Namen vergeben.
 3. Policy Type: **Multi Signature**, Script Type: **Native SegWit (P2WSH)**, Quorum **2 of 3**.
-4. Descriptor einspielen — der bequemste Weg ist *Edit → Preferences → …* nein: einfacher ist
-   **die Textbox unter dem Reiter „Descriptor"**. Descriptor hineinkopieren, *Apply*.
+4. Descriptor einspielen: unter dem Reiter **Descriptor** die Textbox öffnen, den
+   Descriptor hineinkopieren und *Apply* wählen.
 5. Sparrow zeigt jetzt drei Schlüssel mit ihren Fingerprints. **Vergleiche die drei
    Fingerprints mit deinem Ausdruck.** Stimmen sie nicht, hast du den falschen Descriptor.
 6. Unter *Settings → Server* einen Server wählen — dein eigener Electrum-Server oder Bitcoin
@@ -114,23 +116,31 @@ bitcoin-cli getdescriptorinfo "wsh(sortedmulti(2,[a1b2c3d4/48h/0h/0h/2h]xpubA/0/
 ```
 
 ```bash
-# Beide Descriptoren importieren, Empfangen und Wechselgeld
+# Beide Descriptoren importieren, Empfangen und Wechselgeld.
+# "timestamp" ist ein Unix-Zeitstempel (Sekunden seit 1970), kein Blockhöhe.
+# Aus der Birthday-Höhe z. B.:
+#   bitcoin-cli getblockheader $(bitcoin-cli getblockhash 812345)
+# und das Feld "time" übernehmen — hier als Beispiel 1700000000 (Nov 2023).
+# Alternativen: 0 (Scan ab Genesis) oder "now" (kein historischer Scan).
 bitcoin-cli -rpcwallet=rettung importdescriptors '[
   {"desc":"wsh(sortedmulti(2,...))#pruefsumme1",
-   "active":true,"internal":false,"range":[0,1000],"timestamp":812345},
+   "active":true,"internal":false,"range":[0,1000],"timestamp":1700000000},
   {"desc":"wsh(sortedmulti(2,...))#pruefsumme2",
-   "active":true,"internal":true, "range":[0,1000],"timestamp":812345}
+   "active":true,"internal":true, "range":[0,1000],"timestamp":1700000000}
 ]'
 ```
 
-`timestamp` ist die Birthday-Blockhöhe als Unix-Zeit, oder `"now"` bei einer frischen Wallet.
-Im Zweifel `0` — dann scannt Core ab dem Genesis-Block, was dauert, aber sicher alles findet.
+`importdescriptors` erwartet im Feld `timestamp` einen **Unix-Zeitstempel** (oder `0` bzw.
+`"now"`). Die Birthday-Angabe auf dem Backup-Ausdruck ist dagegen eine **Blockhöhe**.
+Um aus der Höhe den Zeitstempel zu bekommen: `getblockhash <höhe>` und danach
+`getblockheader` bzw. `getblockstats` — Feld `time`. Im Zweifel `0`: Core scannt ab Genesis,
+das dauert länger, findet aber alles.
 
 ```bash
 # Kontrolle: stimmen die Adressen mit dem überein, was du erwartest?
 bitcoin-cli deriveaddresses "wsh(sortedmulti(2,...))#pruefsumme1" "[0,5]"
 
-# Guthaben
+# Zusätzlicher Rescan ab Blockhöhe (hier die Birthday-Höhe, nicht der Zeitstempel)
 bitcoin-cli -rpcwallet=rettung rescanblockchain 812345
 bitcoin-cli -rpcwallet=rettung getbalances
 ```

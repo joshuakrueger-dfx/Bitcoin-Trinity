@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Testumgebung: Bitcoin Core 30.2 (Regtest + Signet), electrs, CBF-Peer.
+# Testumgebung: Bitcoin Core 30.2 (Regtest) mit blockfilterindex/peerblockfilters
+# (CBF auf demselben Node), electrs. Signet-Node und separater CBF-Peer sind
+# Abnahmeziele von WP-02 und stehen heute noch nicht in docker/compose.yml.
 # Umsetzung von WP-02, Anforderungen in docs/TESTING.md §2.
 #
 #   ./scripts/test-env.sh up | down | reset | status
@@ -74,7 +76,7 @@ seed_regtest() {
 
 cmd_up() {
   [[ -f "$COMPOSE_FILE" ]] || fail "docker/compose.yml fehlt."
-  log "Starte Testumgebung (Core ${CORE_VERSION}, electrs, CBF-Peer) …"
+  log "Starte Testumgebung (Core ${CORE_VERSION} Regtest inkl. Filter-Indizes, electrs) …"
   compose up -d
   wait_for_rpc
   verify_core_version

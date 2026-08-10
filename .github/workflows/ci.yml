@@ -1,4 +1,6 @@
-# Schneller Pfad (< 10 min) bei jedem Push, schwere Läufe nach main.
+# Schneller Pfad (< 10 min) bei jedem Push.
+# Differential D1–D19: bei jedem PR, sobald der Harness existiert (TESTING.md §5).
+# Signet und Mutants: nach main (TESTING.md §5).
 # Aufbau und Begründung: docs/TESTING.md §5
 name: CI
 
@@ -73,6 +75,9 @@ jobs:
 
   # --- FFI-Grenze ------------------------------------------------------------
   # Diese Grenze ist zu wichtig, um sie dem Code-Review zu überlassen.
+  # Skript scripts/check_ffi_boundary.py und Allowlist
+  # crates/trinity-ffi/ffi-allowlist.toml kommen aus WP-40 — der Job gated
+  # bewusst auf die Allowlist und startet erst, wenn beide existieren.
   ffi-boundary:
     name: FFI-Allowlist
     runs-on: ubuntu-latest
@@ -101,11 +106,15 @@ jobs:
       # eine Begründung in coverage-exclusions.toml
       - run: python3 scripts/coverage_gate.py lcov.info
 
-  # --- Schwere Läufe: nur nach main -------------------------------------------
+  # --- Differential: bei jedem PR, sobald der Harness existiert (TESTING.md §5)
+  # Reaktivierung: WP-23 liefert tests/differential/ und das Cargo-Feature
+  # `differential`. Danach entfällt die hashFiles-Bedingung; die run-Zeile
+  # bleibt unverändert.
   differential:
     name: Differential gegen Bitcoin Core 30.2
     runs-on: ubuntu-latest
     needs: [check, test]
+    if: hashFiles('tests/differential/**') != ''
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -117,11 +126,15 @@ jobs:
       - if: always()
         run: ./scripts/test-env.sh down
 
+  # --- Signet: nach main, sobald der Harness existiert (TESTING.md §5)
+  # Reaktivierung: WP-45 liefert tests/signet-e2e/ und das Cargo-Feature
+  # `signet` (S1–S8/S32). Danach entfällt die hashFiles-Bedingung; die
+  # run-Zeile bleibt unverändert.
   signet:
     name: Signet-Szenarien S1–S36
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    needs: [differential]
+    if: github.ref == 'refs/heads/main' && hashFiles('tests/signet-e2e/**') != ''
+    needs: [check, test]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

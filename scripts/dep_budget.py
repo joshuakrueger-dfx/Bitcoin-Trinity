@@ -28,7 +28,11 @@ SIGNATURE_PATH = [
     "trinity-verify",
 ]
 
-# Gemessen am 2026-08-08 mit dem Pinning aus SPECIFICATION.md §0.3: 41 externe Crates.
+# Gemessen am 2026-08-09 mit dem Pinning aus SPECIFICATION.md §0.3 und
+# `cargo tree -e normal` über den Signaturpfad: 40 externe Crates.
+# Eine Abweichung von MEASURED ist eine bewusste Entscheidung, keine Nebenwirkung —
+# MEASURED und die Dokumente sind dann gemeinsam nachzuziehen.
+MEASURED = 40  # Stand 2026-08-09
 # Das Gate liegt knapp darüber, damit eine echte Erweiterung auffällt statt
 # durchzurutschen. Anheben nur mit Begründung im PR.
 BUDGET = 45
@@ -68,18 +72,32 @@ def main() -> int:
             print(f"  {name}")
         return 0
 
-    print(f"Signaturpfad: {len(external)} externe Crates (Grenze {BUDGET})")
+    n = len(external)
+    print(f"Signaturpfad: {n} externe Crates (MEASURED {MEASURED}, Grenze {BUDGET})")
     for crate in SIGNATURE_PATH:
         print(f"  {crate:22s} {per_crate[crate]:3d}")
 
-    if len(external) > BUDGET:
+    findings = []
+    if n != MEASURED:
+        findings.append(
+            f"Messung {n} weicht von MEASURED={MEASURED} ab — "
+            f"bewusste Änderung? MEASURED und Dokumente gemeinsam nachziehen."
+        )
+    if n > BUDGET:
         over = sorted(external)[BUDGET:]
-        print(f"\n✗ Grenze überschritten um {len(external) - BUDGET}.")
-        print("  Entweder Abhängigkeit entfernen oder BUDGET mit Begründung im PR anheben.")
-        print(f"  Aktuelle Liste: {', '.join(over)}")
+        findings.append(
+            f"Grenze überschritten um {n - BUDGET}. "
+            f"Entweder Abhängigkeit entfernen oder BUDGET mit Begründung im PR anheben. "
+            f"Aktuelle Liste ab Budget: {', '.join(over)}"
+        )
+
+    if findings:
+        print(f"\ndep-budget: {len(findings)} Befund(e)\n")
+        for f in findings:
+            print(f"  ✗ {f}")
         return 1
 
-    print(f"\n✓ {BUDGET - len(external)} Plätze Luft.")
+    print(f"\n✓ Messung = MEASURED ({MEASURED}). {BUDGET - n} Plätze Luft bis Budget.")
     return 0
 
 

@@ -88,6 +88,25 @@ eine Zahl zu erzwingen, die nichts aussagt:
 
 Für beide gilt: **quantifizierte Ausnahme mit Begründung**, nicht stillschweigendes Weglassen.
 
+**Zweigabdeckung und Toolchain (gemessen 2026-08-09, WP-03):**
+
+- `cargo llvm-cov --workspace --lcov` (ohne `--branch`) auf Toolchain **1.94.1**: bei leeren
+  Gerüsten bricht der Report mit `no coverage data found` ab (kein instrumentierter Code
+  ausgeführt). Sobald Fachcode und Tests existieren, liefert dieser Pfad Zeilen (`LF`/`LH`),
+  aber **keine** `BRF`/`BRH`-Zeilen.
+- `cargo llvm-cov --workspace --lcov --branch` auf derselben Toolchain: **bricht ab**.
+  `--branch` setzt `-Z coverage-options=branch` und verlangt **nightly**; die gepinnte
+  stabile 1.94.1 lehnt die Option ab (`the option Z is only accepted on the nightly compiler`).
+
+**Benannte Lücke:** Die 100-%-Zweigschwelle für die Sicherheitskerne ist auf der gepinnten
+Toolchain **nicht erhebbar**. Das Gate meldet fehlende Zweigdaten als Befund
+(„Zweigdaten fehlen — lief `cargo llvm-cov` ohne `--branch`?"), statt still 100 % zu
+melden. Die Lücke schließt sich, wenn entweder (a) die gepinnte Toolchain Branch-Coverage
+stabil unterstützt und CI/`just coverage` dann `--branch` setzen, oder (b) eine bewusste
+Toolchain-Entscheidung Branch-Coverage freigibt und in §0.3/WP-00 nachgezogen wird.
+**Keine Zahl behaupten, die nicht gemessen wird.** Bis dahin bleibt die Zeilenschwelle
+durchsetzbar; die Zweigschwelle ist fail-closed auf „Daten fehlen".
+
 > **Und der wichtigere Punkt: Coverage misst Ausführung, nicht Prüfung.** Ein Test, der eine
 > Zeile durchläuft, ohne ihr Ergebnis zu prüfen, zählt voll. Deshalb ist **Mutation Testing**
 > (§3.3) das eigentliche Gate für die Sicherheitskerne — 100 % Coverage mit überlebenden
@@ -197,7 +216,8 @@ flowchart LR
 
 **Zwei Sonderregeln.** Ein Fehlschlag von **S4** oder **S5** (Recovery mit und ohne diese App)
 blockiert unabhängig von allem anderen — sie haben ein eigenes Veto. Ein Fehlschlag von
-**S23** (kein Biometrie-Pfad zu B) bricht die Kompilierung, nicht den Test.
+**S23** (FFI-Fassade: kein Secret-Export; `blob_B` nur nach SpendPolicy-Prüfung; keine
+Policy-/Schlüsselexporte ohne `SecretBytes`) bricht die Kompilierung, nicht den Test.
 
 ---
 
@@ -208,13 +228,15 @@ CI-Schritt, kein Hilfsmittel.
 
 | Prüfung | Bricht, wenn |
 |---|---|
-| Jede in SPECIFICATION.md definierte Test-ID (D/P/S) ist in IMPLEMENTATION_PLAN.md §5 genau einem WP zugeordnet | eine ID fehlt oder doppelt zugeordnet ist |
-| Jede in §5 genannte Test-ID existiert in der Spec | eine ID erfunden wurde |
-| Jede Test-ID hat eine Testfunktion mit passendem Namen (`d01_…`, `p07_…`, `s29h_…`) | ein Test nur auf dem Papier steht |
+| Jede in SPECIFICATION.md definierte Test-ID (D/P/S) steht auf genau einer `**Tests:**`-Zeile eines WP-Blocks | eine ID fehlt oder doppelt zugeordnet ist |
+| Jede auf `**Tests:**` genannte Test-ID existiert in der Spec | eine ID erfunden wurde |
+| Jede fällige Test-ID (WP auf `FERTIG`) hat eine Testfunktion mit passendem Namen (`d1_…`, `p5_…`, `s15b_…`, `s29h_…` — kleingeschrieben, **ohne** führende Null) | ein Test nur auf dem Papier steht |
 | Jede Bedrohung T1–T20 wird von mindestens einem Test oder einer ausdrücklichen „nicht abgedeckt"-Zeile in §4.2 berührt | eine Bedrohung ohne Behandlung bleibt |
 | Jede Entscheidung E1–E7 hat ein umsetzendes WP | eine Entscheidung nirgends landet |
-| Jeder Abschnittsverweis in allen vier Dokumenten zeigt auf einen existierenden Abschnitt | ein Verweis tot ist |
+| Jeder Abschnittsverweis in den Dokumenten und in `README.md` zeigt auf einen existierenden Abschnitt | ein Verweis tot ist |
 | Keine ID ist doppelt definiert | zwei Definitionen derselben ID existieren |
+| Jeder WP-Block hat die Pflichtfelder; jede referenzierte WP-ID hat einen eigenen Block; Abhängigkeiten existieren und bilden keinen Zyklus | Struktur unvollständig oder zyklisch |
+| Anzahlen (Freigabepunkte §5.5, WP-Blöcke, Crates, externe Crates/`MEASURED`) stimmen mit der Messung überein | Zahl abgeschrieben und veraltet |
 
 > Diese Prüfung hat bei ihrer Einführung bereits einen Fehler gefunden — T19 war doppelt
 > definiert, in §2.7.8 und in §4.1. Genau dafür ist sie da.
@@ -228,7 +250,7 @@ hält. Kein WP wird ohne Tests gemerged, und keine Testschuld wird auf später v
 die Ausnahmen-Datei aus §3.4 ist der einzige zulässige Ort für Lücken, und jede Zeile darin
 kostet eine Begründung.
 
-Ein **Release** ist fertig, wenn die 20 Punkte in SPECIFICATION.md §5.5 abgehakt und belegt
+Ein **Release** ist fertig, wenn die 21 Punkte in SPECIFICATION.md §5.5 abgehakt und belegt
 sind. Die vier mit eigenem Veto:
 
 | # | Kriterium |

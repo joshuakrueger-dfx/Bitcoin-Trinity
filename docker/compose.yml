@@ -1,7 +1,8 @@
 # Testumgebung — docs/TESTING.md §2
 #
-# Alle Images per Digest gepinnt: reproduzierbar und offline-fähig nach dem
-# ersten Pull. Ein Tag allein reicht nicht — Tags sind veränderlich.
+# Ist-Zustand: Images hängen an Tags (siehe TODO(WP-02) unten). Tags sind
+# veränderlich — Digest-Pinning ist Abnahmekriterium von WP-02 und macht den
+# Aufbau reproduzierbar und offline-fähig nach dem ersten Pull.
 #
 # ⚠️ Bitcoin Core 30.0 und 30.1 sind verboten (Wallet-Migrations-Bug,
 #    Binaries am 2026-01-05 zurückgezogen). scripts/test-env.sh prüft die
@@ -23,7 +24,10 @@ services:
       - -txindex=1
       - -blockfilterindex=1      # für CBF (BIP-157/158), WP-16
       - -peerblockfilters=1
-      - -deprecatedrpc=create_bdb
+      # -deprecatedrpc=create_bdb bewusst NICHT gesetzt: das Projekt nutzt
+      # ausschließlich Descriptor-Wallets (createwallet … descriptors=true).
+      # Das Flag würde den Legacy-BDB-Pfad freischalten, an dem der Wallet-Bug
+      # von Core 30.0/30.1 hing — nicht aus Gewohnheit wieder eintragen.
     ports:
       - "18443:18443"            # RPC regtest
       - "18444:18444"            # P2P regtest
