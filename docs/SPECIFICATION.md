@@ -158,8 +158,8 @@ All version states below were queried on **2026-08-08** directly against `crates
 | `bdk_kyoto` | `=0.17.0` | 0.17.0 (2026-05-12) | → `bip157 0.6.3` (2026-07-21), BIP-157/158 |
 | `bbqr` | `=0.5.0` | 0.5.0 (2026-07-16) | BBQr animated QR — hardware transport v1 |
 | `ur` | `=0.5.2` | 0.5.2 (2026-07-29) | Uniform Resources — hardware transport v1 |
-| `bitbox-api` | `=0.13.0` | 0.13.0 (2026-07-18) | BitBox02 — **v1.1**, BLE coverage open (Appendix B.8) |
-| `ledger-transport`, `ledger-apdu` | `=0.11.0` | 0.11.0 (2024-05-09) | Ledger — **v1.1**, only generic; **no** app-level crate for the Bitcoin app |
+| `bitbox-api` | `=0.13.0` | 0.13.0 (2026-07-18) | BitBox02 — **v1.1**, features `usb`/`wasm`/`simulator`/`multithreaded` only — **no BLE** (Appendix B.8, measured 2026-08-10) |
+| `ledger-transport`, `ledger-apdu` | `=0.11.0` | 0.11.0 (2024-05-09) | Ledger — **v1.1**, only generic; **no** app-level crate for the Bitcoin app (Appendix B.9) |
 | ~~`hwi`~~ | **do not use** | 0.10.0 (2024-09-13) | Wrapper around Python HWI, needs a Python runtime → **unusable on mobile** |
 
 **Compatibility check:** `bdk_electrum 0.24.0` requires `bdk_core ^0.6.1`, `bdk_bitcoind_rpc 0.22.0` requires `bdk_core ^0.6.1` and `bitcoin ^0.32.0`, `bdk_kyoto 0.17.0` requires `bdk_wallet ^3`. All three coexist with the pinning above. ✔
@@ -183,12 +183,12 @@ All version states below were queried on **2026-08-08** directly against `crates
 
 ### Known gaps of this research
 
-Named honestly rather than filled:
+Named honestly rather than filled. Two of the four original gaps are closed; two remain:
 
-1. **`docs.rs` was blocked by egress proxy.** Concrete method signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0 (coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API) are **intentionally not invented** in this document. They are marked with `⟨API-VERIFY⟩` and must be fixed against the docs in the first implementation week.
+1. **`docs.rs` was blocked by egress proxy.** Concrete method signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0 (coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API) are **intentionally not invented** in this document. They are marked with `⟨API-VERIFY⟩` and must be fixed against the docs in the first implementation week. **Still open.**
 2. ~~**Coldcard primary advisory not read directly**~~ — ✅ **Resolved 2026-08-10.** Coinkite advisory and Block Bitcoin Engineering analysis recorded in 0.3. What remains is applying the same claims to **user-visible app texts** (5.5, criterion 14) — those texts do not exist yet.
-3. **Kyoto peer selection on block download** — whether a match block is loaded from a *different* peer than the filter peer could not be evidenced. That is relevant for the privacy claim in 1.6 and **must be read in the source of `bip157 0.6.3`** before CBF is advertised as a "private default".
-4. **`secp256k1 0.29.1` is from 2024-09-06** and thus clearly older than the rest of the stack. Whether relevant advisories exist for it was not checked. `cargo audit` against the full lockfile is part of the definition of done (Section 5.5), not of this document.
+3. **Kyoto peer selection on block download** — whether a match block is loaded from a *different* peer than the filter peer could not be evidenced. That is relevant for the privacy claim in 1.6 and **must be read in the source of `bip157 0.6.3`** before CBF is advertised as a "private default". **Still open.**
+4. ~~**`secp256k1 0.29.1` advisories**~~ — ✅ **Resolved 2026-08-10.** `cargo audit` against the full lockfile: **174 crates scanned, zero findings**, exit 0. Advisory database was freshly loaded (1190 advisories).
 
 ---
 
@@ -273,7 +273,7 @@ flowchart TB
     end
 
     UI -->|"PsbtB64, SendRequest"| FACADE
-    PF -->|"SecretBytes"| FACADE
+    PF -->|"borrowed &[u8] (passphrase / words)"| FACADE
     FACADE --> SIG
     FACADE --> WATCH
     FACADE --> VER
@@ -306,7 +306,7 @@ The crate `trinity-ffi` is the **only** one with `#[uniffi::export]`. Everything
 | `String` (descriptor) | ⇄ | `wsh(sortedmulti(2,…))` with origin info and checksum. |
 | `String` (address, txid, tx hex) | ⇄ | Public. |
 | `u64` (satoshi), `u32` (height, index) | ⇄ | Public. |
-| `SecretBytes` | **only ⟶ Rust** | UTF-8 bytes of the passphrase, dice rolls, or recovery word list. Custom uniffi type, see below. Never from JS. |
+| `&[u8]` (borrowed bytes) | **only ⟶ Rust** | Passphrase or recovery word list as a **platform-owned** buffer. uniffi borrows for the call duration and does **not** copy into a `RustBuffer`. Never from JS. Not nestable (no `Option<&[u8]>`). |
 | `Arc<dyn PlatformKeyStore>` | Callback ⟵ Rust | Rust calls the platform. Not the reverse. |
 | Structs from `trinity-types` | ⇄ | Pure value types without secrets (`Balance`, `AddressInfo`, `PsbtVerdict`, `SendRequest`). |
 
@@ -316,32 +316,36 @@ The crate `trinity-ffi` is the **only** one with `#[uniffi::export]`. Everything
 
 > **CI gate `ffi-boundary`:** A script parses all `#[uniffi::export]` signatures in `trinity-ffi` and compares them against a checked-in allowlist (`crates/trinity-ffi/ffi-allowlist.toml`). Every new or changed signature breaks the build until the allowlist is deliberately adjusted. This boundary is too important to leave to code review.
 
-#### `SecretBytes` — why a custom type
+#### Passphrase across the boundary — borrowed `&[u8]`, crate-internal `SecretBytes`
+
+**Measured against uniffi `=0.32.0` (2026-08-10, Appendix B.2):** a probe crate compiled these signatures:
+
+| Signature | Result |
+|---|---|
+| `pub fn f(data: &[u8]) -> u32` | ✅ compiles |
+| `pub fn f(data: Vec<u8>) -> u32` | ✅ compiles |
+| `pub fn f(data: Option<&[u8]>) -> u32` | ❌ **compile error** — `&[u8]: Lift<UniFfiTag>` is not satisfied; `TypeId` not implemented for `&[u8]` |
+| two separate exports, each taking `&[u8]` directly | ✅ compiles |
+
+uniffi documents that `&[u8]` *allows Rust to borrow a foreign-owned byte buffer during an FFI call without making a copy* — foreign→Rust only, argument position only, not nested, valid only for the duration of the call. That is exactly the passphrase lifecycle this architecture requires, and it **removes** the intermediate copy that would otherwise need zeroing.
+
+**What crosses the boundary:** the passphrase (and recovery word list) enters as **`&[u8]`** — a borrowed, platform-owned buffer. uniffi does **not** copy it into a `RustBuffer`. There is therefore **no Rust-side intermediate copy** that the core would have to zero after the fact. That closes the previous gap (a non-zeroable FFI buffer).
+
+**What remains — and becomes more important, not less:** the buffer is owned by the platform, and the **platform must zero it**. Swift `String` and Kotlin `String` are — like JS strings — immutable and not overwritable. **The passphrase must never exist as a `String` in Swift or Kotlin either.**
+
+- iOS: `UITextField` with custom `UIKeyInput` delegate, characters directly into an `UnsafeMutableRawBufferPointer`; wipe via `memset_s`. No `.text` access, no SwiftUI `@State private var pass: String`.
+- Android: `EditText` with `getText().getChars(...)` into a `CharArray`, conversion to `ByteArray`, then `Arrays.fill(chars, '\u0000')` and `ByteArray.fill(0)`. No `.toString()`.
+
+**`SecretBytes` does not disappear — it moves inward.** It remains the crate-internal `ZeroizeOnDrop` wrapper into which the core copies the borrowed buffer immediately on entry. It is **not** an exported uniffi type. WP-10 acceptance still applies: no `Clone`, no `Debug`/`Display` except `"[redacted]"`, `trybuild` proof.
 
 ```rust
-// crates/trinity-types/src/secret.rs
-#[derive(uniffi::Object)]
+// crates/trinity-types/src/secret.rs — crate-internal, NOT #[uniffi::export]
 pub struct SecretBytes(zeroize::Zeroizing<Vec<u8>>);
-
-#[uniffi::export]
-impl SecretBytes {
-    /// Accepts bytes from the platform layer. NEVER call from JS.
-    #[uniffi::constructor]
-    pub fn from_platform(bytes: Vec<u8>) -> Arc<Self> { /* … */ }
-    /// Length for UI feedback — the only reading access over FFI.
-    pub fn len(&self) -> u32 { /* … */ }
-}
-// Drop ⇒ zeroize
+// Drop ⇒ zeroize. No Clone. No Debug of contents.
 ```
 
-**What this type does and does not — honestly:**
+**Measured restriction that shapes the facade:** `Option<&[u8]>` is **not** possible — `&[u8]` does not implement `Lift` when nested. That is why passphrase-bearing calls are **split** into separate exports (below) rather than a single `Option` parameter.
 
-- ✔ The content is **not readable** over FFI; only `len()` is exported.
-- ✔ On the Rust side, drop zeros reliably.
-- ⚠️ **uniffi copies `Vec<u8>` through a `RustBuffer`.** This intermediate copy must be explicitly zeroed, otherwise the passphrase remains in the FFI buffer. Zeroing is done in the constructor; **⟨API-VERIFY⟩** whether uniffi 0.32.0 offers a hook for this or whether the buffer must be handled manually via `RustBuffer::destroy`.
-- ⚠️ **The platform copy must be zeroed by the platform.** Swift `String` and Kotlin `String` are — like JS strings — immutable and not overwritable. **The passphrase must never exist as a `String` in Swift or Kotlin either.**
-  - iOS: `UITextField` with custom `UIKeyInput` delegate, characters directly into an `UnsafeMutableRawBufferPointer`; wipe via `memset_s`. No `.text` access, no SwiftUI `@State private var pass: String`.
-  - Android: `EditText` with `getText().getChars(...)` into a `CharArray`, conversion to `ByteArray`, then `Arrays.fill(chars, '\u0000')` and `ByteArray.fill(0)`. No `.toString()`.
 - ❌ **Not achieved:** protection against swapping, OS memory snapshots, or a debugger in the process. `mlock`/`memlock` is not available for apps on iOS; on Android only limited. **This gap remains open and is not closable.**
 
 #### The exported facade
@@ -368,22 +372,23 @@ impl TrinityCore {
     pub fn verify_psbt(&self, psbt_b64: String) -> Result<PsbtVerdict, VerifyError>;
 
     // ── Signature: PSBT in → PSBT out ──────────────────────────────
-    /// One call, one gesture. Checks SpendPolicy, verifies before each of the two
-    /// signatures, and returns the doubly signed PSBT.
-    /// `pass` is required above the spending limit, on policy changes,
-    /// on export, and on first use after installation (§3.6.3).
-    /// Why one call and not two: with two exported calls the JS layer would sit
-    /// between the signatures, and exactly one biometric prompt
-    /// per send (S27) would no longer be guaranteeable. `sign_a`/`sign_b`
-    /// remain crate-internal in trinity-signer.
-    pub fn sign_ab(&self, psbt_b64: String, pass: Option<Arc<SecretBytes>>)
+    /// Below the spending limit: one gesture, no passphrase.
+    /// Fails with SignError::PassphraseRequired when the policy demands one.
+    /// Checks SpendPolicy, verifies before each of the two signatures, and
+    /// returns the doubly signed PSBT. `sign_a`/`sign_b` remain crate-internal.
+    pub fn sign_ab(&self, psbt_b64: String) -> Result<String, SignError>;
+
+    /// Above the limit, on policy changes, on export, and on first use after install.
+    /// `pass` is a borrowed buffer owned and zeroed by the platform layer; uniffi does
+    /// not copy it, and it is valid only for the duration of this call.
+    pub fn sign_ab_with_passphrase(&self, psbt_b64: String, pass: &[u8])
         -> Result<String, SignError>;
 
     /// Recovery path (§6.4): signs with a key derived from a word list.
-    /// The words come as SecretBytes from the NATIVE layer,
-    /// never from JS, are never persisted, and are zeroed after the signature.
-    pub fn sign_with_recovery_key(&self, psbt_b64: String, slot: KeySlot,
-                                  words: Arc<SecretBytes>) -> Result<String, SignError>;
+    /// `words` is a borrowed buffer from the NATIVE layer — never from JS,
+    /// never persisted; the core copies into crate-internal SecretBytes and zeros after sign.
+    pub fn sign_with_recovery_key(&self, psbt_b64: String, slot: KeySlot, words: &[u8])
+        -> Result<String, SignError>;
 
     // ── Completion ─────────────────────────────────────────────────
     pub fn finalize(&self, psbt_b64: String) -> Result<String, FinalizeError>;   // → tx hex
@@ -418,6 +423,8 @@ pub trait PlatformKeyStore: Send + Sync {
     fn destroy(&self, slot: KeySlot) -> Result<(), PlatformError>;
 }
 ```
+
+**Why two signing exports is not a regression:** The split is along *whether a passphrase is required*, not along the two signatures. Each of `sign_ab` and `sign_ab_with_passphrase` still runs crate-internal `verify → sign A → verify → sign B`, so the app layer never sits between the signatures and the guarantee of **exactly one biometric prompt** per send (S27) is unchanged. The split is forced by the measured uniffi restriction that `Option<&[u8]>` does not compile (Appendix B.2); a single `Option` parameter is not available without reintroducing a copied `Vec<u8>`/`RustBuffer` path.
 
 **What does *not* cross this boundary and why that is the central claim:** There is no exported function that returns a seed, a mnemonic, or an xpriv. Not even for "show backup" — the backup screen is rendered **natively** (Section 6.1), from data that the Rust core writes via a callback directly into a platform-side non-`String` representation. The JS heap never sees the words.
 
@@ -497,7 +504,7 @@ pub fn verify(psbt: &Psbt, descriptor: &str, policy: &VerifyPolicy) -> Result<Ps
 
 Not sharing the shared cryptography would mean writing secp256k1 or SHA-256 yourself. That is forbidden (constraint: no custom cryptography) and would be worse. The third opinion for this layer comes from differential testing against Bitcoin Core (Section 5.1) — offline, in CI, not at runtime.
 
-**Where the verifier runs:** In `sign_ab` (exported) before each of the two crate-internal signature steps, **before** any access to key material. Additionally exported via `verify_psbt`, so the UI can show before confirmation what would be signed. A failure aborts before the KEK is even requested — the biometric prompt never appears.
+**Where the verifier runs:** In `sign_ab` / `sign_ab_with_passphrase` (exported) before each of the two crate-internal signature steps, **before** any access to key material. Additionally exported via `verify_psbt`, so the UI can show before confirmation what would be signed. A failure aborts before the KEK is even requested — the biometric prompt never appears.
 
 ### 1.6 `trinity-chain` — swappable connectivity
 
@@ -720,7 +727,7 @@ Descriptor (change):  identical, /1/* instead of /0/*
 
 | Rule | Rationale |
 |---|---|
-| `sortedmulti`, not `multi` | BIP-67: keys are sorted lexicographically by the 33-byte compressed pubkey. Key order in the descriptor thus becomes irrelevant for address derivation — one fewer recovery error. Sparrow and Nunchuk sort automatically anyway. |
+| `sortedmulti`, not `multi` | BIP-67: keys are sorted lexicographically by the 33-byte compressed pubkey. Key order in the descriptor thus becomes irrelevant for address derivation — one fewer recovery error. Sparrow and Nunchuk sort automatically anyway. **Measured 2026-08-10** with `miniscript 12.3.7` and `bitcoin 0.32.11`: three keys from fixed seeds at `m/48'/0'/0'/2'`, all **six** permutations, five addresses each — **identical** addresses in every case (first address always `bc1quvscw5l6klcfukf0g32n4dlx8k6zee95k8vm6elwrstwrnnwz6gqay4u74`). **Counter-check:** the same construction with `multi` instead of `sortedmulti` yields **different** addresses under reordered keys — the test exercises the sort, not a vacuous truth. |
 | Origin info `[fingerprint/path]` **always** | Without it a foreign signer cannot know which derivation path to take. Its absence is one of the most common causes of failed multisig recovery. |
 | Checksum (BIP-380) **always** export with it | Bitcoin Core requires it for `importdescriptors` and `deriveaddresses`. |
 | Separate receive/change descriptors | Explicit instead of BIP-389 multipath. `bdk_wallet 2.1.0+` supports multipath, but interop support in other wallets is weaker. Two lines on paper are cheaper than a failed recovery. |
@@ -875,7 +882,7 @@ A and B continue to be implemented symmetrically (constraint 2 — one code path
 | **Make input tolerable** | Diceware autocomplete, prefetched Argon2id, per-word feedback — lowers a passphrase entry from ~45 to 10–15 s **without** entropy loss (6.2.1) | mandatory |
 | **It remains the anchor** | The passphrase is the only thing a thief with an unlocked phone does not have. If it falls, the spending limit falls — hence all requirements above remain unchanged, even though it is entered less often | hard |
 
-> **Why constraint 4 and E7 fit together:** Below the spending limit one biometric gesture opens A and B (`sign_ab`, E7). Above the limit, on policy changes, on export, and on first use after installation the passphrase remains **unavoidable** — enforced in the Rust core before unlocking B, not as a missing enum variant. What remains type-system enforced: no exported call changes the `SpendPolicy` or exports key material without `SecretBytes` (S23).
+> **Why constraint 4 and E7 fit together:** Below the spending limit one biometric gesture opens A and B (`sign_ab`, E7). Above the limit, on policy changes, on export, and on first use after installation the passphrase remains **unavoidable** — enforced in the Rust core before unlocking B, via `sign_ab_with_passphrase` (or any other exported call that takes a passphrase parameter). What remains type-system enforced: no exported call changes the `SpendPolicy` or exports key material without a passphrase parameter (S23).
 
 #### Platform flags — exact
 
@@ -1103,8 +1110,10 @@ Registration produces a device-side `PolicyId` (on Ledger an HMAC) that is passe
 
 **Why BitBox02 Nova and Ledger are still firmly planned:** They are the devices you named, and for many users they are the realistic choice. The reason for v1.1 is effort, not rejection:
 
-- **BitBox02 Nova:** `bitbox-api 0.13.0` is currently maintained. ⟨**open**: whether the crate covers the Whisper BLE transport or only USB — if only USB, the BLE protocol must be reimplemented, and iOS support depends on that.⟩
-- **Ledger:** `ledger-transport`/`ledger-apdu 0.11.0` are generic and unchanged since May 2024; a Rust crate at app level for the Bitcoin app does **not** exist. BIP-388 registration and PSBT signing would have to be written as APDU sequences ourselves — security-critical code without a maintained reference. That is the most expensive item on the whole list and the reason it is not in v1.
+- **BitBox02 Nova:** `bitbox-api 0.13.0` is currently maintained. **Measured 2026-08-10** (crates.io API, version `0.13.0`): declared features are exactly `usb` (via `dep:hidapi`), `wasm`, `simulator`, `multithreaded` — **no BLE feature, no Whisper**. Without a self-built Whisper BLE protocol there is **no BitBox support on iOS**, because iOS allows no USB access. The crate covers USB (Android) and related targets; BLE is own work.
+- **Ledger:** `ledger-transport`/`ledger-apdu 0.11.0` are generic and unchanged since May 2024. **Measured 2026-08-10** (crates.io search): present are only transport/SDK layers — `ledger` (APDU exchange), `ledger-sdk-apdu`, `ledger-sdk-transport`, `ledger_device_sdk` (the last is for *writing* device apps, not for driving them). App-level crates exist for **other** chains (`near-ledger`, `stellar-ledger`, `iota-ledger-nano`) — **none for the Bitcoin app**. BIP-388 registration and PSBT signing would be self-written APDU sequences without a maintained reference. That remains the most expensive item on the whole list and the reason it is not in v1.
+
+Both BLE paths (BitBox Whisper and Ledger APDU) are therefore **own protocol work**; the staging rationale above is stronger for that reason, not weaker. The order between them is still open (O14).
 
 #### 2.7.7 What the integration changes security-wise
 
@@ -1200,19 +1209,20 @@ sequenceDiagram
     U->>NAT: confirm
 
     Note over NAT,S: Spending limit — in Rust core, before every key access
-    NAT->>FFI: sign_ab(psbt_b64)
+    NAT->>FFI: sign_ab(psbt_b64)  — or sign_ab_with_passphrase when policy requires
     FFI->>S: check SpendPolicy (3.6.3)
     alt amount ≤ share, window free, not first use
+        Note over NAT,FFI: sign_ab(psbt_b64) — no passphrase parameter
         S-->>NAT: needs only biometrics
         NAT->>PKS: ONE evaluation (LAContext or 5-s window)
         PKS-->>U: Face ID / fingerprint
         U-->>PKS: gesture
         PKS-->>KS: KEK_A and KEK_B — separate keys, one prompt
     else amount > share · policy change · export · first use
-        S-->>NAT: passphrase required
+        S-->>NAT: passphrase required (or SignError::PassphraseRequired from sign_ab)
         NAT->>U: input (Data/ByteArray, NEVER String, autocomplete)
         U->>NAT: passphrase
-        NAT->>FFI: sign_ab(psbt_b64, SecretBytes)
+        NAT->>FFI: sign_ab_with_passphrase(psbt_b64, pass: &[u8])
         PKS-->>U: biometrics for KEK_A
         KS->>KS: Argon2id(pass, pp_salt) — prefetched, ≈ 2 s
         S->>S: check verifier in constant time
@@ -1228,7 +1238,7 @@ sequenceDiagram
     V-->>S: ok
     KS->>KS: entropy_B = AEAD-decrypt(blob_B, KEK_B)
     S->>S: ECDSA, RFC-6979, low-s, self-verification
-    S->>S: zeroize(everything, incl. SecretBytes)
+    S->>S: zeroize(everything, incl. crate-internal SecretBytes)
     S->>S: advance SpendPolicy counter (encrypted)
     S-->>FFI: psbt_ab
     FFI-->>NAT: psbt_ab (2 of 2)
@@ -1257,11 +1267,11 @@ sequenceDiagram
 
 ### 3.3 Verification before signature
 
-The verifier runs **three times** per transaction, and that is intentional, not redundancy from uncertainty. The exported entry is `sign_ab` (one call, one gesture); the two signature steps and their verifier runs sit **crate-internal**:
+The verifier runs **three times** per transaction, and that is intentional, not redundancy from uncertainty. The exported entry is `sign_ab` or `sign_ab_with_passphrase` (one call, one gesture — the split is only whether a passphrase is required); the two signature steps and their verifier runs sit **crate-internal**:
 
 1. **After construction, for display** (`verify_psbt`) — the user sees what the verifier sees, not what the builder claims.
-2. **In `sign_ab`, before access to key A** — if the check fails, the biometric prompt never appears.
-3. **In `sign_ab`, before access to key B** — between the two signatures the `unsigned_tx` must not have changed; comparison runs over its txid. **This third run is the most important** and the reason verification is not done once centrally.
+2. **In the signing export, before access to key A** — if the check fails, the biometric prompt never appears.
+3. **In the signing export, before access to key B** — between the two signatures the `unsigned_tx` must not have changed; comparison runs over its txid. **This third run is the most important** and the reason verification is not done once centrally.
 
 Additionally the internal step for B checks that the already present signature of A belongs to the expected pubkey.
 
@@ -1382,7 +1392,7 @@ For user communication that means: **"€200 a day without passphrase, with larg
 
 **On the cap as a daily and not a per-transaction limit:** The €500 apply cumulatively per 24 hours, not per transfer. A per-transaction limit would achieve nothing because a thief splits — same rationale as above, S29 tests it.
 
-`sign_ab` checks the policy **before** unlocking B and requires `SecretBytes` on exceedance. The tracked counter sits in the encrypted state of the core, not in a JS-readable file.
+`sign_ab` checks the policy **before** unlocking B and fails with `SignError::PassphraseRequired` on exceedance; the platform then calls `sign_ab_with_passphrase` with a borrowed `&[u8]`. The tracked counter sits in the encrypted state of the core, not in a JS-readable file.
 
 **Why there is no per-transaction limit.** Such a limit achieves **nothing** security-wise: a thief who may not move 20% in one transfer makes three smaller ones. Only the cumulative window limit bounds the damage — the transaction limit creates exclusively friction. It is therefore dropped without replacement. One number instead of two, same security, fewer questions.
 
@@ -1510,9 +1520,9 @@ Before E7 the passphrase was entered on every send and was thus practiced. Now a
 | **T1** | **Seed leak of a single key** (e.g. C photographed) | C (or A or B) | ✅ **Yes.** 2-of-3: one key does not sign. The chain breaks at script evaluation — `OP_CHECKMULTISIG` with k=2 rejects one signature. Response: sweep into a fresh setup with the two remaining (6.5). | The attacker knows they have one key and can hunt the second deliberately. **Time-critical:** the sweep must happen, not only be possible. |
 | **T2** | **Device loss** (theft without unlock, loss, defect, water damage) | A and B (device copies) | ✅ **Yes.** Backup-B + C reconstruct the quorum immediately, without wait, without service. The chain breaks because the device copies were never the only instance of B (constraint 2, enforced). | **Only if the B backup exists.** Without it device loss is total loss — hence backup evidence is blocking, not advisory. |
 | **T3** | **Malware without root/jailbreak**, other app on same device | none | ✅ **Yes.** iOS/Android sandbox separates process memory and filesystem; `…ThisDeviceOnly` + SE/StrongBox prevent KEK export; `blob_*` sits in the app sandbox. The chain breaks at OS process isolation. | A kernel hole or sandbox escape lifts that. Then T4b applies. **Evidence:** S9 (no key access without passed check) and the memory-hygiene test from 5.4 evidence that nothing secret leaves the sandbox; the isolation itself is provided by the OS and is not testable by us. |
-| **T4a** | **Compromised JS layer** — malicious npm dependency, without native code execution | none directly | ✅ **Yes, and that is the most likely supply-chain path with React Native.** The JS layer sees no key material (1.3), can neither read nor bypass the spending limit (3.6.3), and cannot push through a manipulated PSBT (verifier, 1.5) — the confirmation dialog is rendered natively from the `PsbtVerdict`. | It can **deceive**, not steal: show a wrong address. Against that the native dialog (6.2) and the address book. **Evidence:** S23 (no path to B without `SecretBytes`, build-breaking), S28 and S30 (limit and policy not bypassable from the JS layer), P2 (every change mutation is rejected). |
+| **T4a** | **Compromised JS layer** — malicious npm dependency, without native code execution | none directly | ✅ **Yes, and that is the most likely supply-chain path with React Native.** The JS layer sees no key material (1.3), can neither read nor bypass the spending limit (3.6.3), and cannot push through a manipulated PSBT (verifier, 1.5) — the confirmation dialog is rendered natively from the `PsbtVerdict`. | It can **deceive**, not steal: show a wrong address. Against that the native dialog (6.2) and the address book. **Evidence:** S23 (no path to B above the limit without a passphrase parameter; no policy/key export without one — build-breaking), S28 and S30 (limit and policy not bypassable from the JS layer), P2 (every change mutation is rejected). |
 | **T4b** | **Compromised phone** — native code execution in app context, jailbreak/root, zero-day | **A and B** | ❌ **No.** The attacker waits for the biometric unlock and reads both keys at the moment of signature. Rust core, `zeroize`, and hardware binding **shrink the time window**, but do not close it. The spending limit does **not** help here — whoever runs code in the process bypasses every app policy. | 🔴 **Full loss. Explicitly not covered** — exactly as with every single-sig wallet on the same phone; we are level here, not worse. Only real countermeasure: B on external hardware (6.6). |
-| **T5a** | **Snatched, unlocked phone** without knowledge of the passphrase — the most common real attack on phone wallets | A and B, limited | ⚠️ **Partial, and exactly here sits the main gain over single-sig.** The thief can spend up to the `SpendPolicy` limit (default `clamp(20 % of balance, €200, €500)` in 24 h — practically €200 at small and €500 at large holdings). Above that the **Rust core** requires the passphrase — the chain breaks in `sign_ab` before B is unlocked. Disabling the policy also only works with passphrase (3.6.4). | ⚠️ **Loss up to the share.** The rest is recoverable: backup-B plus C into a fresh setup, with exactly the two keys the thief does not have. **On a single-sig wallet the same incident is a total loss without course of action.** Share user-settable to "always ask" (3.6.5). |
+| **T5a** | **Snatched, unlocked phone** without knowledge of the passphrase — the most common real attack on phone wallets | A and B, limited | ⚠️ **Partial, and exactly here sits the main gain over single-sig.** The thief can spend up to the `SpendPolicy` limit (default `clamp(20 % of balance, €200, €500)` in 24 h — practically €200 at small and €500 at large holdings). Above that the **Rust core** requires the passphrase — `sign_ab` fails with `PassphraseRequired` and `sign_ab_with_passphrase` is the only path that unlocks B. Disabling the policy also only works with passphrase (3.6.4). | ⚠️ **Loss up to the share.** The rest is recoverable: backup-B plus C into a fresh setup, with exactly the two keys the thief does not have. **On a single-sig wallet the same incident is a total loss without course of action.** Share user-settable to "always ask" (3.6.5). |
 | **T5b** | **Theft with observed passphrase** (shoulder surfing, camera, coercion) + unlockable device | **A and B** | ❌ **No with software-B.** Whoever has the unlocked device and the passphrase has both keys and can additionally disable the spending limit. ✅ **Yes with hardware-B:** B then does not sit on the phone at all; the attacker additionally needs the physical device **and** its PIN, which a secure element enforces with wipe after N failed attempts (6.6.1). | 🔴 **Full loss with software-B.** Partial mitigations: screenshot block and no character preview on the input screen, no autofill — and the passphrase is entered **less often** through E7, which reduces opportunities to watch. A duress wallet is **not** planned (state, dropped). |
 | **T6** | **Manipulated change address** — compromised builder or JS layer directs change to the attacker | none (keys stay safe) | ✅ **Yes, that is the core purpose of `trinity-verify`.** The chain breaks at V3/V4: every output that is neither a declared recipient nor a change address **independently derived from the stored descriptor** leads to rejection **before** any key access. Since the verifier uses neither `miniscript` nor the builder code, a builder bug cannot confirm itself. | An attacker who additionally replaces `descriptor.json` **and** `trinity-verify` wins — but that is already T4b or T9. Residual risk: a bug in the own parser — see T18. **Evidence:** P2 and P3 (every mutation of change address and derivation path leads to rejection), S9 (rejection **before** any key access, with mock assertion), D4 and D5 (verifier against Core and against the builder). |
 | **T7** | **Manipulated recipient address** — JS layer shows X, PSBT contains Y | none | ✅ **Largely.** The chain breaks at the **native** confirmation display: the dialog is rendered from the Rust verifier's `PsbtVerdict`, not from JS state. The user sees what actually sits in the PSBT. | The user must **read** the address. Countermeasure: display in groups of four, first and last 8 characters highlighted, plus an address book with recognition of known recipients. |
@@ -1562,7 +1572,7 @@ The core idea: Own assertions evidence that the code does what the author though
 | **D3** | Change addresses | `trinity-watch`, `/1/*` | `deriveaddresses` | identical | as D2 |
 | **D4** | **Verifier against reference** | `trinity-verify` (own parser + own BIP-32) | `deriveaddresses` | identical | as D2 — **the most important test: it checks independence itself** |
 | **D5** | **Verifier against builder** | `trinity-verify` | `trinity-watch` | identical | as D2 — divergence is an alarm, not a test failure |
-| **D6** | BIP-67 sorting | own sorting | `sortedmulti` in Core | addresses identical under permuted key order | all 6 permutations per setup |
+| **D6** | BIP-67 sorting | own sorting | `sortedmulti` in Core | addresses identical under permuted key order | all 6 permutations per setup. **Pre-verified 2026-08-10** with `miniscript 12.3.7` / `bitcoin 0.32.11` (six permutations identical; `multi` counter-check diverges — §2.3). CI locks the property rather than discovering it. |
 | **D7** | PSBT signature A | `sign_a` | `walletprocesspsbt` with imported xprv_A | signature **bit-identical** (RFC 6979 ⇒ deterministic) | 1,000 PSBTs |
 | **D8** | PSBT signature B | `sign_b` | `walletprocesspsbt` with xprv_B | bit-identical | 1,000 PSBTs |
 | **D9** | PSBT signature C | Sparrow / Core with C | `walletprocesspsbt` | bit-identical | 200 PSBTs |
@@ -1629,7 +1639,7 @@ Runs on every merge to `main` against Signet **and** against a local regtest nod
 | **S20** | **Entropy re-computation** from the verification sheet for all source combinations | an external shell script reproduces `entropy` from `raw_csprng` and `extra_bytes` for dice, coins, cards, and mixtures |
 | **S21** | **Device release:** Coldcard with reported firmware below and above the threshold (2.7.9) | below: stays greyed out, reason shown, **no** xpub import possible. Above: unlocked, import completes. Mk2/Mk3 stay locked in **every** version. |
 | **S22** | **Import of an existing device seed for slot C** attempt | is rejected — for C exclusively a seed freshly generated on the device is allowed (2.7.9), vendor-independent |
-| **S23** | **FFI facade and key material:** check all exported functions and all `SlotPolicy` values | (1) No exported call returns seed, mnemonic, or xpriv. (2) No exported call decrypts `blob_B` **without the `SpendPolicy` having been checked first** (§3.6.3) — below the limit `sign_ab` may open B after biometrics (E7); above only with `SecretBytes`. (3) No exported call changes the `SpendPolicy` or exports key material without `SecretBytes`. This is a type and signature check, not a runtime test — it must **break the build**, not trigger an assertion. |
+| **S23** | **FFI facade and key material:** check all exported functions and all `SlotPolicy` values | (1) No exported call returns seed, mnemonic, or xpriv. (2) No exported call decrypts `blob_B` **without the `SpendPolicy` having been checked first** (§3.6.3) — below the limit `sign_ab` may open B after biometrics (E7); above only `sign_ab_with_passphrase` (borrowed `&[u8]`). (3) No exported call changes the `SpendPolicy` or exports key material without a **passphrase parameter** (`&[u8]` on the export surface). This is a type and signature check, not a runtime test — it must **break the build**, not trigger an assertion. |
 | **S24** | **Session window:** activate, then background the app · lock device · let time expire · let verification fail | KEK_B is immediately zeroed in **all four** cases; the next signature requires the passphrase again. Additionally heap-dump check after window end. |
 | **S25** | **Input performance:** 6-word passphrase with autocomplete, time until signable transaction | ≤ 15 s on a lower-tier reference device, including Argon2id. If the value is missed, KDF prefetch is not effective and the measure from 6.2.1 is not implemented. |
 | **S26** | **NFC tap performance** with hardware-B: time from confirm to fully signed PSBT | ≤ 5 s. Evidences the core claim from 6.2.1 that hardware-B is faster than any passphrase. |
@@ -1649,7 +1659,7 @@ Runs on every merge to `main` against Signet **and** against a local regtest nod
 | **S29c** | **Rate manipulation:** rate source delivers "1 BTC = €1", "1 BTC = 10⁹ €", a jump of several orders of magnitude, nothing, or a timeout | in **all** cases the enforced sat limit stays unchanged. The plausibility filter rejects instead of applying. At signature time there is **evidentially no** network fetch (assertion on the network mock). |
 | **S29d** | **Re-anchor asymmetrically:** lower and raise cap in sats | lowering succeeds without passphrase, raising is rejected without passphrase. Also checked directly over the FFI facade, not only over the UI. |
 | **S29e** | **Signature in airplane mode** below the limit | runs fully through. The spending limit has no network dependence. |
-| **S30** | **Policy change without passphrase** attempt — also directly over the FFI facade, not only over the UI | is rejected. There exists no exported call that writes `SpendPolicy` without `SecretBytes`. |
+| **S30** | **Policy change without passphrase** attempt — also directly over the FFI facade, not only over the UI | is rejected. There exists no exported call that writes `SpendPolicy` without a passphrase parameter (`&[u8]`). |
 | **S31** | **First use after reinstall:** restore wallet from descriptor + blobs, send immediately | passphrase is required, independent of amount and independent of policy. Not disableable. |
 | **S32** | **Theft simulation, full:** unlocked device, attacker drains the share; then recovery with backup-B + C on a second device | attacker gets at most the share. The sweep of the remaining balance succeeds. **That is the test case that evidences the central product claim from 3.6.4** — if it breaks, the claim is not tenable. |
 
@@ -1792,7 +1802,7 @@ flowchart TD
     B8 -->|"yes"| B8a{"SpendPolicy in Rust core<br/>amount ≤ share?<br/>window not exhausted?<br/>not first use?"}
     B8a -->|"yes — normal case"| B9["ONE biometric evaluation<br/>opens A and B (3.6.2)<br/>sign_ab, per slot with verify"]
     B8a -->|"no"| B10["Passphrase input<br/>native, Data/ByteArray, no String<br/>autocomplete, KDF prefetched<br/>screenshot blocked, no autofill"]
-    B10 --> B11["sign_ab(psbt, Some(pass)), per slot with verify"]
+    B10 --> B11["sign_ab_with_passphrase(psbt, pass: &[u8])<br/>per slot with verify"]
     B9 --> B12["finalize + consensus check"]
     B11 --> B12
     B12 --> B13["broadcast — separate backend"]
@@ -1865,7 +1875,7 @@ sequenceDiagram
     CH-->>U: ✅ funds secured
 ```
 
-**Important:** On recovery B and C are **not** persisted. They are derived for exactly one signature and immediately zeroed. The result of recovery is a transaction into a fresh setup, not a restored old wallet. Rationale: after device loss it is unknown whether the old device was compromised — the old keys are treated as potentially exposed. **`sign_with_recovery_key` is the only exported path on which a word list enters the core** — as `SecretBytes` from the native layer, never from JS, never persisted (S4).
+**Important:** On recovery B and C are **not** persisted. They are derived for exactly one signature and immediately zeroed. The result of recovery is a transaction into a fresh setup, not a restored old wallet. Rationale: after device loss it is unknown whether the old device was compromised — the old keys are treated as potentially exposed. **`sign_with_recovery_key` is the only exported path on which a word list enters the core** — as a borrowed `&[u8]` from the native layer (platform-owned, zeroed by the platform; crate-internal `SecretBytes` after copy-on-entry), never from JS, never persisted (S4).
 
 **Alternative path that must work without this app** (`docs/RECOVERY.md`, test cases S5/S6): import descriptor into Sparrow or Bitcoin Core 30.2, build PSBT, sign with B and C, broadcast. This path is the real insurance — it works even if this app no longer exists.
 
@@ -1956,7 +1966,7 @@ The obvious objection to hardware-B is: then the device can just be stolen. True
 | ~~**O17**~~ | ~~Floor amount for small balances~~ | — | — | ✅ **Decided: €200.** Together with share and cap yields `clamp(20 %, €200, €500)`. Implemented in 3.6.3; to re-check in the user test (5.5, criterion 15), because the floor is the only deliberate relaxation of the design. |
 | ~~**O16**~~ | ~~Absolute cap in addition to the share?~~ | — | — | ✅ **Decided: yes, €500 as default.** The rate sets the limit once; enforcement is exclusively a stored sat value — derivation and manipulation protection in 3.6.6. Asked when the limit first applies, not in onboarding. |
 | **O13** | Scope of additional-entropy sources in v1 | (a) dice only · (b) dice + coins + cards · (c) additionally class-B sensor sources | Every source is own code, own canonical encoding, and own test vectors. Class B brings no credit bits and tempts to false security (2.2.1). | **(b).** Dice, coins, and cards are all three countable, share the same ASCII encoding logic, and cover the realistic cases ("I have no dice, but a card deck"). Class B **not in v1** — the benefit is zero credit bits, the risk is a progress bar that lies. |
-| **O14** | BLE transport: order BitBox02 Nova vs. Ledger | (a) BitBox first · (b) Ledger first · (c) parallel | `bitbox-api 0.13.0` is currently maintained; for Ledger there exists **no** Rust crate at app level, BIP-388 registration and signing would be self-written APDU sequences without a maintained reference (2.7.6). | **(a) BitBox02 Nova first.** First clarify whether `bitbox-api` covers the Whisper BLE transport (Appendix B, point 8). Ledger after, with its own review budget for the APDU code. |
+| **O14** | BLE transport: order BitBox02 Nova vs. Ledger | (a) BitBox first · (b) Ledger first · (c) parallel | **Both paths are own protocol work** (measured 2026-08-10). BitBox: `bitbox-api 0.13.0` has no BLE/Whisper feature — Whisper must be reimplemented for iOS (B.8). Ledger: crates.io has transport/SDK layers and app crates for other chains, but **no** maintained Bitcoin-app reference — BIP-388 + PSBT are self-written APDU sequences (B.9, 2.7.6). The choice is no longer "finished crate vs own APDU", but **two self-written protocols**. | **Open — not decided here.** Prior recommendation "(a) BitBox first after Whisper clarification" no longer holds as stated: the Whisper clarification is **negative**. The planner must re-weigh (a)/(b)/(c) between two own-build efforts. |
 | **O3** | Default chain backend | (a) CBF (Kyoto) · (b) user must choose, no default · (c) Electrum with entered server | (a) best compromise of privacy and convenience, but the privacy claim is still unproven (0.3, gap 3). (b) highest honesty, highest abandonment rate. | **(a) CBF as default**, with honest label ("more private than a third-party server, not anonymous") — **but only after gap 3 is closed.** Until then (b). |
 | **O4** | Argon2id profile choice | (a) automatic by RAM · (b) user chooses · (c) fixed `LOW` for all | (a) best security on good device, but different levels between users. (c) uniform, but wastes security on modern devices. | **(a) automatic**, profile visible in settings, `kdf_profile` in the policy record. A profile change is since the correction in 2.4 **no longer** a blob migration, but only a recomputation of the verifier on the next passphrase entry — clearly cheaper than before. |
 | ~~**O5**~~ | ~~KEK combiner for B~~ | — | — | ⛔ **Moot through E7.** The passphrase no longer enters KEK_B; there is nothing to combine. Correction and its price in 2.4. |
@@ -1966,7 +1976,7 @@ The obvious objection to hardware-B is: then the device can just be stolen. True
 | ~~**O9**~~ | ~~Word length of the mnemonics~~ | — | — | ✅ **Decided (E3b): choosable per wallet** at creation, default 24, thereafter immutable. Implemented in 2.2.3; `word_count` sits in the blob header and in `descriptor.json`. |
 | **O10** | Gap limit | (a) 20 (standard) · (b) 100 · (c) configurable | A higher limit allows more unused addresses but costs scan time and breaks recovery in foreign software that stops at 20. | **(a) 20**, with warning on approach. Compatibility with Sparrow and Core beats flexibility. |
 | **O11** | Timing of the external security audit | (a) before v1.0 · (b) after v1.0 with limited beta circle · (c) none | An audit before v1.0 delays; one after exposes real money to an unaudited signature path. | **(a) before v1.0**, scope: `trinity-keystore`, `trinity-signer`, `trinity-verify`, `trinity-ffi`, and both platform keystore implementations. Critical and high findings are release blockers (5.5, criterion 13). |
-| **O12** | Handling of the ⟨API-VERIFY⟩ places | (a) spike week before implementation start · (b) clarify along the way | The affected places (BDK-3.1 signatures, uniffi `RustBuffer` zeroing, Kyoto peer behavior) touch architecture decisions, not only details. | **(a) spike week.** Result is an update of this document that resolves all ⟨API-VERIFY⟩ marks before production code arises. |
+| **O12** | Handling of the ⟨API-VERIFY⟩ places | (a) spike week before implementation start · (b) clarify along the way | Remaining open places that still touch architecture: BDK-3.1 signatures, Kyoto peer behavior (uniffi passphrase path and `secp256k1` advisories closed 2026-08-10 — Appendix B). | **(a) spike week.** Result is an update of this document that resolves all ⟨API-VERIFY⟩ marks before production code arises. |
 
 ---
 
@@ -1979,7 +1989,7 @@ The obvious objection to hardware-B is: then the device can just be stolen. True
 [BIP-32](https://github.com/bitcoin/bips/blob/master/bip-0032.mediawiki) · [BIP-39](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki) · [BIP-48](https://github.com/bitcoin/bips/blob/master/bip-0048.mediawiki) · [BIP-67](https://github.com/bitcoin/bips/blob/master/bip-0067.mediawiki) · [BIP-125](https://github.com/bitcoin/bips/blob/master/bip-0125.mediawiki) · [BIP-129 BSMS](https://bips.dev/129/) · [BIP-157/158](https://bitcoinops.org/en/topics/compact-block-filters/) · [BIP-174 PSBT](https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki) · [BIP-380 Descriptors](https://github.com/bitcoin/bips/blob/master/bip-0380.mediawiki) · [RFC 6979](https://datatracker.ietf.org/doc/html/rfc6979) · [RFC 5869 HKDF](https://datatracker.ietf.org/doc/html/rfc5869) · [RFC 9106 Argon2](https://datatracker.ietf.org/doc/html/rfc9106)
 
 **Libraries and projects:**
-[Bitcoin Dev Kit](https://bitcoindevkit.org/) · [BDK Q1-2026-Update](https://bitcoindevkit.org/blog/2026_q1_update/) · [bdk_wallet Releases](https://github.com/bitcoindevkit/bdk_wallet/releases) · [Book of BDK — Bindings](https://bookofbdk.com/design/bindings/) · [Kyoto (BIP-157/158)](https://github.com/rustaceanrob/kyoto) · [BDK Compact-Filters-Demo](https://bitcoindevkit.org/blog/compact-filters-demo/) · [UniFFI User Guide](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html)
+[Bitcoin Dev Kit](https://bitcoindevkit.org/) · [BDK Q1-2026-Update](https://bitcoindevkit.org/blog/2026_q1_update/) · [bdk_wallet Releases](https://github.com/bitcoindevkit/bdk_wallet/releases) · [Book of BDK — Bindings](https://bookofbdk.com/design/bindings/) · [Kyoto (BIP-157/158)](https://github.com/rustaceanrob/kyoto) · [BDK Compact-Filters-Demo](https://bitcoindevkit.org/blog/compact-filters-demo/) · [UniFFI User Guide](https://mozilla.github.io/uniffi-rs/latest/swift/overview.html) · [UniFFI — Byte buffers (`&[u8]`) — borrow without copy](https://mozilla.github.io/uniffi-rs/latest/types/bytes.html) (B.2; measured against uniffi `=0.32.0` on 2026-08-10)
 
 **Platform:**
 [kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly](https://developer.apple.com/documentation/security/ksecattraccessiblewhenpasscodesetthisdeviceonly) · [Android Keystore System](https://developer.android.com/privacy-and-security/keystore) · [AOSP Keystore Features](https://source.android.com/docs/security/features/keystore/features)
@@ -2008,17 +2018,19 @@ The obvious objection to hardware-B is: then the device can just be stolen. True
 
 To clarify before implementation start in the spike week (O12). Deliberately **not** guessed.
 
+**Status (2026-08-10):** **6 of 14** points closed (B.2, B.5, B.6, B.7, B.8, B.9); **8 still open**. The open items predominantly need device access or source reading, not registry queries alone.
+
 | # | Open | Affects | Why it touches architecture |
 |---|---|---|---|
 | 1 | Exact signatures of `bdk_wallet::Wallet` and `TxBuilder` in 3.1.0: coin-selection enum, `finish()`, `sign_with_signers`, `reveal_next_address`, persistence API | 1.3, 3.2 | Determines the FFI facade and the allowlist |
-| 2 | Does `uniffi 0.32.0` offer a hook to zero the `RustBuffer` on `Vec<u8>` transfer, or is manual `destroy` needed? | 1.3 | Decides whether the passphrase has a non-zeroable intermediate copy |
+| ~~**2**~~ | ~~Does `uniffi 0.32.0` offer a hook to zero the `RustBuffer` on `Vec<u8>` transfer, or is manual `destroy` needed?~~ | 1.3 | ✅ **Resolved 2026-08-10.** Probe against uniffi `=0.32.0`: `&[u8]` compiles as a direct argument (foreign-owned borrow, **no** uniffi copy); `Vec<u8>` also compiles; `Option<&[u8]>` does **not** (`Lift`/`TypeId` missing for nested `&[u8]`). Facade therefore uses borrowed `&[u8]` and two separate exports (`sign_ab` / `sign_ab_with_passphrase`); crate-internal `SecretBytes` remains, not exported. Platform zeroing is still mandatory. |
 | 3 | Does `bip157 0.6.3` load match blocks from a different peer than the filter peer? | 1.6, O3 | Decides whether CBF may be advertised as default |
 | 4 | Do Keychain items with `…ThisDeviceOnly` survive an app uninstall under iOS 17/18/19? | 2.6 | Determines whether an additional wipe path is needed |
-| 5 | Are advisories open for `secp256k1 0.29.1` (2024-09-06)? | 0.3 | `cargo-audit` in the spike week |
+| ~~**5**~~ | ~~Are advisories open for `secp256k1 0.29.1` (2024-09-06)?~~ | 0.3 | ✅ **Resolved 2026-08-10.** `cargo audit` on the full lockfile: **174 crates scanned, zero findings**, exit 0; advisory DB freshly loaded (1190 advisories). |
 | ~~**6**~~ | ~~Coldcard advisory details against the primary source~~ | 0.3, 2.1 | ✅ **Resolved 2026-08-10.** Coinkite advisory (2026-07-30, updated 2026-08-01) and Block Bitcoin Engineering analysis (2026-07-30) read. Affected ranges, fix versions including Mk2/Mk3 4.2.0, dual entropy estimates (vendor ≈ 72 bit vs independent ≤ 2^32 — conservative governs), root cause, dice math, and the fact that a firmware update does not repair existing seeds recorded in 0.3 and 2.1. Stolen-funds figures are secondary and contested; not used as fact. |
-| 7 | Behavior of `bdk_wallet` with `sortedmulti` under permuted descriptor order — identical addresses guaranteed? | D6 | Should hold, but must be evidenced rather than assumed |
-| 8 | Does `bitbox-api 0.13.0` cover the **Whisper BLE transport** or only USB? | 2.7.6, O14 | If only USB: reimplement BLE protocol — and without BLE there is **no** BitBox support on iOS |
-| 9 | Does a maintained Rust or Swift/Kotlin reference exist for the **Ledger Bitcoin app at app level** (BIP-388 registration, PSBT signing), or must the APDU sequences be written ourselves? | 2.7.6, O14 | Determines effort and review budget of the most expensive item on the transport list |
+| ~~**7**~~ | ~~Behavior of `bdk_wallet` with `sortedmulti` under permuted descriptor order — identical addresses guaranteed?~~ | D6 | ✅ **Resolved 2026-08-10.** `miniscript 12.3.7` + `bitcoin 0.32.11`: six permutations of three fixed-seed keys at `m/48'/0'/0'/2'`, five addresses each — **identical**. First address always `bc1quvscw5l6klcfukf0g32n4dlx8k6zee95k8vm6elwrstwrnnwz6gqay4u74`. Counter-check with `multi` diverges under reorder. D6 CI locks the property. |
+| ~~**8**~~ | ~~Does `bitbox-api 0.13.0` cover the **Whisper BLE transport** or only USB?~~ | 2.7.6, O14 | ✅ **Resolved 2026-08-10.** crates.io `bitbox-api 0.13.0` features: `usb`, `wasm`, `simulator`, `multithreaded` only — **no BLE, no Whisper**. Without own Whisper reimplementation: **no BitBox on iOS**. |
+| ~~**9**~~ | ~~Does a maintained Rust or Swift/Kotlin reference exist for the **Ledger Bitcoin app at app level** (BIP-388 registration, PSBT signing)?~~ | 2.7.6, O14 | ✅ **Resolved 2026-08-10.** crates.io: transport/SDK only (`ledger`, `ledger-sdk-apdu`, `ledger-sdk-transport`, `ledger_device_sdk`); app-level crates for other chains (NEAR, Stellar, IOTA) — **none for Bitcoin**. BIP-388 + PSBT = self-written APDU without maintained reference. |
 | 10 | Does Apple's **CoreNFC** suffice for ISO-7816 communication with Coldcard Mk4/Q and Tapsigner, and which entitlement is needed? | 2.7.4 | Decides whether NFC really fits in v1 or whether v1 becomes pure QR |
 | 11 | Behavior of hardware signers with **12-word setups** in a BIP-388 policy — do all devices accept mixed and short seeds without special case? | 2.2.3, D18 | Word length is now choosable per key; a device chain only tested with 24 would be a gap |
 | 12 | **Do Coldcard Q/Mk4 report their firmware version** over QR or NFC in a form evaluable before xpub import? | 2.7.9 | Without evaluable version report the release gate is not automatable and falls back to `Manual` |

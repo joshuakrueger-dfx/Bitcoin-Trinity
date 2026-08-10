@@ -244,6 +244,7 @@ production code.
 - All ⟨API-VERIFY⟩ marks are resolved or explicitly extended
 - Especially: B.2 (uniffi buffer zeroing), B.3 (Kyoto peer behaviour), B.9 (Ledger APDU reference), B.13 (Whisper crypto) — they touch architecture
 - Coldcard version claims verified against the **primary source** (B.6) — ✅ done 2026-08-10; WP-54 is no longer blocked on that
+- **Progress 2026-08-10:** **6 of 14 closed** — B.2 (borrowed `&[u8]`, no RustBuffer intermediate), B.5 (`cargo audit` clean), B.6 (Coldcard primary), B.7 (`sortedmulti` permutation invariance), B.8 (`bitbox-api` has no BLE), B.9 (no Ledger Bitcoin app crate). **8 still open** (B.1, B.3, B.4, B.10–B.14). Package stays **OPEN** until all 14 are answered.
 
 **Tests:** —
 
@@ -280,14 +281,17 @@ candidates; no change to `docs/SPECIFICATION.md`; no decision in JK's place
 **Spec:** 1.1, 1.3 · **Needs:** WP-05 · **State:** OPEN
 
 Value types without I/O: `KeySlot`, `Network`, `PsbtB64`, `Fingerprint`, `WordCount`,
-`XpubWithOrigin`, `Balance`, `AddressInfo`, `PsbtVerdict`, `SendRequest`, `SecretBytes`.
+`XpubWithOrigin`, `Balance`, `AddressInfo`, `PsbtVerdict`, `SendRequest`, crate-internal
+`SecretBytes` (not an exported uniffi type — Appendix B.2).
 
 **Files:** `crates/trinity-types/**`
-**Prohibited:** No I/O dependency; no access to keystore/signer; no secrets in `Debug`/`Display`.
+**Prohibited:** No I/O dependency; no access to keystore/signer; no secrets in `Debug`/`Display`;
+do not export `SecretBytes` via uniffi.
 
 **Acceptance**
-- `SecretBytes`: `ZeroizeOnDrop`, **no** `Clone`, **no** `Debug`/`Display` except `"[redacted]"`
+- `SecretBytes`: crate-internal `ZeroizeOnDrop` wrapper, **no** `Clone`, **no** `Debug`/`Display` except `"[redacted]"`
 - Compile test (`trybuild`): `Clone` on `SecretBytes` **fails**
+- **No** `#[uniffi::export]` / `uniffi::Object` on `SecretBytes` — passphrase crosses FFI as borrowed `&[u8]` only
 - The crate has **no** I/O dependency — enforced via `cargo-deny [bans]`
 - Coverage 100 % lines and branches
 
@@ -539,7 +543,7 @@ since the correction in 2.4 in the policy record.
 
 `Signer` trait, `LocalSigner`. RFC-6979 via `secp256k1`, low-s, `SIGHASH_ALL` exclusively,
 self-verification after every signature. Crate-internal `sign_a`/`sign_b`; later only
-`sign_ab` is exported (WP-40).
+`sign_ab` / `sign_ab_with_passphrase` are exported (WP-40).
 
 **Files:** `crates/trinity-signer/**`
 **Prohibited:** No RNG on the signature path; no export of seeds; no SIGHASH except ALL.
@@ -622,19 +626,20 @@ consensus check via `bitcoinconsensus` (O7), vsize measurement against `max_feer
 #### WP-40 · `trinity-ffi`
 **Spec:** 1.3 · **Needs:** WP-36 · **State:** OPEN
 
-uniffi facade **exactly** per the signature list in 1.3 (`sign_ab`, `sign_with_recovery_key`,
-no exported `sign_a`/`sign_b`), plus `ffi-allowlist.toml` and CI gate script.
+uniffi facade **exactly** per the signature list in 1.3 (`sign_ab`, `sign_ab_with_passphrase`,
+`sign_with_recovery_key` with borrowed `&[u8]`; no exported `sign_a`/`sign_b`; no exported
+`SecretBytes` type), plus `ffi-allowlist.toml` and CI gate script.
 
 **Files:** `crates/trinity-ffi/**`, `crates/trinity-ffi/ffi-allowlist.toml`, `scripts/check_ffi_boundary.py`
-**Prohibited:** No allowlist extension outside this WP without second review; no export of seed/mnemonic/xpriv; do not export `sign_a`/`sign_b`.
+**Prohibited:** No allowlist extension outside this WP without second review; no export of seed/mnemonic/xpriv; do not export `sign_a`/`sign_b`; do not export `SecretBytes` as a uniffi type.
 
 **Acceptance**
 - CI gate `ffi-boundary` breaks on every signature change outside the allowlist
 - Script `scripts/check_ffi_boundary.py` and allowlist `crates/trinity-ffi/ffi-allowlist.toml` exist
 - No exported call returns seed, mnemonic, or xpriv — checked automatically
-- **S23** is a **build-breaking** signature check (no secret export; `blob_B` only after SpendPolicy; no policy/key exports without `SecretBytes`)
-- `sign_ab` and `sign_with_recovery_key` are exported and on the allowlist
-- Result from Appendix B.2 (`RustBuffer` zeroing) is implemented
+- **S23** is a **build-breaking** signature check (no secret export; `blob_B` only after SpendPolicy; no policy/key exports without a passphrase parameter)
+- `sign_ab`, `sign_ab_with_passphrase`, and `sign_with_recovery_key` are exported and on the allowlist
+- Result from Appendix B.2 is implemented: facade uses **borrowed** platform buffers (`&[u8]`); `SecretBytes` is **crate-internal only**; **no** exported `SecretBytes` type; uniffi does not introduce a passphrase intermediate copy
 
 **Tests:** S23
 
@@ -680,8 +685,9 @@ Keystore, `PlatformKeyStore` implementation, passphrase entry **without `String`
 **Spec:** 3.6.2 · **Needs:** WP-41, WP-42 · **State:** OPEN
 
 iOS: one `LAContext` for both accesses. Android: time-based authorization, window as short
-as technically possible, **not** configurable. One call `sign_ab` — not two exported
-signatures with JS in between.
+as technically possible, **not** configurable. One call that signs both slots — not two
+exported A/B steps with JS in between. The passphrase split (`sign_ab` vs
+`sign_ab_with_passphrase`) is orthogonal and still keeps both signatures crate-internal.
 
 **Files:** `platform/ios/**`, `platform/android/**`, wiring to `crates/trinity-ffi/**`
 **Prohibited:** No two biometric prompts below the quota; do not call `sign_a`/`sign_b` from JS.
@@ -910,7 +916,7 @@ Scope depends on **WP-06** via WP-60.
 Scope depends on **WP-06** via WP-60.
 
 **Files:** `app/**`, wiring `sign_with_recovery_key` in `crates/trinity-ffi/**`
-**Prohibited:** Mnemonics never as JS `String`; word list only via `SecretBytes` from the native layer.
+**Prohibited:** Mnemonics never as JS `String`; word list only via borrowed `&[u8]` from the native layer into `sign_with_recovery_key` (crate-internal `SecretBytes` after copy-on-entry).
 
 **Acceptance**
 - **S4** — veto test, mixed word lengths
@@ -1065,7 +1071,8 @@ Scope depends on **WP-06** via WP-60.
 
 | Blocker | Affects | Resolution |
 |---|---|---|
-| ⟨API-VERIFY⟩ open | WP-12, WP-13, WP-40 | WP-05 |
+| ⟨API-VERIFY⟩ open (BDK signatures) | WP-12, WP-13 | WP-05 (B.1 still open) |
+| ~~⟨API-VERIFY⟩ uniffi passphrase / B.2~~ | ~~**WP-40**~~ | ✅ Resolved 2026-08-10 — borrowed `&[u8]`; WP-40 implements the new facade |
 | ~~Appendix B.6 (Coldcard primary source)~~ | ~~**WP-54**~~ | ✅ Resolved 2026-08-10 — WP-54 OPEN |
 | Appendix B.3 (Kyoto peers) | CBF as default (O3) | WP-05 |
 | O13 (entropy sources) | WP-30 | Decision before WP-30 |
