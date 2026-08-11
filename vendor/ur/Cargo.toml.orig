@@ -1,0 +1,31 @@
+
+[package]
+name = "ur"
+description = "A Rust implementation of Uniform Resources"
+license = "MIT"
+version = "0.5.2"
+authors = ["Dominik Spicher <dominikspicher@gmail.com>"]
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/dspicher/ur-rs/"
+[workspace]
+members = ["examples/wasm", "fuzz"]
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+bitcoin_hashes = { version = "1.0.0", default-features = false }
+crc = "3"
+minicbor = { version = "2.0", features = ["alloc"] }
+rand_xoshiro = "0.8"
+
+[dev-dependencies]
+criterion = "0.8"
+hex = "0.4"
+qrcode = { version = "0.14", default-features = false }
+
+[[bench]]
+name = "decode"
+harness = false

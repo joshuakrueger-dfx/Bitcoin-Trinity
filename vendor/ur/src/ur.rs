@@ -1,0 +1,742 @@
+//! Split up big payloads into constantly sized URIs which can be recombined by a decoder.
+//!
+//! The `ur` module provides thin wrappers around fountain en- and decoders
+//! which turn these fountain parts into URIs. To this end the fountain part
+//! attributes (data, checksum, indexes being used, etc.) are combined with
+//! CBOR into a self-describing byte payload and encoded with the `bytewords`
+//! encoding into URIs suitable for web transport and QR codes.
+//! ```
+//! let data = String::from("Ten chars!").repeat(10);
+//! let max_length = 5;
+//! let mut encoder = ur::Encoder::bytes(data.as_bytes(), max_length).unwrap();
+//! let part = encoder.next_part().unwrap();
+//! assert_eq!(
+//!     part,
+//!     "ur:bytes/1-20/lpadbbcsiecyvdidatkpfeghihjtcxiabdfevlms"
+//! );
+//! let mut decoder = ur::Decoder::default();
+//! while !decoder.complete() {
+//!     let part = encoder.next_part().unwrap();
+//!     // Simulate some communication loss
+//!     if encoder.current_index() & 1 > 0 {
+//!         decoder.receive(&part).unwrap();
+//!     }
+//! }
+//! assert_eq!(decoder.message().unwrap().as_deref(), Some(data.as_bytes()));
+//! ```
+
+extern crate alloc;
+use alloc::{string::String, vec::Vec};
+
+/// Errors that can happen during encoding and decoding of URs.
+#[derive(Debug)]
+pub enum Error {
+    /// A bytewords error.
+    Bytewords(crate::bytewords::Error),
+    /// A fountain error.
+    Fountain(crate::fountain::Error),
+    /// Invalid scheme.
+    InvalidScheme,
+    /// No type specified.
+    TypeUnspecified,
+    /// Invalid characters.
+    InvalidCharacters,
+    /// Invalid indices in multi-part UR.
+    InvalidIndices,
+    /// Received a multi-part UR whose type differs from previous parts.
+    UnexpectedType,
+    /// Tried to decode a single-part UR as multi-part.
+    NotMultiPart,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Bytewords(e) => write!(f, "bytewords: {e}"),
+            Self::Fountain(e) => write!(f, "fountain: {e}"),
+            Self::InvalidScheme => write!(f, "invalid scheme"),
+            Self::TypeUnspecified => write!(f, "no type specified"),
+            Self::InvalidCharacters => write!(f, "type contains invalid characters"),
+            Self::InvalidIndices => write!(f, "invalid indices"),
+            Self::UnexpectedType => write!(f, "received an unexpected UR type"),
+            Self::NotMultiPart => write!(f, "can't decode single-part UR as multi-part"),
+        }
+    }
+}
+
+impl From<crate::bytewords::Error> for Error {
+    fn from(e: crate::bytewords::Error) -> Self {
+        Self::Bytewords(e)
+    }
+}
+
+impl From<crate::fountain::Error> for Error {
+    fn from(e: crate::fountain::Error) -> Self {
+        Self::Fountain(e)
+    }
+}
+
+/// Encodes a data payload into a single URI.
+///
+/// # Panics
+///
+/// Panics if the UR type is invalid. Use [`try_encode`] to handle invalid
+/// custom types as an error.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     ur::ur::encode(b"data", &ur::Type::Bytes),
+///     "ur:bytes/iehsjyhspmwfwfia"
+/// );
+/// ```
+#[must_use]
+pub fn encode(data: &[u8], ur_type: &Type) -> String {
+    try_encode(data, ur_type).expect("UR type must be non-empty and ASCII alphanumeric or '-'")
+}
+
+/// Encodes a data payload into a single URI.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     ur::ur::try_encode(b"data", &ur::Type::Bytes).unwrap(),
+///     "ur:bytes/iehsjyhspmwfwfia"
+/// );
+/// ```
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidCharacters`] if the UR type is empty or contains
+/// characters other than ASCII letters, ASCII digits, or `-`.
+pub fn try_encode(data: &[u8], ur_type: &Type) -> Result<String, Error> {
+    validate_type(ur_type.encoding())?;
+    let body = crate::bytewords::encode(data, crate::bytewords::Style::Minimal);
+    Ok(alloc::format!("ur:{}/{body}", ur_type.encoding()))
+}
+
+/// The type of uniform resource.
+pub enum Type<'a> {
+    /// A `bytes` uniform resource.
+    Bytes,
+    /// A custom uniform resource.
+    Custom(&'a str),
+}
+
+impl<'a> Type<'a> {
+    const fn encoding(&self) -> &'a str {
+        match self {
+            Self::Bytes => "bytes",
+            Self::Custom(s) => s,
+        }
+    }
+}
+
+/// A uniform resource encoder with an underlying fountain encoding.
+///
+/// # Examples
+///
+/// See the [`crate::ur`] module documentation for an example.
+pub struct Encoder<'a> {
+    fountain: crate::fountain::Encoder,
+    ur_type: Type<'a>,
+}
+
+impl<'a> Encoder<'a> {
+    /// Creates a new [`bytes`] [`Encoder`] for given a message payload.
+    ///
+    /// The emitted fountain parts will respect the maximum fragment length argument.
+    ///
+    /// # Examples
+    ///
+    /// See the [`crate::ur`] module documentation for an example.
+    ///
+    /// # Errors
+    ///
+    /// If an empty message or a zero maximum fragment length is passed, an error
+    /// will be returned.
+    ///
+    /// [`bytes`]: Type::Bytes
+    pub fn bytes(message: &[u8], max_fragment_length: usize) -> Result<Self, Error> {
+        Ok(Self {
+            fountain: crate::fountain::Encoder::new(message, max_fragment_length)?,
+            ur_type: Type::Bytes,
+        })
+    }
+
+    /// Creates a new [`custom`] [`Encoder`] for given a message payload.
+    ///
+    /// The emitted fountain parts will respect the maximum fragment length argument.
+    ///
+    /// # Errors
+    ///
+    /// If an empty message or a zero maximum fragment length is passed, an error
+    /// will be returned.
+    ///
+    /// [`custom`]: Type::Custom
+    pub fn new(message: &[u8], max_fragment_length: usize, s: &'a str) -> Result<Self, Error> {
+        validate_type(s)?;
+        Ok(Self {
+            fountain: crate::fountain::Encoder::new(message, max_fragment_length)?,
+            ur_type: Type::Custom(s),
+        })
+    }
+
+    /// Returns the URI corresponding to next fountain part.
+    ///
+    /// # Examples
+    ///
+    /// See the [`crate::ur`] module documentation for an example.
+    ///
+    /// # Errors
+    ///
+    /// If serialization fails an error will be returned.
+    pub fn next_part(&mut self) -> Result<String, Error> {
+        let part = self.fountain.next_part();
+        let body = crate::bytewords::encode(&part.cbor()?, crate::bytewords::Style::Minimal);
+        Ok(alloc::format!(
+            "ur:{}/{}/{body}",
+            self.ur_type.encoding(),
+            part.sequence_id()
+        ))
+    }
+
+    /// Returns the current count of already emitted parts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut encoder = ur::Encoder::bytes(b"data", 5).unwrap();
+    /// assert_eq!(encoder.current_index(), 0);
+    /// encoder.next_part().unwrap();
+    /// assert_eq!(encoder.current_index(), 1);
+    /// ```
+    #[must_use]
+    pub const fn current_index(&self) -> usize {
+        self.fountain.current_sequence()
+    }
+
+    /// Returns the number of segments the original message has been split up into.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut encoder = ur::Encoder::bytes(b"data", 3).unwrap();
+    /// assert_eq!(encoder.fragment_count(), 2);
+    /// ```
+    #[must_use]
+    pub const fn fragment_count(&self) -> usize {
+        self.fountain.fragment_count()
+    }
+}
+
+/// An enum used to indicate whether a UR is single- or
+/// multip-part. See e.g. [`decode`] where it is returned.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// This UR contains the full data payload.
+    SinglePart,
+    /// This UR contains part of the data payload.
+    MultiPart,
+}
+
+type MultipartIndex = (usize, usize);
+type Decoded = (Kind, String, Vec<u8>, Option<MultipartIndex>);
+
+/// Decodes a single URI (either single- or multi-part)
+/// into a tuple consisting of the [`Kind`] and the data
+/// payload.
+///
+/// # Examples
+///
+/// ```
+/// assert_eq!(
+///     ur::ur::decode("ur:bytes/iehsjyhspmwfwfia").unwrap(),
+///     (ur::ur::Kind::SinglePart, b"data".to_vec())
+/// );
+/// assert_eq!(
+///     ur::ur::decode("ur:bytes/1-2/iehsjyhspmwfwfia").unwrap(),
+///     (ur::ur::Kind::MultiPart, b"data".to_vec())
+/// );
+/// ```
+///
+/// # Errors
+///
+/// This function errors for invalid inputs, for example
+/// an invalid scheme different from "ur" or an invalid number
+/// of "/" separators.
+pub fn decode(value: &str) -> Result<(Kind, Vec<u8>), Error> {
+    let (kind, _, payload, _) = decode_with_indices(value)?;
+    Ok((kind, payload))
+}
+
+fn decode_with_indices(value: &str) -> Result<Decoded, Error> {
+    let normalized = value.to_ascii_lowercase();
+    let strip_scheme = normalized.strip_prefix("ur:").ok_or(Error::InvalidScheme)?;
+    let (r#type, strip_type) = strip_scheme.split_once('/').ok_or(Error::TypeUnspecified)?;
+
+    validate_type(r#type)?;
+
+    match strip_type.rsplit_once('/') {
+        None => Ok((
+            Kind::SinglePart,
+            String::from(r#type),
+            crate::bytewords::decode(strip_type, crate::bytewords::Style::Minimal)?,
+            None,
+        )),
+        Some((indices, payload)) => {
+            let indices = decode_indices(indices)?;
+
+            Ok((
+                Kind::MultiPart,
+                String::from(r#type),
+                crate::bytewords::decode(payload, crate::bytewords::Style::Minimal)?,
+                Some(indices),
+            ))
+        }
+    }
+}
+
+fn decode_indices(indices: &str) -> Result<MultipartIndex, Error> {
+    let (idx, idx_total) = indices.split_once('-').ok_or(Error::InvalidIndices)?;
+    let idx = idx.parse::<usize>().map_err(|_| Error::InvalidIndices)?;
+    let idx_total = idx_total
+        .parse::<usize>()
+        .map_err(|_| Error::InvalidIndices)?;
+
+    if idx == 0 || idx_total == 0 {
+        return Err(Error::InvalidIndices);
+    }
+
+    Ok((idx, idx_total))
+}
+
+fn validate_type(s: &str) -> Result<(), Error> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(Error::InvalidCharacters);
+    }
+
+    Ok(())
+}
+
+/// A uniform resource decoder able to receive URIs that encode a fountain part.
+///
+/// # Examples
+///
+/// See the [`crate::ur`] module documentation for an example.
+#[derive(Default)]
+pub struct Decoder {
+    fountain: crate::fountain::Decoder,
+    ur_type: Option<String>,
+}
+
+impl Decoder {
+    /// Receives a URI representing a CBOR and `bytewords`-encoded fountain part
+    /// into the decoder.
+    ///
+    /// # Examples
+    ///
+    /// See the [`crate::ur`] module documentation for an example.
+    ///
+    /// # Errors
+    ///
+    /// This function may error along all the necessary decoding steps:
+    ///  - The string may not be a well-formed URI according to the uniform resource scheme
+    ///  - The URI payload may not be a well-formed `bytewords` string
+    ///  - The decoded byte payload may not be valid CBOR
+    ///  - The CBOR-encoded fountain part may be inconsistent with previously received ones
+    ///  - The UR type may differ from previously received parts
+    ///
+    /// In all these cases, an error will be returned.
+    pub fn receive(&mut self, value: &str) -> Result<(), Error> {
+        let (kind, ur_type, decoded, indices) = decode_with_indices(value)?;
+        if kind != Kind::MultiPart {
+            return Err(Error::NotMultiPart);
+        }
+        if self
+            .ur_type
+            .as_ref()
+            .is_some_and(|expected| expected != &ur_type)
+        {
+            return Err(Error::UnexpectedType);
+        }
+
+        let part = crate::fountain::Part::from_cbor(decoded.as_slice())?;
+        let (idx, idx_total) = indices.ok_or(Error::InvalidIndices)?;
+        if part.sequence() != idx || part.sequence_count() != idx_total {
+            return Err(Error::InvalidIndices);
+        }
+
+        self.fountain.receive(part)?;
+        if self.ur_type.is_none() {
+            self.ur_type = Some(ur_type);
+        }
+        Ok(())
+    }
+
+    /// Returns the type of the multi-part UR being decoded.
+    ///
+    /// Returns `None` before the first valid part has been received.
+    #[must_use]
+    pub fn ur_type(&self) -> Option<&str> {
+        self.ur_type.as_deref()
+    }
+
+    /// Returns whether the decoder is complete and hence the message available.
+    ///
+    /// # Examples
+    ///
+    /// See the [`crate::ur`] module documentation for an example.
+    #[must_use]
+    pub fn complete(&self) -> bool {
+        self.fountain.complete()
+    }
+
+    /// If [`complete`], returns the decoded message, `None` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// If an inconsistent internal state detected, an error will be returned.
+    ///
+    /// # Examples
+    ///
+    /// See the [`crate::ur`] module documentation for an example.
+    ///
+    /// [`complete`]: Decoder::complete
+    pub fn message(&self) -> Result<Option<Vec<u8>>, Error> {
+        self.fountain.message().map_err(Error::from)
+    }
+
+    /// Returns the number of source fragments that have been resolved so far,
+    /// either received directly or reconstructed via XOR elimination.
+    ///
+    /// Returns `None` before any part has been received. Once decoding has
+    /// started, returns `Some(0..K)`; `Some(0)` means a part was received but
+    /// no fragment has resolved yet (e.g. only complex XOR parts seen so far).
+    /// Once [`complete`] is true, this equals [`fragment_count`] (wrapped in
+    /// `Some`).
+    ///
+    /// [`complete`]: Decoder::complete
+    /// [`fragment_count`]: Decoder::fragment_count
+    #[must_use]
+    pub fn resolved_fragment_count(&self) -> Option<usize> {
+        self.fountain.resolved_fragment_count()
+    }
+
+    /// Returns `K`, the total number of source fragments the message was split
+    /// into. This is `0` until the first part has been received, since the
+    /// fragment count is learned from part metadata.
+    #[must_use]
+    pub const fn fragment_count(&self) -> usize {
+        self.fountain.fragment_count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minicbor::{bytes::ByteVec, data::Tag};
+
+    fn make_message_ur(length: usize, seed: &str) -> Vec<u8> {
+        let message = crate::xoshiro::test_utils::make_message(seed, length);
+        minicbor::to_vec(ByteVec::from(message)).unwrap()
+    }
+
+    #[test]
+    fn test_single_part_ur() {
+        let ur = make_message_ur(50, "Wolf");
+        let encoded = encode(&ur, &Type::Bytes);
+        let expected = "ur:bytes/hdeymejtswhhylkepmykhhtsytsnoyoyaxaedsuttydmmhhpktpmsrjtgwdpfnsboxgwlbaawzuefywkdplrsrjynbvygabwjldapfcsdwkbrkch";
+        assert_eq!(encoded, expected);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!((Kind::SinglePart, ur), decoded);
+    }
+
+    #[test]
+    fn test_ur_encoder() {
+        const fn fragment_count(encoder: &Encoder<'_>) -> usize {
+            encoder.fragment_count()
+        }
+
+        let ur = make_message_ur(256, "Wolf");
+        let mut encoder = Encoder::bytes(&ur, 30).unwrap();
+        let expected = vec![
+            "ur:bytes/1-9/lpadascfadaxcywenbpljkhdcahkadaemejtswhhylkepmykhhtsytsnoyoyaxaedsuttydmmhhpktpmsrjtdkgslpgh",
+            "ur:bytes/2-9/lpaoascfadaxcywenbpljkhdcagwdpfnsboxgwlbaawzuefywkdplrsrjynbvygabwjldapfcsgmghhkhstlrdcxaefz",
+            "ur:bytes/3-9/lpaxascfadaxcywenbpljkhdcahelbknlkuejnbadmssfhfrdpsbiegecpasvssovlgeykssjykklronvsjksopdzmol",
+            "ur:bytes/4-9/lpaaascfadaxcywenbpljkhdcasotkhemthydawydtaxneurlkosgwcekonertkbrlwmplssjtammdplolsbrdzcrtas",
+            "ur:bytes/5-9/lpahascfadaxcywenbpljkhdcatbbdfmssrkzmcwnezelennjpfzbgmuktrhtejscktelgfpdlrkfyfwdajldejokbwf",
+            "ur:bytes/6-9/lpamascfadaxcywenbpljkhdcackjlhkhybssklbwefectpfnbbectrljectpavyrolkzczcpkmwidmwoxkilghdsowp",
+            "ur:bytes/7-9/lpatascfadaxcywenbpljkhdcavszmwnjkwtclrtvaynhpahrtoxmwvwatmedibkaegdosftvandiodagdhthtrlnnhy",
+            "ur:bytes/8-9/lpayascfadaxcywenbpljkhdcadmsponkkbbhgsoltjntegepmttmoonftnbuoiyrehfrtsabzsttorodklubbuyaetk",
+            "ur:bytes/9-9/lpasascfadaxcywenbpljkhdcajskecpmdckihdyhphfotjojtfmlnwmadspaxrkytbztpbauotbgtgtaeaevtgavtny",
+            "ur:bytes/10-9/lpbkascfadaxcywenbpljkhdcahkadaemejtswhhylkepmykhhtsytsnoyoyaxaedsuttydmmhhpktpmsrjtwdkiplzs",
+            "ur:bytes/11-9/lpbdascfadaxcywenbpljkhdcahelbknlkuejnbadmssfhfrdpsbiegecpasvssovlgeykssjykklronvsjkvetiiapk",
+            "ur:bytes/12-9/lpbnascfadaxcywenbpljkhdcarllaluzmdmgstospeyiefmwejlwtpedamktksrvlcygmzemovovllarodtmtbnptrs",
+            "ur:bytes/13-9/lpbtascfadaxcywenbpljkhdcamtkgtpknghchchyketwsvwgwfdhpgmgtylctotzopdrpayoschcmhplffziachrfgd",
+            "ur:bytes/14-9/lpbaascfadaxcywenbpljkhdcapazewnvonnvdnsbyleynwtnsjkjndeoldydkbkdslgjkbbkortbelomueekgvstegt",
+            "ur:bytes/15-9/lpbsascfadaxcywenbpljkhdcaynmhpddpzmversbdqdfyrehnqzlugmjzmnmtwmrouohtstgsbsahpawkditkckynwt",
+            "ur:bytes/16-9/lpbeascfadaxcywenbpljkhdcawygekobamwtlihsnpalnsghenskkiynthdzotsimtojetprsttmukirlrsbtamjtpd",
+            "ur:bytes/17-9/lpbyascfadaxcywenbpljkhdcamklgftaxykpewyrtqzhydntpnytyisincxmhtbceaykolduortotiaiaiafhiaoyce",
+            "ur:bytes/18-9/lpbgascfadaxcywenbpljkhdcahkadaemejtswhhylkepmykhhtsytsnoyoyaxaedsuttydmmhhpktpmsrjtntwkbkwy",
+            "ur:bytes/19-9/lpbwascfadaxcywenbpljkhdcadekicpaajootjzpsdrbalpeywllbdsnbinaerkurspbncxgslgftvtsrjtksplcpeo",
+            "ur:bytes/20-9/lpbbascfadaxcywenbpljkhdcayapmrleeleaxpasfrtrdkncffwjyjzgyetdmlewtkpktgllepfrltataztksmhkbot",
+        ];
+        assert_eq!(fragment_count(&encoder), 9);
+        for (index, e) in expected.into_iter().enumerate() {
+            assert_eq!(encoder.current_index(), index);
+            assert_eq!(encoder.next_part().unwrap(), e);
+        }
+    }
+
+    #[test]
+    fn test_ur_encoder_decoder_bc_crypto_request() {
+        // https://github.com/BlockchainCommons/crypto-commons/blob/67ea252f4a7f295bb347cb046796d5b445b3ad3c/Docs/ur-99-request-response.md#the-seed-request
+
+        fn crypto_seed() -> Result<Vec<u8>, minicbor::encode::Error<std::convert::Infallible>> {
+            let mut e = minicbor::Encoder::new(Vec::new());
+
+            let uuid = hex::decode("020C223A86F7464693FC650EF3CAC047").unwrap();
+            let seed_digest =
+                hex::decode("E824467CAFFEAF3BBC3E0CA095E660A9BAD80DDB6A919433A37161908B9A3986")
+                    .unwrap();
+
+            #[rustfmt::skip]
+            e.map(2)?
+                // 2.1 UUID: tag 37 type bytes(16)
+                .u8(1)?.tag(Tag::new(37))?.bytes(&uuid)?
+                // 2.2 crypto-seed: tag 500 type map
+                .u8(2)?.tag(Tag::new(500))?.map(1)?
+                // 2.2.1 crypto-seed-digest: tag 600 type bytes(32)
+                .u8(1)?.tag(Tag::new(600))?.bytes(&seed_digest)?;
+
+            Ok(e.into_writer())
+        }
+
+        let data = crypto_seed().unwrap();
+
+        let e = encode(&data, &Type::Custom("crypto-request"));
+        let expected = "ur:crypto-request/oeadtpdagdaobncpftlnylfgfgmuztihbawfsgrtflaotaadwkoyadtaaohdhdcxvsdkfgkepezepefrrffmbnnbmdvahnptrdtpbtuyimmemweootjshsmhlunyeslnameyhsdi";
+        assert_eq!(expected, e);
+
+        // Decoding should yield the same data
+        let decoded = decode(e.as_str()).unwrap();
+        assert_eq!((Kind::SinglePart, data), decoded);
+    }
+
+    #[test]
+    fn test_multipart_ur() {
+        let ur = make_message_ur(32767, "Wolf");
+        let mut encoder = Encoder::bytes(&ur, 1000).unwrap();
+        let mut decoder = Decoder::default();
+        while !decoder.complete() {
+            assert_eq!(decoder.message().unwrap(), None);
+            decoder.receive(&encoder.next_part().unwrap()).unwrap();
+        }
+        assert_eq!(decoder.message().unwrap(), Some(ur));
+    }
+
+    #[test]
+    fn test_decoder_progress_accessors() {
+        let ur = make_message_ur(32767, "Wolf");
+        let mut encoder = Encoder::bytes(&ur, 1000).unwrap();
+        let mut decoder = Decoder::default();
+
+        // Before any part received: nothing resolved, no fragments known.
+        assert_eq!(decoder.resolved_fragment_count(), None);
+        assert_eq!(decoder.fragment_count(), 0);
+
+        // Feed parts one at a time; after the first part, fragment_count
+        // is known (== encoder.fragment_count()) and resolved grows.
+        let part = encoder.next_part().unwrap();
+        decoder.receive(&part).unwrap();
+        assert_eq!(decoder.resolved_fragment_count(), Some(1));
+        assert_eq!(decoder.fragment_count(), encoder.fragment_count());
+
+        // Continue until complete; resolved must reach fragment_count.
+        let mut prev_resolved = 1;
+        while !decoder.complete() {
+            let part = encoder.next_part().unwrap();
+            decoder.receive(&part).unwrap();
+            let now = decoder.resolved_fragment_count().unwrap();
+            assert!(now >= prev_resolved, "resolved count should not decrease");
+            assert!(
+                now <= decoder.fragment_count(),
+                "resolved must not exceed K"
+            );
+            prev_resolved = now;
+        }
+        assert_eq!(
+            decoder.resolved_fragment_count(),
+            Some(decoder.fragment_count())
+        );
+    }
+
+    #[test]
+    fn test_decoder() {
+        assert!(matches!(
+            decode("uhr:bytes/aeadaolazmjendeoti"),
+            Err(Error::InvalidScheme)
+        ));
+        assert!(matches!(
+            decode("ur:aeadaolazmjendeoti"),
+            Err(Error::TypeUnspecified)
+        ));
+        assert!(matches!(
+            decode("ur:bytes#4/aeadaolazmjendeoti"),
+            Err(Error::InvalidCharacters)
+        ));
+        assert!(matches!(
+            decode("ur:/aeadaolazmjendeoti"),
+            Err(Error::InvalidCharacters)
+        ));
+        assert!(matches!(
+            decode("ur:bytes/1-1a/aeadaolazmjendeoti"),
+            Err(Error::InvalidIndices)
+        ));
+        assert!(matches!(
+            decode("ur:bytes/0-1/aeadaolazmjendeoti"),
+            Err(Error::InvalidIndices)
+        ));
+        assert!(matches!(
+            decode("ur:bytes/1-0/aeadaolazmjendeoti"),
+            Err(Error::InvalidIndices)
+        ));
+        assert!(matches!(
+            decode("ur:bytes/1-1/toomuch/aeadaolazmjendeoti"),
+            Err(Error::InvalidIndices)
+        ));
+        decode("ur:bytes/aeadaolazmjendeoti").unwrap();
+        decode("ur:whatever-12/aeadaolazmjendeoti").unwrap();
+    }
+
+    #[test]
+    fn test_case_agnostic_decode() {
+        assert_eq!(
+            decode(&encode(b"data", &Type::Bytes).to_ascii_uppercase()).unwrap(),
+            (Kind::SinglePart, b"data".to_vec())
+        );
+        let message = b"Ten chars!";
+        let mut encoder = Encoder::bytes(message, 5).unwrap();
+        let mut decoder = Decoder::default();
+        for _ in 0..encoder.fragment_count() {
+            decoder
+                .receive(&encoder.next_part().unwrap().to_ascii_uppercase())
+                .unwrap();
+        }
+        assert_eq!(
+            decoder.message().unwrap().as_deref(),
+            Some(message.as_slice())
+        );
+    }
+
+    #[test]
+    fn test_custom_encoder() {
+        let data = String::from("Ten chars!");
+        let max_length = 5;
+        let mut encoder = Encoder::new(data.as_bytes(), max_length, "my-scheme").unwrap();
+        assert_eq!(
+            encoder.next_part().unwrap(),
+            "ur:my-scheme/1-2/lpadaobkcywkwmhfwnfeghihjtcxiansvomopr"
+        );
+    }
+
+    #[test]
+    fn test_error_formatting() {
+        assert_eq!(
+            super::Error::from(crate::bytewords::Error::InvalidChecksum).to_string(),
+            "bytewords: invalid checksum"
+        );
+        assert_eq!(
+            super::Error::from(crate::fountain::Error::EmptyPart).to_string(),
+            "fountain: expected non-empty part"
+        );
+        assert_eq!(super::Error::InvalidScheme.to_string(), "invalid scheme");
+        assert_eq!(
+            super::Error::TypeUnspecified.to_string(),
+            "no type specified"
+        );
+        assert_eq!(
+            super::Error::InvalidCharacters.to_string(),
+            "type contains invalid characters"
+        );
+        assert_eq!(super::Error::InvalidIndices.to_string(), "invalid indices");
+        assert_eq!(
+            super::Error::UnexpectedType.to_string(),
+            "received an unexpected UR type"
+        );
+        assert_eq!(
+            super::Error::NotMultiPart.to_string(),
+            "can't decode single-part UR as multi-part"
+        );
+    }
+
+    #[test]
+    fn test_invalid_custom_type() {
+        assert!(matches!(
+            try_encode(b"data", &Type::Custom("bad/type")),
+            Err(Error::InvalidCharacters)
+        ));
+        assert!(matches!(
+            try_encode(b"data", &Type::Custom("")),
+            Err(Error::InvalidCharacters)
+        ));
+        assert!(matches!(
+            Encoder::new(b"data", 5, "bad/type"),
+            Err(Error::InvalidCharacters)
+        ));
+    }
+
+    #[test]
+    fn test_not_multipart() {
+        let mut decoder = Decoder::default();
+        assert_eq!(
+            decoder
+                .receive("ur:bytes/iehsjyhspmwfwfia")
+                .unwrap_err()
+                .to_string(),
+            "can't decode single-part UR as multi-part"
+        );
+    }
+
+    #[test]
+    fn test_decoder_rejects_mismatched_indices() {
+        let mut encoder = Encoder::bytes(b"Ten chars!", 5).unwrap();
+        let part = encoder.next_part().unwrap();
+        let tampered = part.replacen("/1-", "/2-", 1);
+
+        let mut decoder = Decoder::default();
+        assert!(matches!(
+            decoder.receive(&tampered),
+            Err(Error::InvalidIndices)
+        ));
+    }
+
+    #[test]
+    fn test_decoder_rejects_mismatched_types() {
+        let message = b"Ten chars!";
+        let mut encoder = Encoder::new(message, 5, "first-type").unwrap();
+        let first = encoder.next_part().unwrap();
+        let second = encoder.next_part().unwrap();
+        let mismatched = second.replacen("ur:first-type/", "ur:second-type/", 1);
+
+        let mut decoder = Decoder::default();
+        assert_eq!(decoder.ur_type(), None);
+        decoder.receive(&first).unwrap();
+        assert_eq!(decoder.ur_type(), Some("first-type"));
+        assert!(matches!(
+            decoder.receive(&mismatched),
+            Err(Error::UnexpectedType)
+        ));
+
+        decoder.receive(&second.to_ascii_uppercase()).unwrap();
+        assert!(decoder.complete());
+        assert_eq!(decoder.ur_type(), Some("first-type"));
+        assert_eq!(
+            decoder.message().unwrap().as_deref(),
+            Some(message.as_slice())
+        );
+    }
+}

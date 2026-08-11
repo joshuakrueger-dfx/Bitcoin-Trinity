@@ -1,0 +1,83 @@
+[package]
+name = "fast_qr"
+version = "0.13.1"
+authors = ["erwan.vivien <erwan.vivien@epita.fr>"]
+edition = "2021"
+description = "Generates optimized QRCode"
+documentation = "https://docs.rs/fast_qr/latest/fast_qr/"
+homepage = "https://fast-qr.com/"
+readme = "README.md"
+repository = "https://github.com/erwanvivien/fast_qr/"
+keywords = ["qr", "qrcode", "qr-generator", "qrcode-generator", "qr-gen"]
+categories = ["multimedia", "multimedia::encoding", "multimedia::images"]
+include = ["src", "Cargo.toml", "./README.md", "./LICENSE", "benches"]
+rust-version = "1.59"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+resvg = { version = "0.45.1", optional = true }
+
+
+[features]
+svg = []
+image = ["svg", "dep:resvg"]
+wasm-bindgen = ["dep:wasm-bindgen"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+
+[profile.release]
+debug = false
+lto = true
+codegen-units = 1
+opt-level = 's'     # Optimize for size
+panic = 'abort'     # About unwinding code
+strip = "debuginfo"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Oz"]
+
+[dev-dependencies]
+base64 = "0.22.1"
+qrcode = "0.14.1"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+criterion = { version = "0.6", default-features = false, features = [
+    "cargo_bench_support",
+    "plotters",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.6"
+
+[[bench]]
+name = "qr"
+harness = false
+
+[package.metadata.docs.rs]
+features = ["image", "svg"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "custom"
+path = "examples/custom.rs"
+required-features = ["image"]
+
+[[example]]
+name = "embed"
+path = "examples/embed.rs"
+required-features = ["image"]
+
+[[example]]
+name = "image"
+path = "examples/image.rs"
+required-features = ["image"]
+
+[[example]]
+name = "svg"
+path = "examples/svg.rs"
+required-features = ["svg"]
