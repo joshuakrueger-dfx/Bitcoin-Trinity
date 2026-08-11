@@ -247,7 +247,12 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 ---
 
 #### WP-05 · Spike week: work through Appendix B
-**Spec:** Appendix B (14 points), O12 · **Needs:** WP-02 · **State:** DONE for v1 (9/14 closed; 5 remaining are justified-deferred v1.1 hardware scope)
+**Spec:** Appendix B (14 points), O12 · **Needs:** WP-02 · **State:** DONE
+
+**Scope note:** 9/14 Appendix B points closed; the 5 remaining (B.10–B.14) are
+v1.1 hardware-signer device scope, justified deferral per E6 — they do not
+block v1, so this package counts DONE for v1 purposes and reopens only when
+v1.1 hardware work starts.
 
 Clarify **all 14 open points** from Appendix B and **update the Spec**. No
 production code.
