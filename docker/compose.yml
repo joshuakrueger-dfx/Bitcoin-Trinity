@@ -1,0 +1,64 @@
+# Test environment — docs/TESTING.md §2
+#
+# Current state: images hang on tags (see TODO(WP-02) below). Tags are
+# mutable — digest pinning is an acceptance criterion of WP-02 and makes the
+# setup reproducible and offline-capable after the first pull.
+#
+# ⚠️ Bitcoin Core 30.0 and 30.1 are forbidden (wallet migration bug,
+#    binaries withdrawn on 2026-01-05). scripts/test-env.sh checks the
+#    running version via getnetworkinfo and hard-aborts.
+
+services:
+  bitcoind:
+    # TODO(WP-02): enter digest once the image is chosen —
+    # image: <repo>@sha256:<digest>
+    image: bitcoin/bitcoin:30.2
+    command:
+      - -regtest=1
+      - -server=1
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcuser=trinity
+      - -rpcpassword=regtest
+      - -fallbackfee=0.0002
+      - -txindex=1
+      - -blockfilterindex=1      # for CBF (BIP-157/158), WP-16
+      - -peerblockfilters=1
+      # -deprecatedrpc=create_bdb deliberately NOT set: the project uses
+      # exclusively descriptor wallets (createwallet … descriptors=true).
+      # The flag would unlock the legacy BDB path that the wallet bug
+      # of Core 30.0/30.1 hung on — do not re-enter out of habit.
+    ports:
+      # Host bind is loopback-only: static test credentials must not be
+      # reachable on every interface. Container↔container still uses the
+      # Compose network (electrs → bitcoind:18443/18444).
+      - "127.0.0.1:18443:18443"  # RPC regtest
+      - "127.0.0.1:18444:18444"  # P2P regtest
+    volumes:
+      - bitcoind-data:/home/bitcoin/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=trinity", "-rpcpassword=regtest", "getblockchaininfo"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  electrs:
+    # Backend for trinity-chain::ElectrumBackend (WP-14)
+    image: getumbrel/electrs:v0.10.9
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    command:
+      - --network=regtest
+      - --daemon-rpc-addr=bitcoind:18443
+      - --daemon-p2p-addr=bitcoind:18444
+      - --electrum-rpc-addr=0.0.0.0:60401
+      - --cookie=trinity:regtest
+    ports:
+      - "127.0.0.1:60401:60401"
+    volumes:
+      - electrs-data:/data
+
+volumes:
+  bitcoind-data:
+  electrs-data:

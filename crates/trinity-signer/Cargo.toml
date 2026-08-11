@@ -1,0 +1,20 @@
+[package]
+name         = "trinity-signer"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+trinity-types = { path = "../trinity-types", version = "0.1.0" }
+trinity-keystore = { path = "../trinity-keystore", version = "0.1.0" }
+trinity-verify = { path = "../trinity-verify", version = "0.1.0" }
+bitcoin = { workspace = true }
+argon2 = { workspace = true }
+subtle = { workspace = true }
+zeroize = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

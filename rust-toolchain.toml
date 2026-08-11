@@ -1,0 +1,5 @@
+# Exact version, not "stable" — reproducible builds (SPECIFICATION.md §1.7)
+[toolchain]
+channel    = "1.94.1"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+profile    = "minimal"

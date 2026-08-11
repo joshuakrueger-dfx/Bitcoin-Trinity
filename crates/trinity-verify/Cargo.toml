@@ -1,0 +1,17 @@
+[package]
+name         = "trinity-verify"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+# DELIBERATELY WITHOUT miniscript — the verifier derives independently (SPECIFICATION.md §1.5).
+# Enforced by deny.toml [bans]. A violation fails the build, not the review.
+trinity-types = { path = "../trinity-types", version = "0.1.0" }
+bitcoin = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
