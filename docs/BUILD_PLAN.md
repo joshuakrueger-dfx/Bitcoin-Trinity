@@ -242,8 +242,9 @@ which packages own acceptance. No new bans invented here.
 - **Iterators:** BDK `list_unspent` / `list_output` / `transactions` return
   lifetime-bound iterators — collect into `Vec` before any FFI export.
 - **Must not:** multipath descriptors; keystore/signer dependencies (`[bans]`).
-- **BDK signatures (B.1):** resolved 2026-08-10 from pinned crate source — no longer
-  blocked on WP-05 for BDK marks. Kyoto (B.3) and Keychain uninstall (B.4) remain open.
+- **BDK signatures (B.1):** resolved 2026-08-10 from pinned crate source. Kyoto (B.3) and
+  Keychain uninstall (B.4) also resolved 2026-08-11 — WP-05 no longer blocks WP-10+ on any
+  v1-relevant Appendix B item.
 - **Accepts:** D1, P5, P7, P9 (WP-11); D2, D3, D6, P8 (WP-12).
 
 ### `trinity-chain` (WP-13 … WP-16)

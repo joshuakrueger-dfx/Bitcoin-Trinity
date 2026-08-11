@@ -44,15 +44,16 @@ specification reference, acceptance criteria, and the tests that must pass.
 | WP-01 | IN PROGRESS | Workflow rewritten without job-level `hashFiles`; always-on check/test/supply-chain/coverage; FFI/differential/signet use in-job harness detection; actions pinned to full commit SHAs; `permissions.contents: read`; checkout `persist-credentials: false`; tools pinned `tool@x.y.z` with `fallback: none`. Gate tests under `scripts/tests/`. | **Never executed on a runner** (local structural tests ≠ GitHub acceptance). |
 | WP-02 | IN PROGRESS | `test-env.sh` (syntax checked, Core version lock implemented) and `docker/compose.yml` (valid; images still by tag; published host ports bound to `127.0.0.1`) | **Never started.** Image-**digests missing**. No `bitcoind`, no `electrs` pulled. |
 | WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. | Real coverage/mutation run pending until domain source exists; branch coverage feasibility of the pinned toolchain documented in TESTING.md §3.1. Not claimed green on GitHub. |
-| WP-04 | **OPEN** | — | `vendor/`, `.cargo/config.toml`, build without network in container, reproducible-build proof via two runners. |
-| WP-07 | **OPEN** | Repo-side cause repaired locally: job-level `hashFiles` rejected the workflow before jobs scheduled; workflow no longer uses it (in-job harness detection, SHA-pinned actions). Local structural tests pass. | **Post-repair GitHub runner evidence still missing** — no claim that GitHub accepted or ran the new workflow. Account-side causes (minutes / spending limit) remain **unconfirmed** until a post-repair run is observed. |
+| WP-04 | IN PROGRESS | — | `vendor/`, `.cargo/config.toml`, build without network in container, reproducible-build proof via two runners. |
+| **WP-07** | **DONE** | Root cause (job-level `hashFiles` at the `if:` key, rejected by GitHub before any job scheduled) fixed by moving harness detection in-job via `$GITHUB_OUTPUT`. **Real GitHub-runner evidence obtained 2026-08-11**: run [31528761822](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31528761822) (branch, all 6 non-gated jobs `success`), run [31530227149](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530227149) (branch, post-resign re-run, all `success`), run [31530360173](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530360173) (`main` after merge, **all 8 jobs `success`** including the main-only Signet/Mutation jobs). Account-side concerns (minutes/spending limit) are moot — the runs executed. | — |
 
-**So: no, M0 is not done.** What is done is WP-00. The three packages in progress still hang
-on tools/containers and on **runner evidence**. The confirmed job-level `hashFiles` reject
-path is repaired in-repo; until a post-repair GitHub run is observed, WP-07 stays open.
+**So: M0 is not fully done, but WP-00 and WP-07 are.** WP-01–03 still hang on
+tools/containers for their own acceptance criteria (image digests, coverage on real
+source), independent of WP-07 — CI now genuinely executes on GitHub, which is what
+WP-07 required and what WP-01/02/03 build on top of.
 
-**Next step: WP-05** (content unlock for M1–M5), **WP-07** (make gates measurable), and
-**WP-04** (vendoring) — see [`BUILD_PLAN.md`](BUILD_PLAN.md) §3 for waves.
+**Next step: WP-05** (remaining Appendix-B spike items) and **WP-04** (vendoring, in
+progress) — see [`BUILD_PLAN.md`](BUILD_PLAN.md) §3 for waves.
 
 ---
 
@@ -246,7 +247,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 ---
 
 #### WP-05 · Spike week: work through Appendix B
-**Spec:** Appendix B (14 points), O12 · **Needs:** WP-02 · **State:** OPEN
+**Spec:** Appendix B (14 points), O12 · **Needs:** WP-02 · **State:** DONE for v1 (9/14 closed; 5 remaining are justified-deferred v1.1 hardware scope)
 
 Clarify **all 14 open points** from Appendix B and **update the Spec**. No
 production code.
@@ -259,20 +260,26 @@ production code.
 - All ⟨API-VERIFY⟩ marks are resolved or explicitly extended
 - Especially: B.2 (uniffi buffer zeroing), B.3 (Kyoto peer behaviour), B.9 (Ledger APDU reference), B.13 (Whisper crypto) — they touch architecture
 - Coldcard version claims verified against the **primary source** (B.6) — ✅ done 2026-08-10; WP-54 is no longer blocked on that
-- **Progress 2026-08-10:** **7 of 14 closed** — B.1 (BDK 3.1.0 signatures from pinned crate source; build RNG + interior mutability recorded), B.2 (borrowed `&[u8]`, no RustBuffer intermediate), B.5 (`cargo audit` clean), B.6 (Coldcard primary), B.7 (`sortedmulti` permutation invariance), B.8 (`bitbox-api` has no BLE), B.9 (no Ledger Bitcoin app crate). **7 still open** (B.3, B.4, B.10–B.14). Package stays **OPEN** until all 14 are answered.
+- **Progress 2026-08-11:** **9 of 14 closed** — B.1 (BDK 3.1.0 signatures from pinned crate source; build RNG + interior mutability recorded), B.2 (borrowed `&[u8]`, no RustBuffer intermediate), B.3 (Kyoto/`bip157` block-fetch dispatches to a uniformly random peer, read directly from `github.com/rustaceanrob/kyoto` source — `node.rs::get_blocks` → `peer_map.rs::send_random`), B.4 (iOS Keychain `…ThisDeviceOnly` survives uninstall, confirmed via Apple docs + DTS forum answer + 2025 `expo-secure-store` reconfirmation — mandatory wipe-on-first-launch mitigation recorded in Spec 2.6), B.5 (`cargo audit` clean), B.6 (Coldcard primary), B.7 (`sortedmulti` permutation invariance), B.8 (`bitbox-api` has no BLE), B.9 (no Ledger Bitcoin app crate). **5 still open** (B.10–B.14) — all v1.1 hardware-signer scope, justified deferral per E6, does not block v1. **Package can move to DONE** for v1 purposes; the 5 remaining reopen when v1.1 hardware work starts.
 
 **Tests:** —
 
 ---
 
 #### WP-06 · Base decision app shell
-**Spec:** 1.3, 1.7, 6.1 · **Needs:** — · **State:** REVIEW
+**Spec:** 1.3, 1.7, 6.1 · **Needs:** — · **State:** DONE
 
 Spike, no build: on which basis the app shell (navigation, onboarding, send,
 receive, QR, address book, settings) is created — null variant, WDK shell without
 wallet half, BlueWallet as template, Nunchuk only as GPL exclusion. The Rust core
 (`bdk_wallet` + uniffi) and E1 remain untouched. Result is a decision paper with
-measurable criteria K1–K9 and a recommendation; the project owner makes the choice.
+measurable criteria K1–K9 and a recommendation.
+
+**Decision (2026-08-11):** project owner adopted the recommendation as-is —
+**(a) null variant**, empty React Native/Expo scaffold built from scratch against
+the own Rust core only. Nunchuk excluded (GPL-3.0, §1.7 criterion 9b). WDK and
+BlueWallet both fail the hard §1.3 check as documented (seed/mnemonic held as JS
+`string` in both) and were rejected. WP-60 may proceed on this basis.
 
 **Files:** `docs/APP_SHELL_DECISION.md`, `docs/IMPLEMENTATION_PLAN.md` (this package, M6 references)
 **Prohibited:** No application code; no fork; no `npx create-expo-app`; no `npm install` of
@@ -442,12 +449,12 @@ iterators collected before any higher layer.
 **Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
 
 **Files:** `crates/trinity-chain/**` (CBF backend)
-**Prohibited:** Do not set CBF as default while Appendix B.3 is open (O3); no silent fallback.
+**Prohibited:** No silent fallback.
 
 **Acceptance**
 - Balance identical within S2; failure analogous to S13
 - `privacy_profile()` returns the data from the table in 1.6
-- Result of Appendix B.3 is incorporated; without that evidence CBF must **not** be set as default (O3)
+- Appendix B.3 resolved 2026-08-11 (uniformly-random-peer block-fetch, `github.com/rustaceanrob/kyoto` source) — **CBF may now be set as default (O3)**, labeled "more private than a third-party server, not anonymous" per the resolved finding, not as unqualified "private"
 
 **Tests:** —
 
@@ -1130,12 +1137,12 @@ Scope depends on **WP-06** via WP-60.
 
 | Blocker | Affects | Resolution |
 |---|---|---|
-| CI never executes jobs (0 s runs, `total_count=0`) | **All gates** — differential, coverage, mutants, signet, check-plan in CI, release evidence | **WP-07** (repo-side `hashFiles` reject repaired locally; post-repair runner evidence still required; account-side unconfirmed until then) |
+| ~~CI never executes jobs (0 s runs, `total_count=0`)~~ | ~~All gates — differential, coverage, mutants, signet, check-plan in CI, release evidence~~ | ✅ **Resolved 2026-08-11 — WP-07 DONE.** Real GitHub runner evidence obtained (runs 31528761822, 31530227149, 31530360173, all `success`) after the in-job `hashFiles` fix. |
 | ~~⟨API-VERIFY⟩ open (BDK signatures) / B.1~~ | ~~WP-12, WP-13, WP-40~~ | ✅ Resolved 2026-08-10 — signatures + build RNG + interior mutability in Spec; WP-12/WP-13/WP-40 implement against recorded types |
 | ~~⟨API-VERIFY⟩ uniffi passphrase / B.2~~ | ~~**WP-40**~~ | ✅ Resolved 2026-08-10 — borrowed `&[u8]`; WP-40 implements the new facade |
 | ~~Appendix B.6 (Coldcard primary source)~~ | ~~**WP-54**~~ | ✅ Resolved 2026-08-10 — WP-54 OPEN |
-| Appendix B.3 (Kyoto peers) | CBF as default (O3) | WP-05 |
-| Appendix B.4 (Keychain after uninstall) | WP-41 wipe path | WP-05 |
+| ~~Appendix B.3 (Kyoto peers)~~ | ~~CBF as default (O3)~~ | ✅ Resolved 2026-08-11 — uniformly-random-peer, O3 decided, WP-16 unblocked |
+| ~~Appendix B.4 (Keychain after uninstall)~~ | ~~WP-41 wipe path~~ | ✅ Resolved 2026-08-11 — survives uninstall, mandatory wipe mitigation recorded in Spec 2.6, WP-41 implements |
 | O13 (entropy sources) | WP-30 | Decision before WP-30 |
 | O18 (window time source) | WP-34 | Decision before WP-34 implements the source; fail-closed rule in 3.6.7 is fixed either way |
 | O6 (crash reporting) | WP-60 | Decision before WP-60 |
