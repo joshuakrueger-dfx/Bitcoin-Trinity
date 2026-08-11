@@ -425,7 +425,13 @@ class TestCiWorkflowInvariants(unittest.TestCase):
             body,
             r"if:\s*steps\.source\.outputs\.real\s*==\s*'true'",
         )
-        self.assertIn("cargo llvm-cov --workspace --lcov --output-path lcov.info", body)
+        # Branch coverage needs nightly (SPECIFICATION.md §0.3); pin job stays 1.94.1 too.
+        self.assertIn(
+            "cargo +nightly llvm-cov --workspace --locked --lcov --branch --output-path lcov.info",
+            body,
+        )
+        self.assertIn("toolchain: nightly", body)
+        self.assertIn('toolchain: "1.94.1"', body)
         self.assertIn("python3 scripts/coverage_gate.py lcov.info", body)
 
         # Probe step must not be conditioned on real==true (always runs after checkout).

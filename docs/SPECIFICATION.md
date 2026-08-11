@@ -194,6 +194,15 @@ All version states below were queried on **2026-08-08** directly against `crates
 
 **Compatibility check:** `bdk_electrum 0.24.0` requires `bdk_core ^0.6.1`, `bdk_bitcoind_rpc 0.22.0` requires `bdk_core ^0.6.1` and `bitcoin ^0.32.0`, `bdk_kyoto 0.17.0` requires `bdk_wallet ^3`. All three coexist with the pinning above. ✔
 
+### Toolchain: build pin vs. coverage measurement
+
+| Role | Toolchain | Where | Notes |
+|---|---|---|---|
+| **Build, test, clippy, fmt, deny, release** | **1.94.1** (exact) | `rust-toolchain.toml`; every CI job except the coverage instrumenter | Reproducible builds (§1.7). No floating `stable`. |
+| **Coverage instrumentation only** | **nightly** | CI `coverage` job and local `just coverage` via `cargo +nightly llvm-cov … --branch` | Branch coverage needs `-Z coverage-options=branch`, which stable 1.94.1 rejects. Nightly is a **measurement toolchain**, not a ship/runtime pin. |
+
+**Decision (2026-08-11, closes TESTING.md §3.1 gap option (b)):** Keep `rust-toolchain.toml` on **1.94.1** for all deliverable artifacts. Enable branch coverage by running `cargo llvm-cov` under **nightly only** in the coverage path (`--branch`, `+nightly`). This does not weaken the build pin: coverage output is a CI metric, not a release binary. When stable gains branch coverage without `-Z`, drop the nightly coverage step and re-measure on the pin.
+
 ### External references and incidents
 
 | Fact | State | Source / evidence quality |

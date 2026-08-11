@@ -167,11 +167,20 @@ jobs:
             echo "Unexpected source-state output: ${state}" >&2
             exit 1
           fi
+      # Build/test pin remains 1.94.1 (rust-toolchain.toml). Branch coverage
+      # needs -Z coverage-options=branch, which only nightly accepts — install
+      # nightly solely for this job (SPECIFICATION.md §0.3 / WP-00 decision).
       # dtolnay/rust-toolchain master observed 2026-08-05
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         if: steps.source.outputs.real == 'true'
         with:
           toolchain: "1.94.1"
+          components: llvm-tools-preview
+      # dtolnay/rust-toolchain master observed 2026-08-05 (same pin; channel nightly)
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        if: steps.source.outputs.real == 'true'
+        with:
+          toolchain: nightly
           components: llvm-tools-preview
       # taiki-e/install-action v2.85.11
       - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026
@@ -181,7 +190,8 @@ jobs:
           fallback: none
       - name: Coverage report
         if: steps.source.outputs.real == 'true'
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        # +nightly so --branch works; rust-toolchain.toml stays 1.94.1 for all other jobs.
+        run: cargo +nightly llvm-cov --workspace --locked --lcov --branch --output-path lcov.info
       # Thresholds per crate from docs/TESTING.md §3.2; exceptions need
       # a justification in coverage-exclusions.toml
       - name: Coverage gate
