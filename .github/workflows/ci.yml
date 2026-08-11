@@ -1,0 +1,290 @@
+# Fast path (< 10 min) on every push.
+# Differential D1–D19: on every PR once the harness exists (TESTING.md §5).
+# Signet and mutants: after main (TESTING.md §5).
+# Structure and rationale: docs/TESTING.md §5
+#
+# Conditional jobs detect harnesses in-job (boolean $GITHUB_OUTPUT) rather than
+# with job-level hashFiles — hashFiles is unavailable at the job `if:` key and
+# caused GitHub to reject the workflow with zero jobs.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least-privilege for this read-only CI (no write tokens on the GITHUB_TOKEN).
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # --- Fast path: breaks on any warning --------------------------------------
+  check:
+    name: fmt · clippy · build · docs
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.94.1"            # from rust-toolchain.toml, deliberately exact
+          components: rustfmt, clippy
+      # Swatinem/rust-cache v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Populate the cargo cache from the lockfile, then build offline so the
+      # build step cannot reach the network (TESTING.md §5: --locked --offline).
+      # This instructs Cargo offline after an explicit fetch; it does not prove
+      # the runner is network-isolated at the host level.
+      - name: Fetch lockfile dependencies
+        run: cargo fetch --locked
+
+      - name: Build (lockfile binding, offline)
+        run: cargo build --workspace --locked --offline
+
+      # Deterministic stdlib gate tests for CI/workflow invariants, dep budget,
+      # plan inventory, and compose port binds (TESTING.md §5 / §6).
+      - name: Gate tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      # Checks the four documents against each other: every test ID has exactly one WP,
+      # every decision an implementing package, no dead section reference.
+      - name: check-plan
+        run: python3 scripts/check_plan.py
+
+      # "Every dependency on the signature path is an attack vector on other people's money."
+      - name: Signature-path budget
+        run: python3 scripts/dep_budget.py
+
+  # --- Tests -----------------------------------------------------------------
+  test:
+    name: Unit · Property
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: "1.94.1" }
+      # Swatinem/rust-cache v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Tests with fixed seed
+        env:
+          PROPTEST_RNG_SEED: "0x5452494e495459"   # "TRINITY" — reproducible failures
+        run: cargo test --workspace --locked
+
+  # --- Supply chain ----------------------------------------------------------
+  supply-chain:
+    name: deny · audit
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: "1.94.1" }
+      # taiki-e/install-action v2.85.11
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2
+          fallback: none
+      # License allowlist: an unknown license fails the build instead of
+      # slipping through. Release criterion 9b.
+      - run: cargo deny check
+      - run: cargo audit --deny warnings
+
+  # --- FFI boundary ----------------------------------------------------------
+  # This boundary is too important to leave to code review.
+  # Script scripts/check_ffi_boundary.py and allowlist
+  # crates/trinity-ffi/ffi-allowlist.toml come from WP-40 — the job always
+  # schedules; when the allowlist is absent it reports a successful no-op.
+  ffi-boundary:
+    name: FFI allowlist
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Detect FFI allowlist
+        id: harness
+        run: |
+          if [ -f crates/trinity-ffi/ffi-allowlist.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "FFI allowlist not present yet (WP-40); skipping boundary check."
+          fi
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        if: steps.harness.outputs.present == 'true'
+        with: { toolchain: "1.94.1" }
+      - name: FFI boundary check
+        if: steps.harness.outputs.present == 'true'
+        run: python3 scripts/check_ffi_boundary.py
+
+  # --- Coverage --------------------------------------------------------------
+  # Always scheduled (no job-level if / hashFiles). Pure scaffolds make
+  # cargo-llvm-cov fail with "no coverage data found" before the gate can run;
+  # an in-job source probe no-ops until any threshold crate has real source.
+  # When real source is present, report + gate stay fail-closed (never skip on
+  # their failure).
+  coverage:
+    name: Coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Probe for non-scaffold source
+        id: source
+        run: |
+          state="$(python3 scripts/coverage_gate.py --source-state)"
+          echo "real=${state}" >> "$GITHUB_OUTPUT"
+          if [ "${state}" = "false" ]; then
+            echo "WP-03: all threshold crates are pure scaffolds; coverage report is an explicit no-op until real source appears."
+          elif [ "${state}" = "true" ]; then
+            echo "Non-scaffold source present; running fail-closed llvm-cov + coverage_gate."
+          else
+            echo "Unexpected source-state output: ${state}" >&2
+            exit 1
+          fi
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        if: steps.source.outputs.real == 'true'
+        with:
+          toolchain: "1.94.1"
+          components: llvm-tools-preview
+      # taiki-e/install-action v2.85.11
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026
+        if: steps.source.outputs.real == 'true'
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+      - name: Coverage report
+        if: steps.source.outputs.real == 'true'
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      # Thresholds per crate from docs/TESTING.md §3.2; exceptions need
+      # a justification in coverage-exclusions.toml
+      - name: Coverage gate
+        if: steps.source.outputs.real == 'true'
+        run: python3 scripts/coverage_gate.py lcov.info
+
+  # --- Differential: on every PR once the harness exists (TESTING.md §5)
+  # Reactivation: WP-23 delivers tests/differential/ and the Cargo feature
+  # `differential`. In-job detection keeps the job green (no-op) until then.
+  differential:
+    name: Differential against Bitcoin Core 30.2
+    runs-on: ubuntu-latest
+    needs: [check, test]
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Detect differential harness
+        id: harness
+        run: |
+          if [ -d tests/differential ] && [ -n "$(find tests/differential -type f 2>/dev/null | head -n 1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Differential harness not present yet (WP-23); skipping."
+          fi
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        if: steps.harness.outputs.present == 'true'
+        with: { toolchain: "1.94.1" }
+      - name: Start test environment
+        id: env
+        if: steps.harness.outputs.present == 'true'
+        run: |
+          echo "started=true" >> "$GITHUB_OUTPUT"
+          ./scripts/test-env.sh up
+      - name: D1–D19
+        if: steps.harness.outputs.present == 'true'
+        run: cargo test --workspace --locked --features differential -- --test-threads=1
+      - name: Stop test environment
+        if: always() && steps.env.outputs.started == 'true'
+        run: ./scripts/test-env.sh down
+
+  # --- Signet: after main once the harness exists (TESTING.md §5)
+  # Reactivation: WP-45 delivers tests/signet-e2e/ and the Cargo feature
+  # `signet` (S1–S8/S32). Main-only; in-job detection until the harness exists.
+  signet:
+    name: Signet scenarios S1–S36
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    needs: [check, test]
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Detect signet harness
+        id: harness
+        run: |
+          if [ -d tests/signet-e2e ] && [ -n "$(find tests/signet-e2e -type f 2>/dev/null | head -n 1)" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Signet harness not present yet (WP-45); skipping."
+          fi
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        if: steps.harness.outputs.present == 'true'
+        with: { toolchain: "1.94.1" }
+      - name: Start test environment
+        id: env
+        if: steps.harness.outputs.present == 'true'
+        run: |
+          echo "started=true" >> "$GITHUB_OUTPUT"
+          ./scripts/test-env.sh up
+      # S4 and S5 (recovery with and without this app) have their own veto:
+      # their failure blocks independently of everything else.
+      - name: Signet scenarios
+        if: steps.harness.outputs.present == 'true'
+        run: cargo test --workspace --locked --features signet -- --test-threads=1 --ignored
+      - name: Stop test environment
+        if: always() && steps.env.outputs.started == 'true'
+        run: ./scripts/test-env.sh down
+
+  mutants:
+    name: Mutation Testing
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    needs: [test]
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain master observed 2026-08-05
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with: { toolchain: "1.94.1" }
+      # taiki-e/install-action v2.85.11
+      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+      # Coverage measures execution, not checking. A surviving mutant means:
+      # a line is run, but its result is not checked.
+      - run: cargo mutants -p trinity-verify -p trinity-signer -p trinity-keystore -p trinity-entropy

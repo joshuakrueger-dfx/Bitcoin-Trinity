@@ -1,0 +1,5 @@
+# Exceptions from the coverage thresholds (docs/TESTING.md §3.4).
+# Every entry needs 'reason' AND 'test' — if either is missing, the build fails.
+# trinity-verify allows no exception.
+#
+# No entries yet — that is the desired state.

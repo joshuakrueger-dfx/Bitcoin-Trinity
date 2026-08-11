@@ -1,0 +1,67 @@
+# BTC Trinity — Workspace
+#
+# All versions are pinned exactly (`=`), not as a range. Rationale and the
+# full, registry-resolved state are in docs/SPECIFICATION.md §0.3.
+#
+# IMPORTANT: "latest version" is the wrong rule here. bdk_wallet 3.1.0 declares
+# miniscript ^12.3.5 and bitcoin ^0.32.8. Anyone who takes miniscript 13.x or secp256k1 0.31.x
+# directly links two copies of libsecp256k1 and gets incompatible types
+# at module boundaries. secp256k1 is therefore NOT declared directly — it comes
+# transitively via bitcoin 0.32 as 0.29.x.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT"
+repository = "https://github.com/joshuakrueger-dfx/Bitcoin-Trinity"
+
+[workspace.dependencies]
+# --- Bitcoin core (versions from SPECIFICATION.md §0.3) ---
+bitcoin      = { version = "=0.32.11", default-features = false, features = ["std", "serde"] }
+miniscript   = { version = "=12.3.7", default-features = false, features = ["std"] }
+bdk_wallet   = { version = "=3.1.0" }
+bdk_chain    = { version = "=0.23.3" }
+bdk_core     = { version = "=0.6.3" }
+
+# --- Chain backends ---
+bdk_electrum     = { version = "=0.24.0" }
+bdk_bitcoind_rpc = { version = "=0.22.0" }
+bdk_kyoto        = { version = "=0.17.0" }
+
+# --- Cryptography and secret handling ---
+argon2    = { version = "=0.5.3" }
+zeroize   = { version = "=1.9.0", features = ["derive"] }
+getrandom = { version = "=0.4.3" }
+subtle    = { version = "=2.6.1" }          # constant-time comparison, WP-35
+bip39     = { version = "=2.2.2" }
+
+# --- Hardware transport (M5) ---
+bbqr = { version = "=0.5.0" }
+ur   = { version = "=0.5.2" }
+
+# --- FFI ---
+uniffi = { version = "=0.32.0" }
+
+# --- General ---
+serde      = { version = "=1.0.228", features = ["derive"] }
+serde_json = { version = "=1.0.145" }
+thiserror  = { version = "=2.0.17" }
+
+# --- Tests only ---
+proptest = { version = "=1.8.0" }
+trybuild = { version = "=1.0.114" }
+
+[profile.release]
+# No unwinding: prevents half-cleaned secrets on the stack (SPECIFICATION.md §2.5)
+panic         = "abort"
+lto           = true
+codegen-units = 1
+strip         = true
+
+[profile.dev]
+panic = "abort"
