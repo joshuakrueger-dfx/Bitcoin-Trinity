@@ -1,3 +1,5 @@
+Trinity — serverloses 2-von-3 Wallet-Schema. Entwurf: Joshua Krüger, 2026.
+
 # BTC Trinity — Technical Specification
 
 **Bitcoin-only 2-of-3 multisig wallet, three equal keys, no state, no services.**
@@ -108,6 +110,34 @@ Reducing friction does **not** mean giving up security properties that create th
 1. **The backup evidence for B and C is blocking** (6.1). Without it, a lost phone is total loss — then we would not be better than single-sig, only more complicated. That is the one point where abandonment is better than waving through.
 2. **The spending limit cannot be changed without the passphrase** (3.6). It is what turns "snatched phone = everything gone" into "snatched phone = a portion gone, remainder recoverable". If it were disableable with the same gesture that also signs, it would be worthless.
 3. **The limit is enforced in the Rust core, not in the UI** (3.6). A limit that the JS layer checks is ineffective against the most likely attack path — a compromised npm dependency.
+
+---
+
+## Stand der Technik und Abgrenzung
+
+Ein 2-von-3-Wallet mit einem Tageslimit für Zahlungen allein über das Handy gibt es bereits:
+[Bitkey von Block](https://bitkey.world/learning-hub/how-bitkey-works) verteilt seine drei
+Schlüssel auf die App, das Hardware-Gerät und den Bitkey-Server. Für „Transfer without hardware“
+zeichnet der Server Transaktionen bis zum vom Nutzer festgelegten Tageslimit mit. Würde der
+kumulierte Abfluss die Grenze überschreiten, zeichnet der Server nicht mit; dann ist der
+Hardware-Schlüssel erforderlich. Bitkey dokumentiert diese Durchsetzung sowohl in der
+[Nutzeranleitung zum Transferlimit](https://support.bitkey.world/hc/en-us/articles/19427218356500-How-do-I-set-up-Transfer-without-hardware-and-a-transfer-limit)
+als auch in seinem
+[technischen Recovery-Paper](https://support.bitkey.world/hc/en-us/article_attachments/38300867748500).
+
+Diese Grenze ist kryptografisch stärker als die Grenze von Trinity: Bei Bitkey fehlt oberhalb des
+Limits ohne den Hardware-Schlüssel eine zweite Signatur für das 2-von-3-Quorum. Bei Trinity ist
+das Limit dagegen App-Politik im eigenen Rust-Kern. Ein Angreifer mit nativem Codezugriff im
+App-Prozess kann diese Politik umgehen und nach dem Entsperren auf A und B zugreifen; dann fällt
+die Grenze. Das ist kein gleichwertiger Schutz und wird hier nicht so dargestellt.
+
+Der beanspruchte Unterschied ist die fehlende Abhängigkeit von einem Dritten: In keinem
+Schlüssel-, Signatur-, Policy- oder Recovery-Pfad muss ein externer Server, Dienst oder eine
+Firma existieren. Austauschbare Quellen für Chain-Daten können selbst betrieben oder ersetzt
+werden; sie halten keinen Schlüssel und setzen keine Ausgabepolitik durch.
+
+Trinity beansprucht keine Erfindung. Es ist eine Referenzarchitektur, die bekannte Bausteine mit
+dokumentierter Begründung und offengelegten Grenzen kombiniert, keine neue Kryptografie.
 
 ---
 

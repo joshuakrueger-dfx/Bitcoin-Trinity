@@ -1,3 +1,5 @@
+Trinity — serverloses 2-von-3 Wallet-Schema. Entwurf: Joshua Krüger, 2026.
+
 # Recovery without this app
 
 **This document is the real insurance.** It describes how you get to your bitcoin

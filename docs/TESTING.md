@@ -1,3 +1,5 @@
+Trinity — serverloses 2-von-3 Wallet-Schema. Entwurf: Joshua Krüger, 2026.
+
 # Test environment, coverage and CI
 
 **Reference documents:** [`SPECIFICATION.md`](SPECIFICATION.md) §5 (test strategy, test cases,

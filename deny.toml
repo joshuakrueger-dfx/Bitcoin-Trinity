@@ -21,7 +21,6 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
     "0BSD",
     "BSL-1.0",                         # Boost, via ryu
     "BlueOak-1.0.0",                   # via minicbor (ur, QR transport)

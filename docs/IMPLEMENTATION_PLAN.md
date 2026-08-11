@@ -1,3 +1,5 @@
+Trinity — serverloses 2-von-3 Wallet-Schema. Entwurf: Joshua Krüger, 2026.
+
 # Implementation Plan
 
 **Purpose:** This file is the work list. Each work package (WP) is cut so that

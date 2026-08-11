@@ -1,3 +1,5 @@
+Trinity — serverloses 2-von-3 Wallet-Schema. Entwurf: Joshua Krüger, 2026.
+
 # BTC Trinity
 
 Bitcoin-only 2-of-3 multisig wallet. Three equal keys, no timelock, no
@@ -99,6 +101,17 @@ red, the plan is incomplete.
 
 Before implementation starts: resolve the 14 points in Appendix B of the specification — that is
 WP-05 and blocks milestones M1 through M5.
+
+## Authorship and licenses
+
+The original design and specification are by [Joshua Krüger](AUTHORS), 2026.
+
+- Source code in `crates/` and `scripts/` is available under the
+  [MIT License](LICENSE-MIT). Copies or substantial portions must retain its copyright and
+  permission notice.
+- Documentation in `docs/` is available under
+  [Creative Commons Attribution 4.0 International](LICENSE-DOCS). Reuse must credit
+  Joshua Krüger, link to the license and indicate changes.
 
 ## What this model does not cover
 

@@ -17,8 +17,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/Amoxidx/BTC-Trinity-Save-"
+license = "MIT"
+repository = "https://github.com/joshuakrueger-dfx/Bitcoin-Trinity"
 
 [workspace.dependencies]
 # --- Bitcoin core (versions from SPECIFICATION.md §0.3) ---
