@@ -62,8 +62,13 @@ just signet-test        # S1–S36 on regtest and signet       (< 45 min)
 just fuzz <target>      # cargo-fuzz
 just coverage           # report + gate check
 just mutants            # cargo-mutants on verify and signer
+just gate-tests         # stdlib gates: CI workflow, inventory, dep budget, compose
 just check-plan         # §6: Test-IDs ↔ WPs ↔ Spec
 ```
+
+Published host ports in `docker/compose.yml` bind to **`127.0.0.1` only** (regtest
+RPC/P2P and electrs). Static test credentials must not be reachable on every host
+interface; container-to-container traffic stays on the Compose network.
 
 ### 2.4 Determinism
 
@@ -205,16 +210,34 @@ flowchart LR
 |---|---|---|
 | `fmt`, `clippy -D warnings` | every push | any warning |
 | `build --locked --offline` | every push | network access or lockfile drift |
+| Gate tests (`scripts/tests/`) | every push | workflow/dep-budget/inventory/compose invariant broken |
 | Unit + Property | every push | failure; seed is printed in the log |
-| Coverage gate | every push | under threshold, or exception without justification |
+| Coverage gate | every push (job always schedules; report is no-op while all threshold crates are pure scaffolds) | under threshold, exception without justification, or llvm-cov/gate failure once real source is present |
 | `cargo-deny`/`audit`/`vet` | every push | unknown license, advisory, duplicate crate |
-| `ffi-boundary` | every push | signature change outside the allowlist |
-| `check-plan` | every push | test ID without WP, or WP with unknown test ID |
-| Differential D1–D19 | every PR | any divergence against Core 30.2 |
-| Signet S1–S36 | merge to `main` | any failure |
+| `ffi-boundary` | every push (no-op until allowlist exists) | signature change outside the allowlist |
+| `check-plan` | every push | test ID without WP, or WP with unknown test ID; inventory baseline drift |
+| Differential D1–D19 | every PR (no-op until harness exists) | any divergence against Core 30.2 |
+| Signet S1–S36 | merge to `main` (no-op until harness exists) | any failure |
 | `cargo-mutants` | merge to `main` | any surviving mutant |
 | Reproducible build | merge to `main` | differing hashes |
 | Fuzzing 24 h | nightly + before release | any finding |
+
+**Workflow shape (repo invariants, not a GitHub acceptance claim):** external actions are
+pinned to full 40-hex commit SHAs; `permissions.contents: read` and
+`persist-credentials: false` on checkout; selected cargo tools are installed as
+`tool@x.y.z` with install-action `fallback: none`. Jobs `check`, `test`,
+`supply-chain`, and `coverage` always schedule. The **coverage** job runs an in-job
+source probe (`python3 scripts/coverage_gate.py --source-state`): while every
+threshold crate is a pure scaffold it prints an explicit WP-03 no-op and does not
+invoke `cargo llvm-cov` (which currently fails with `no coverage data found` on
+empty scaffolds). The first non-scaffold source activates fail-closed
+`cargo llvm-cov` + `coverage_gate.py` — their failure is never converted into a
+skip. FFI, differential, and signet use **in-job** harness detection
+(`$GITHUB_OUTPUT`), not job-level `hashFiles` (which is unavailable at the job
+`if:` key). Signet and mutants remain main-only; differential still `needs` the
+normal check/test jobs. Cleanup under `always()` runs only when the test
+environment was actually started. Local structural tests of the workflow file are
+not a substitute for GitHub accepting and running it on a runner (WP-07).
 
 **Two special rules.** A failure of **S4** or **S5** (recovery with and without this app)
 blocks independently of everything else — they have their own veto. A failure of
@@ -230,6 +253,7 @@ CI step, not a helper.
 
 | Check | Breaks when |
 |---|---|
+| Inventory baseline: each normative ID family (D/P/S/T/E/O) and the WP block count match `INVENTORY_BASELINE` in `scripts/check_plan.py` | a family empties, shrinks, or grows without an explicit baseline update |
 | Every test ID (D/P/S) defined in SPECIFICATION.md sits on exactly one `**Tests:**` line of a WP block | an ID is missing or assigned twice |
 | Every test ID named on `**Tests:**` exists in the Spec | an ID was invented |
 | Every due test ID (WP on `DONE`) has a test function with matching name (`d1_…`, `p5_…`, `s15b_…`, `s29h_…` — lowercase, **no** leading zero) | a test exists only on paper |
@@ -239,6 +263,11 @@ CI step, not a helper.
 | No ID is defined twice | two definitions of the same ID exist |
 | Every WP block has the required fields; every referenced WP-ID has its own block; dependencies exist and form no cycle | structure incomplete or cyclic |
 | Counts (release criteria §5.5, WP blocks, crates, external crates/`MEASURED`) match the measurement | number copied and stale |
+
+**Gate tests (stdlib):** `python3 -m unittest discover -s scripts/tests -p 'test_*.py'`
+(`just gate-tests`) covers workflow invariants, the inventory baseline detector, target-
+deterministic dep-budget measurement, and loopback-only compose port binds. Part of the
+fast path in CI and `just check`.
 
 > This check already found an error at introduction — T19 was defined twice,
 > in §2.7.8 and in §4.1. That is exactly what it is for.

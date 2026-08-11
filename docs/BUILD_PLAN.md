@@ -321,13 +321,14 @@ column. Prefer `just <recipe>` where defined; equivalent raw commands match CI.
 | 2 | `cargo clippy --workspace --all-targets -- -D warnings` | Exit 0; **empty diagnostic output** — any warning fails (`-D warnings`, same as CI). |
 | 3 | `cargo build --workspace --locked` | Exit 0; lockfile respected, no network surprise. |
 | 4 | `cargo test --workspace --locked` | Exit 0; compare **suite count and test count** to the last known baseline when changing tests. |
-| 5 | `python3 scripts/check_plan.py` | Exit 0; zero findings (IDs ↔ WPs, states, number checks). |
-| 6 | `python3 scripts/dep_budget.py` | Exit 0; signature-path budget holds. |
-| 7 | `just coverage` when measuring coverage | Exit 0 after `cargo llvm-cov …` and `coverage_gate.py` — once the crate has real code under test. |
+| 5 | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exit 0; workflow/inventory/dep-budget/compose gate tests green. |
+| 6 | `python3 scripts/check_plan.py` | Exit 0; zero findings (IDs ↔ WPs, inventory baseline, states, number checks). |
+| 7 | `python3 scripts/dep_budget.py` | Exit 0; signature-path budget holds (shipped-target union). |
+| 8 | `just coverage` when measuring coverage | Exit 0 after `cargo llvm-cov …` and `coverage_gate.py` — once the crate has real code under test. |
 
 Same commands as CI fast path / tools:
 
-- `just check` → `fmt-check`, `clippy`, `build`, `check-plan`, `dep-budget`
+- `just check` → `fmt-check`, `clippy`, `build`, `gate-tests`, `check-plan`, `dep-budget`
 - `just test` → `cargo test --workspace --locked`
 - `just coverage` → llvm-cov + gate (heavy)
 - `just mutants` → mutation testing on security cores (heavy; also on `main` in CI)

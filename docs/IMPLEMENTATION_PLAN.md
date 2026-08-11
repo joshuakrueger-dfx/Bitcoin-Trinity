@@ -40,16 +40,16 @@ specification reference, acceptance criteria, and the tests that must pass.
 
 | WP | State | Evidence | What's missing |
 |---|---|---|---|
-| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **40 external crates** (MEASURED in `dep_budget.py`), `trinity-verify` alone **22** · `fmt` and `clippy -D warnings` clean | — |
-| WP-01 | IN PROGRESS | Workflow written, YAML valid. Jobs `differential`/`signet` gated on harness directories (fail-closed instead of immediately red). All invoked scripts exist and run green locally. | **Never executed on a runner.** `cargo-audit` not installed. |
-| WP-02 | IN PROGRESS | `test-env.sh` (syntax checked, Core version lock implemented) and `docker/compose.yml` (valid; images still by tag) | **Never started.** Image-**digests missing**. No `bitcoind`, no `electrs` pulled. |
-| WP-03 | IN PROGRESS | `coverage_gate.py`, `check_plan.py`, `dep_budget.py` fail-closed: missing branch data and missing crate entries are findings; test assignment from WP blocks; number checks. | `cargo-llvm-cov`/`cargo-mutants` — real coverage/mutation run pending; branch coverage feasibility of the pinned toolchain documented in TESTING.md §3.1. |
+| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **40 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **22** · `fmt` and `clippy -D warnings` clean | — |
+| WP-01 | IN PROGRESS | Workflow rewritten without job-level `hashFiles`; always-on check/test/supply-chain/coverage; FFI/differential/signet use in-job harness detection; actions pinned to full commit SHAs; `permissions.contents: read`; checkout `persist-credentials: false`; tools pinned `tool@x.y.z` with `fallback: none`. Gate tests under `scripts/tests/`. | **Never executed on a runner** (local structural tests ≠ GitHub acceptance). |
+| WP-02 | IN PROGRESS | `test-env.sh` (syntax checked, Core version lock implemented) and `docker/compose.yml` (valid; images still by tag; published host ports bound to `127.0.0.1`) | **Never started.** Image-**digests missing**. No `bitcoind`, no `electrs` pulled. |
+| WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. | Real coverage/mutation run pending until domain source exists; branch coverage feasibility of the pinned toolchain documented in TESTING.md §3.1. Not claimed green on GitHub. |
 | WP-04 | **OPEN** | — | `vendor/`, `.cargo/config.toml`, build without network in container, reproducible-build proof via two runners. |
-| WP-07 | **OPEN** | — | Workflow runs end after **0 s** with `conclusion=failure` and **zero jobs** on every branch measured so far; YAML is valid; root cause is outside the repo (account Actions minutes or spending limit suspected). |
+| WP-07 | **OPEN** | Repo-side cause repaired locally: job-level `hashFiles` rejected the workflow before jobs scheduled; workflow no longer uses it (in-job harness detection, SHA-pinned actions). Local structural tests pass. | **Post-repair GitHub runner evidence still missing** — no claim that GitHub accepted or ran the new workflow. Account-side causes (minutes / spending limit) remain **unconfirmed** until a post-repair run is observed. |
 
-**So: no, M0 is not done.** What is done is WP-00. The three packages in progress all hang
-on tools and containers missing in this environment — not on unwritten code. CI has never
-executed a job on a runner (WP-07).
+**So: no, M0 is not done.** What is done is WP-00. The three packages in progress still hang
+on tools/containers and on **runner evidence**. The confirmed job-level `hashFiles` reject
+path is repaired in-repo; until a post-repair GitHub run is observed, WP-07 stays open.
 
 **Next step: WP-05** (content unlock for M1–M5), **WP-07** (make gates measurable), and
 **WP-04** (vendoring) — see [`BUILD_PLAN.md`](BUILD_PLAN.md) §3 for waves.
@@ -162,16 +162,20 @@ Cargo workspace with the ten crates from 1.1 as empty scaffolds. `[workspace.dep
 **Spec:** 5.4, 5.5 · **Needs:** WP-00 · **State:** IN PROGRESS
 
 GitHub Actions pipeline per TESTING.md §5: `fmt` → `clippy -D warnings` → `build` →
-`test` → `deny` → `audit`. Differential on every PR once the harness exists; Signet/Mutants after `main`.
+gate tests → `check-plan` → `dep-budget` → `test` → `deny` → `audit`. Differential on
+every PR once the harness exists (in-job detection; no job-level `hashFiles`);
+Signet/Mutants after `main`.
 
-**Files:** `.github/workflows/ci.yml`
-**Prohibited:** No secrets in logs; no `allow` Clippy exceptions without a comment with justification; do not create Cargo features `differential`/`signet` here (WP-23 and WP-45 respectively).
+**Files:** `.github/workflows/ci.yml`, `scripts/tests/`
+**Prohibited:** No secrets in logs; no `allow` Clippy exceptions without a comment with justification; do not create Cargo features `differential`/`signet` here (WP-23 and WP-45 respectively); do not use job-level `hashFiles`; do not pin actions by floating tag.
 
 **Acceptance**
 - Pipeline runs on every PR and blocks on red
 - `clippy` with `-D warnings`, no `allow` exceptions without a comment with justification
 - Fast-path runtime < 10 min
-- Jobs `differential` and `signet` are gated on harness directories and no longer fail without harness
+- Jobs `differential` and `signet` detect harnesses in-job and no-op successfully without harness; cleanup under `always()` only when the env was started
+- External actions pinned to full 40-hex SHAs; least-privilege `permissions`; checkout does not persist credentials
+- Selected cargo tools installed as exact `tool@x.y.z` with install-action `fallback: none`
 
 **Tests:** —
 
@@ -204,12 +208,17 @@ containerized and startable via a script.
 
 `cargo-llvm-cov` with **thresholds per crate** per TESTING.md §3, plus `cargo-mutants` for the
 security cores. Gates are fail-closed: missing line or branch data for crates with
-source code are findings, not silent 100 %.
+source code are findings, not silent 100 %. On pure scaffolds, `cargo llvm-cov`
+exits with `no coverage data found` before the gate can run; CI therefore probes
+with `coverage_gate.py --source-state` and only runs report+gate when real source
+exists. The coverage **job** still schedules every push (no job-level skip).
 
 **Files:** `scripts/coverage_gate.py`, `scripts/check_plan.py`, `scripts/dep_budget.py`, `coverage-exclusions.toml`, `justfile`, `.github/workflows/ci.yml` (coverage job)
-**Prohibited:** No exception for `trinity-verify`; no claiming a number that is not measured.
+**Prohibited:** No exception for `trinity-verify`; no claiming a number that is not measured; do not convert llvm-cov/gate failure into a skip once real source is present; no placeholder domain code solely to force a green coverage report.
 
 **Acceptance**
+- Coverage **job** schedules on every covered PR/push; explicit WP-03 no-op while every threshold crate is a pure scaffold
+- First non-scaffold source activates fail-closed `cargo llvm-cov` + `coverage_gate.py`
 - Coverage report per crate; gate breaks the build on under-threshold
 - Exception list exists as a file with **justification per entry**; an entry without justification breaks the build
 - `cargo-mutants` runs against `trinity-verify` and `trinity-signer`; surviving mutants break the build
@@ -230,7 +239,7 @@ source code are findings, not silent 100 %.
 - `vendor/` checked in, `.cargo/config.toml` with `replace-with = "vendored-sources"`
 - Build without network succeeds (proven in a container without network)
 - Two independent CI runners produce **bit-identical** artifact hashes
-- `scripts/dep_budget.py` runs in CI; budget limit **45**, measured **40 external crates** (`MEASURED` in `dep_budget.py`, as of 2026-08-09)
+- `scripts/dep_budget.py` runs in CI; budget limit **45**, measured **40 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
 
 **Tests:** —
 
@@ -285,20 +294,21 @@ candidates; no change to `docs/SPECIFICATION.md`; no decision in JK's place
 **Spec:** 5.4, 5.5 · **Needs:** — · **State:** OPEN
 
 Find and remove the cause that makes every GitHub Actions workflow run end after **zero
-seconds** with **no job ever scheduled**. WP-01 delivered a valid pipeline (eight jobs,
-YAML parses locally); that is not enough while runners never start.
+seconds** with **no job ever scheduled**. A pipeline that only parses locally is not
+enough while runners never start.
 
-**Measured finding (2026-08-10, not estimated):** across **all** workflow runs since the
-first commit, on `main`, on the original branch, and on later branches — with both the
-unchanged and the edited `ci.yml` — every run has `conclusion=failure`, duration **0 s**,
-and `total_count=0` for jobs. The workflow file is valid. The cause is therefore suspected
-**outside the repository** (GitHub Actions minutes exhausted, or an account spending
-limit / billing block). The executor starts from this evidence; do not re-discover from
-scratch.
+**Repo-side defect fixed in this import repair (not yet runner-evidenced):** job-level
+`if: hashFiles(...)` is rejected by GitHub before jobs schedule — that matches the
+observed `total_count=0` pattern. The workflow no longer uses job-level `hashFiles`;
+harness detection is in-job. Local structural tests cover the invariants; they do **not**
+prove GitHub accepted or ran the file.
 
-**Files:** `.github/workflows/ci.yml` (read-only diagnosis only unless a repo-side fix is
-proven necessary), documentation of the root cause in this plan's status table and/or
-`docs/TESTING.md` §5
+**Earlier measured finding (2026-08-10):** across workflow runs then available, every run
+had `conclusion=failure`, duration **0 s**, and `total_count=0` for jobs. Account-side
+causes (minutes / spending limit) remain possible until a post-repair run is observed.
+
+**Files:** `.github/workflows/ci.yml`, documentation of the root cause in this plan's
+status table and/or `docs/TESTING.md` §5
 **Prohibited:** Do not change jobs only to make them "green"; the goal is a **run that
 actually executes**, not a skipped or hollow success. Do not disable checks, soft-fail
 gates, or remove steps to dodge a red result.
@@ -306,9 +316,9 @@ gates, or remove steps to dodge a red result.
 **Acceptance**
 - At least one workflow run on a real runner with **at least one job that executed**
   (non-zero job duration or completed steps — not `total_count=0`)
-- Root cause named and written down (status table or TESTING.md §5)
-- If the cause is an **account setting** (minutes, spending limit, plan), record it as such
-  — not as a repository defect
+- Root cause named and written down (status table or TESTING.md §5) after a post-repair run
+- If a remaining cause is an **account setting** (minutes, spending limit, plan), record it
+  as such — not as a repository defect
 - Fast path remains under **10 minutes** once it runs (same bound as WP-01)
 
 **Tests:** —
@@ -514,7 +524,7 @@ so the CI job can be reactivated.
 - All D-tests run via `just diff-test` locally and in CI
 - A failure shows input, expected, and actual in plain text
 - Runtime < 20 min
-- After this WP the `hashFiles` condition on CI job `differential` is removed
+- After this WP the differential harness is present so the in-job detection step runs the suite (no longer a successful no-op)
 
 **Tests:** —
 
@@ -778,7 +788,7 @@ Harness for Signet/Regtest scenarios. Creates the Cargo feature `signet` and
 - Directory `tests/signet-e2e/` exists
 - **S1, S2, S3, S8** run automated on Signet and Regtest
 - **S32** — the full theft simulation: unlocked device, attacker exhausts the quota, then recovery with backup B + C on a second device. **Veto 5b**
-- After this WP the `hashFiles` condition on CI job `signet` is removed
+- After this WP the signet harness is present so the in-job detection step runs the suite (no longer a successful no-op)
 
 **Tests:** S1, S2, S3, S8, S32
 
@@ -1120,7 +1130,7 @@ Scope depends on **WP-06** via WP-60.
 
 | Blocker | Affects | Resolution |
 |---|---|---|
-| CI never executes jobs (0 s runs, `total_count=0`) | **All gates** — differential, coverage, mutants, signet, check-plan in CI, release evidence | **WP-07** (root cause outside the repo suspected; document if account-side) |
+| CI never executes jobs (0 s runs, `total_count=0`) | **All gates** — differential, coverage, mutants, signet, check-plan in CI, release evidence | **WP-07** (repo-side `hashFiles` reject repaired locally; post-repair runner evidence still required; account-side unconfirmed until then) |
 | ~~⟨API-VERIFY⟩ open (BDK signatures) / B.1~~ | ~~WP-12, WP-13, WP-40~~ | ✅ Resolved 2026-08-10 — signatures + build RNG + interior mutability in Spec; WP-12/WP-13/WP-40 implement against recorded types |
 | ~~⟨API-VERIFY⟩ uniffi passphrase / B.2~~ | ~~**WP-40**~~ | ✅ Resolved 2026-08-10 — borrowed `&[u8]`; WP-40 implements the new facade |
 | ~~Appendix B.6 (Coldcard primary source)~~ | ~~**WP-54**~~ | ✅ Resolved 2026-08-10 — WP-54 OPEN |

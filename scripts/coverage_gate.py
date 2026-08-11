@@ -4,6 +4,12 @@
     cargo llvm-cov --workspace --lcov --output-path lcov.info
     python3 scripts/coverage_gate.py lcov.info
 
+    # Preflight for pure scaffolds (CI coverage job / WP-03):
+    python3 scripts/coverage_gate.py --source-state
+    # prints exactly `true` or `false` on stdout; exit 0.
+    # Operational errors (missing crates, unreadable inputs) exit nonzero
+    # and must not be treated as scaffold `false`.
+
 Exceptions live in coverage-exclusions.toml and each needs BOTH a reason and a
 named substitute test — an entry without both fails the build.
 
@@ -18,9 +24,11 @@ fully here. The real gate for the security cores is therefore `cargo mutants` �
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +51,10 @@ THRESHOLDS: dict[str, tuple[float, float]] = {
 
 # This crate must not appear in coverage-exclusions.toml.
 NO_EXCLUSIONS = {"trinity-verify"}
+
+
+class SourceProbeError(Exception):
+    """Operational failure of the source probe (not a scaffold result)."""
 
 
 def parse_lcov(path: Path) -> dict[str, dict[str, int]]:
@@ -90,30 +102,138 @@ def parse_exclusions() -> tuple[dict[str, int], list[str]]:
     return dict(per_crate), problems
 
 
-def crate_has_source(crate: str) -> bool:
+def _strip_block_comments(text: str) -> str:
+    """Remove `/* … */` comments (non-nested; leftover text fails closed as real)."""
+    return re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+
+def _strip_line_comments(text: str) -> str:
+    """Remove `//…` line comments (including `//!` / `///` module and item docs)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        # No full string lexer: `//` after code still leaves the code tokens,
+        # which correctly keeps the file non-scaffold. `//` only in a string
+        # would also leave surrounding tokens (fail-closed toward "has source").
+        cut = line.find("//")
+        if cut >= 0:
+            line = line[:cut]
+        out.append(line)
+    return "\n".join(out)
+
+
+def _strip_crate_level_attributes(text: str) -> str:
+    """Remove `#![…]` crate-level attributes with nested-bracket depth counting.
+
+    Unclosed attributes are left in place so residual content marks the file
+    as real source (fail-closed).
+    """
+    result: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text.startswith("#![", i):
+            j = i + 3
+            depth = 1
+            while j < n and depth:
+                ch = text[j]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                # Unclosed — keep remainder as content (not a pure scaffold).
+                result.append(text[i:])
+                break
+            i = j
+            continue
+        result.append(text[i])
+        i += 1
+    return "".join(result)
+
+
+def is_pure_scaffold_lib(text: str) -> bool:
+    """True only if a single lib.rs is nothing but allowed scaffold material.
+
+    Allowed: blank lines, comments/module docs, and crate-level attributes
+    (`#![…]`). After stripping those, **any** remaining token/content means
+    real source. Uncertain or non-scaffold forms are never treated as scaffold.
+    Not a Rust parser — deliberately conservative / fail-closed.
+    """
+    rest = _strip_block_comments(text)
+    rest = _strip_line_comments(rest)
+    rest = _strip_crate_level_attributes(rest)
+    return rest.strip() == ""
+
+
+def crate_has_source(crate: str, crates_dir: Path = CRATES_DIR) -> bool:
     """True if the crate has more than a pure scaffold lib.rs.
 
-    A single lib.rs that only holds module docs and attributes (no fn/struct/
-    enum/impl/mod/use beyond allowed attributes) counts as a scaffold without
-    domain code. As soon as additional .rs files exist or lib.rs carries real
-    code, the crate is considered to "have source".
+    Multiple `.rs` files always count as real source. A single `lib.rs` is a
+    scaffold only when `is_pure_scaffold_lib` holds; anything else (const,
+    type, static, include!, macros, items, …) activates coverage.
+
+    Missing `src/` or no `.rs` files → False (scaffold/absent for the LCOV
+    gate). The probe path (`any_threshold_crate_has_source`) fails closed if
+    an expected threshold crate tree is missing entirely.
     """
-    root = CRATES_DIR / crate / "src"
+    root = crates_dir / crate / "src"
     if not root.exists():
         return False
-    rs_files = list(root.rglob("*.rs"))
+    rs_files = sorted(root.rglob("*.rs"))
     if not rs_files:
         return False
     if len(rs_files) > 1:
         return True
-    # One file: check whether it is more than a scaffold
     text = rs_files[0].read_text(encoding="utf-8")
-    # Real code: fn, struct, enum, impl, trait, macro_rules, mod X;
-    if re.search(r"^\s*(pub\s+)?(fn|struct|enum|impl|trait|macro_rules|mod)\b", text, re.M):
-        return True
-    if re.search(r"^\s*use\s+", text, re.M):
-        return True
-    return False
+    return not is_pure_scaffold_lib(text)
+
+
+def any_threshold_crate_has_source(
+    crates_dir: Path = CRATES_DIR,
+    thresholds: Mapping[str, tuple[float, float]] = THRESHOLDS,
+) -> bool:
+    """True if any threshold crate has non-scaffold source.
+
+    Fail-closed: missing crates root, missing expected crate directories, or
+    unreadable `.rs` inputs raise `SourceProbeError` rather than returning
+    False (which would wrongly mean "successful scaffold no-op").
+    """
+    if not crates_dir.is_dir():
+        raise SourceProbeError(
+            f"crates directory missing or not a directory: {crates_dir}"
+        )
+    if not thresholds:
+        raise SourceProbeError("threshold map is empty — cannot probe source state")
+
+    any_real = False
+    for crate in thresholds:
+        crate_root = crates_dir / crate
+        if not crate_root.is_dir():
+            raise SourceProbeError(
+                f"expected threshold crate missing: {crate} under {crates_dir}"
+            )
+        src = crate_root / "src"
+        if not src.is_dir():
+            raise SourceProbeError(
+                f"expected src/ missing for threshold crate {crate}"
+            )
+        try:
+            rs_files = list(src.rglob("*.rs"))
+        except OSError as e:
+            raise SourceProbeError(
+                f"unreadable source tree for {crate}: {e}"
+            ) from e
+        for rs in rs_files:
+            try:
+                rs.read_text(encoding="utf-8")
+            except OSError as e:
+                raise SourceProbeError(
+                    f"unreadable source file {rs}: {e}"
+                ) from e
+        if crate_has_source(crate, crates_dir=crates_dir):
+            any_real = True
+    return any_real
 
 
 def pct(hit: int, total: int) -> float | None:
@@ -123,12 +243,26 @@ def pct(hit: int, total: int) -> float | None:
     return 100.0 * hit / total
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        sys.exit("Usage: coverage_gate.py <lcov.info>")
-    lcov = Path(sys.argv[1])
+def run_source_state_probe(
+    crates_dir: Path = CRATES_DIR,
+    thresholds: Mapping[str, tuple[float, float]] = THRESHOLDS,
+) -> int:
+    """CLI mode: print exactly `true` or `false`; exit 0. Errors → exit 1."""
+    try:
+        has = any_threshold_crate_has_source(
+            crates_dir=crates_dir, thresholds=thresholds
+        )
+    except SourceProbeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    print("true" if has else "false")
+    return 0
+
+
+def run_lcov_gate(lcov: Path) -> int:
     if not lcov.exists():
-        sys.exit(f"ERROR: {lcov} missing — run 'cargo llvm-cov' first")
+        print(f"ERROR: {lcov} missing — run 'cargo llvm-cov' first", file=sys.stderr)
+        return 1
 
     stats = parse_lcov(lcov)
     excl_counts, excl_problems = parse_exclusions()
@@ -193,6 +327,41 @@ def main() -> int:
         print("  Note: The exceptions list is reviewed at every release. If it grows, "
               "that is a finding, not a detail.")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--source-state",
+        action="store_true",
+        help=(
+            "print true/false whether any threshold crate has non-scaffold "
+            "source (exit 0); operational errors exit nonzero"
+        ),
+    )
+    parser.add_argument(
+        "lcov",
+        nargs="?",
+        help="path to lcov.info from cargo llvm-cov",
+    )
+    args = parser.parse_args(argv)
+
+    if args.source_state:
+        if args.lcov is not None:
+            print(
+                "ERROR: --source-state does not take an lcov path",
+                file=sys.stderr,
+            )
+            return 1
+        return run_source_state_probe()
+
+    if args.lcov is None:
+        print(
+            "Usage: coverage_gate.py <lcov.info> | coverage_gate.py --source-state",
+            file=sys.stderr,
+        )
+        return 1
+    return run_lcov_gate(Path(args.lcov))
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ default:
 
 # --- Checks that run in CI on every push ---
 
-check: fmt-check clippy build check-plan dep-budget
+check: fmt-check clippy build gate-tests check-plan dep-budget
     @echo "✓ Fast path green"
 
 fmt:
@@ -22,6 +22,10 @@ build:
 
 test:
     cargo test --workspace --locked
+
+# Stdlib gate tests: workflow invariants, plan inventory, dep budget, compose binds
+gate-tests:
+    python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 # Consistency of the four documents against each other (TESTING.md §6)
 check-plan:

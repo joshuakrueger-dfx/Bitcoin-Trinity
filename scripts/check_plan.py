@@ -49,6 +49,20 @@ TEST_FN = re.compile(r"fn\s+([dps]\d+[a-z]?)_[a-z0-9_]+\s*\(", re.I)
 
 VALID_STATES = frozenset({"OPEN", "BLOCKED", "IN PROGRESS", "REVIEW", "DONE"})
 
+# Fail-closed inventory baseline (TESTING.md §6).
+# Derived from the imported documents; every normative ID family and the WP
+# inventory must match these counts. Deliberate inventory changes require an
+# explicit update of this single map — silent empty/shrink passes are blocked.
+INVENTORY_BASELINE: dict[str, int] = {
+    "D": 19,
+    "P": 16,
+    "S": 47,
+    "T": 23,
+    "E": 8,
+    "O": 18,
+    "WP": 54,
+}
+
 # Required fields in a WP block (order irrelevant; all must appear)
 REQUIRED_FIELDS = (
     "**Spec:**",
@@ -171,6 +185,50 @@ def test_owners_from_blocks(blocks: dict[str, str], rep: Report) -> dict[str, li
         for ident in parsed:
             owners[ident].append(wp)
     return owners
+
+
+def inventory_counts(spec: str, blocks: dict[str, str]) -> dict[str, int]:
+    """Current inventory sizes for each baseline key (D/P/S/T/E/O/WP)."""
+    counts: dict[str, int] = {
+        kind: len(ids_by_kind(spec, kind)) for kind in ("D", "P", "S", "T", "E", "O")
+    }
+    counts["WP"] = len(blocks)
+    return counts
+
+
+def check_inventory_baseline(
+    spec: str,
+    blocks: dict[str, str],
+    rep: Report,
+    baseline: dict[str, int] = INVENTORY_BASELINE,
+) -> None:
+    """Fail closed if a normative family or WP inventory empties or shrinks.
+
+    Exact match against the baseline is required so growth also forces an
+    explicit baseline update rather than drifting unnoticed.
+    """
+    actual = inventory_counts(spec, blocks)
+    for key, expected in baseline.items():
+        got = actual.get(key, 0)
+        if got == 0 and expected > 0:
+            rep.fail(
+                f"Inventory baseline: family {key} is empty "
+                f"(baseline requires {expected})"
+            )
+        elif got < expected:
+            rep.fail(
+                f"Inventory baseline: family {key} has {got}, "
+                f"baseline requires {expected} — inventory shrank; "
+                f"update INVENTORY_BASELINE only with a deliberate change"
+            )
+        elif got > expected:
+            rep.fail(
+                f"Inventory baseline: family {key} has {got}, "
+                f"baseline requires {expected} — inventory grew; "
+                f"update INVENTORY_BASELINE only with a deliberate change"
+            )
+        else:
+            rep.checks_run += 1
 
 
 def check_unique_definitions(spec: str, rep: Report) -> None:
@@ -596,6 +654,7 @@ def main() -> int:
     rep = Report()
     blocks = parse_wp_blocks(plan)
 
+    check_inventory_baseline(spec, blocks, rep)
     check_unique_definitions(spec, rep)
     check_test_ownership(spec, blocks, rep)
     check_decisions_mapped(spec, plan, rep)

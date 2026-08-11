@@ -1,6 +1,6 @@
 # Test environment — docs/TESTING.md §2
 #
-# Current state: images hang on tags (see TODO(WP-02) below). Tags are
+# Current state: WP-02 remains open and images use mutable tags. Tags are
 # mutable — digest pinning is an acceptance criterion of WP-02 and makes the
 # setup reproducible and offline-capable after the first pull.
 #
@@ -10,7 +10,7 @@
 
 services:
   bitcoind:
-    # TODO(WP-02): enter digest once the image is chosen —
+    # WP-02 requires a digest once the image is chosen:
     # image: <repo>@sha256:<digest>
     image: bitcoin/bitcoin:30.2
     command:
@@ -29,8 +29,11 @@ services:
       # The flag would unlock the legacy BDB path that the wallet bug
       # of Core 30.0/30.1 hung on — do not re-enter out of habit.
     ports:
-      - "18443:18443"            # RPC regtest
-      - "18444:18444"            # P2P regtest
+      # Host bind is loopback-only: static test credentials must not be
+      # reachable on every interface. Container↔container still uses the
+      # Compose network (electrs → bitcoind:18443/18444).
+      - "127.0.0.1:18443:18443"  # RPC regtest
+      - "127.0.0.1:18444:18444"  # P2P regtest
     volumes:
       - bitcoind-data:/home/bitcoin/.bitcoin
     healthcheck:
@@ -52,7 +55,7 @@ services:
       - --electrum-rpc-addr=0.0.0.0:60401
       - --cookie=trinity:regtest
     ports:
-      - "60401:60401"
+      - "127.0.0.1:60401:60401"
     volumes:
       - electrs-data:/data
 
