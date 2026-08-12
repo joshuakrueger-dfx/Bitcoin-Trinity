@@ -66,19 +66,10 @@ pub fn build_wallet_descriptors(
     let receive = build_sortedmulti_string(&ordered, RECEIVE_SUFFIX)?;
     let change = build_sortedmulti_string(&ordered, CHANGE_SUFFIX)?;
 
-    // O8: never multipath.
+    // O8: never multipath; receive/change must stay on distinct chain suffixes.
     assert_no_multipath(&receive)?;
     assert_no_multipath(&change)?;
-    if receive.contains("/1/*") || change.contains("/0/*") {
-        return Err(DescriptorError::Construction(
-            "receive/change chain suffixes swapped".into(),
-        ));
-    }
-    if receive == change {
-        return Err(DescriptorError::Construction(
-            "receive and change descriptors must differ".into(),
-        ));
-    }
+    assert_distinct_receive_change(&receive, &change)?;
 
     // Grammar self-check (same checks used on load).
     validate_trinity_descriptor(&receive)?;
@@ -183,6 +174,24 @@ fn key_expression(
 fn assert_no_multipath(desc: &str) -> Result<(), DescriptorError> {
     if desc.contains('<') || desc.contains(';') {
         return Err(DescriptorError::MultipathForbidden);
+    }
+    Ok(())
+}
+
+/// Defensive O8 check: receive uses `/0/*`, change uses `/1/*`, and they differ.
+///
+/// Extracted so the failure arms are unit-testable; production always builds
+/// both strings with fixed suffixes and should never hit the errors.
+fn assert_distinct_receive_change(receive: &str, change: &str) -> Result<(), DescriptorError> {
+    if receive.contains("/1/*") || change.contains("/0/*") {
+        return Err(DescriptorError::Construction(
+            "receive/change chain suffixes swapped".into(),
+        ));
+    }
+    if receive == change {
+        return Err(DescriptorError::Construction(
+            "receive and change descriptors must differ".into(),
+        ));
     }
     Ok(())
 }
@@ -314,7 +323,10 @@ pub fn address_at(
 mod tests {
     use super::*;
     use crate::descriptor::source::KeySource;
+    use miniscript::{Descriptor, DescriptorPublicKey};
+    use std::str::FromStr;
     use trinity_types::{Fingerprint, KeySlot, WordCount};
+    use DescriptorError::DuplicateFingerprint as DupFp;
 
     // Fixed tpubs from BDK Caravan tests (testnet/regtest xpubs).
     const FP_A: &str = "73756c7f";
@@ -381,5 +393,163 @@ mod tests {
             build_wallet_descriptors(Network::Regtest, keys, 0),
             Err(DescriptorError::InvalidOriginPath(_))
         ));
+    }
+
+    /// Coverage for private helpers and builder-only error arms (public grammar
+    /// cases live in `tests/coverage_gaps.rs` so they do not inflate lib LF).
+    #[test]
+    fn private_helpers_and_builder_errors() {
+        // Hardware without policy_id is allowed (empty true-branch of the guard).
+        let mut keys = sample_keys();
+        keys[1].source = KeySource::Hardware {
+            model: "coldcard_mk4".into(),
+        };
+        keys[1].policy_id = None;
+        assert!(build_wallet_descriptors(Network::Regtest, keys, 0).is_ok());
+
+        // policy_id on InApp.
+        let mut keys = sample_keys();
+        keys[0].policy_id = Some("pol".into());
+        assert!(matches!(
+            build_wallet_descriptors(Network::Regtest, keys, 0),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // Duplicate slot.
+        let mut keys = sample_keys();
+        keys[2].slot = KeySlot::A;
+        assert!(matches!(
+            build_wallet_descriptors(Network::Regtest, keys, 0),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // key_expression multipath (`<` and `;`-only) + bad base58.
+        let mp = XpubWithOrigin::new(
+            Fingerprint::from_hex(FP_A).unwrap(),
+            "48'/1'/0'/2'/<0;1>",
+            XPUB_A,
+        );
+        assert_eq!(
+            key_expression(&mp, "0/*"),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        let semi = XpubWithOrigin::new(
+            Fingerprint::from_hex(FP_A).unwrap(),
+            "48'/1'/0'/2';evil",
+            XPUB_A,
+        );
+        assert_eq!(
+            key_expression(&semi, "0/*"),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        let bad = XpubWithOrigin::new(
+            Fingerprint::from_hex(FP_A).unwrap(),
+            "48'/1'/0'/2'",
+            "tpubDCKxNyM3bLgbEX13Mcd8mYxbVg9ajDkWXMh29hMWBurKfVmBfWAM96QVP3zaUcN51HvkZ3ar4VwP82kC8JZhhux8vFQoJintSpVBwpFvyU4",
+        );
+        assert!(matches!(
+            key_expression(&bad, "0/*"),
+            Err(DescriptorError::InvalidKeyExpression(_))
+        ));
+
+        assert_eq!(
+            assert_no_multipath("a/<0;1>"),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        assert_eq!(
+            assert_no_multipath("a;b"),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        assert!(assert_no_multipath("ok").is_ok());
+
+        // Each arm of the chain-suffix OR, then equal-string, then happy path.
+        assert!(matches!(
+            assert_distinct_receive_change("x/1/*", "y/2/*"),
+            Err(DescriptorError::Construction(_))
+        ));
+        assert!(matches!(
+            assert_distinct_receive_change("x/2/*", "y/0/*"),
+            Err(DescriptorError::Construction(_))
+        ));
+        assert!(matches!(
+            assert_distinct_receive_change("x/1/*", "y/0/*"),
+            Err(DescriptorError::Construction(_))
+        ));
+        assert!(matches!(
+            assert_distinct_receive_change("same", "same"),
+            Err(DescriptorError::Construction(_))
+        ));
+        assert!(assert_distinct_receive_change("r/0/*", "c/1/*").is_ok());
+
+        // Grammar edges exercised here only where they keep private helpers warm.
+        assert!(matches!(
+            validate_trinity_descriptor("wsh(sortedmulti(2,a,b,c))#abcd"),
+            Err(DescriptorError::ForeignGrammar(_))
+        ));
+        assert!(matches!(
+            validate_trinity_descriptor("wsh(sortedmulti(2,a,b,c))#!!!!!!!!"),
+            Err(DescriptorError::ForeignGrammar(_))
+        ));
+        assert!(matches!(
+            validate_trinity_descriptor("wsh(sortedmulti(2,not-a-key))#abcdefgh"),
+            Err(DescriptorError::ForeignGrammar(_))
+        ));
+
+        let body = |k, n: usize| {
+            let xpubs = [XPUB_A, XPUB_B, XPUB_C, XPUB_A];
+            let fps = [FP_A, FP_B, FP_C, FP_A];
+            let keys: Vec<_> = (0..n)
+                .map(|i| format!("[{}/48'/1'/0'/2']{}/0/*", fps[i], xpubs[i]))
+                .collect();
+            format!("wsh(sortedmulti({k},{}))", keys.join(","))
+        };
+        for raw in [body(3, 3), body(2, 2), body(2, 4)] {
+            let d = Descriptor::<DescriptorPublicKey>::from_str(&raw)
+                .unwrap()
+                .to_string();
+            assert!(matches!(
+                validate_trinity_descriptor(&d),
+                Err(DescriptorError::ForeignGrammar(_))
+            ));
+        }
+        let sh = body(2, 3).replacen("wsh(", "sh(", 1);
+        let sh = Descriptor::<DescriptorPublicKey>::from_str(&sh)
+            .unwrap()
+            .to_string();
+        assert!(matches!(
+            validate_trinity_descriptor(&sh),
+            Err(DescriptorError::ForeignGrammar(_))
+        ));
+
+        let good =
+            XpubWithOrigin::new(Fingerprint::from_hex(FP_A).unwrap(), "48'/1'/0'/2'", XPUB_A);
+        let xprv = XpubWithOrigin::new(
+            Fingerprint::from_hex(FP_B).unwrap(),
+            "48'/1'/0'/2'",
+            "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
+        );
+        let c = XpubWithOrigin::new(Fingerprint::from_hex(FP_C).unwrap(), "48'/1'/0'/2'", XPUB_C);
+        assert_eq!(
+            build_sortedmulti_permutation([&good, &xprv, &c], "0/*"),
+            Err(DescriptorError::PrivateKeyForbidden)
+        );
+        assert!(matches!(
+            address_at("not-a-descriptor", 0, bitcoin::Network::Regtest),
+            Err(DescriptorError::ForeignGrammar(_))
+        ));
+
+        for e in [
+            DupFp("aabbccdd".into()),
+            DescriptorError::MultipathForbidden,
+            DescriptorError::PrivateKeyForbidden,
+            DescriptorError::InvalidOriginPath("84'".into()),
+            DescriptorError::InvalidKeyExpression("x".into()),
+            DescriptorError::ForeignGrammar("y".into()),
+            DescriptorError::Construction("z".into()),
+            DescriptorError::Json("j".into()),
+            DescriptorError::InvalidDocument("d".into()),
+        ] {
+            assert!(!e.to_string().is_empty());
+        }
     }
 }
