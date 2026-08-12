@@ -1313,6 +1313,8 @@ dependencies = [
  "bitcoin",
  "miniscript",
  "proptest",
+ "serde",
+ "serde_json",
  "thiserror",
  "trinity-types",
 ]

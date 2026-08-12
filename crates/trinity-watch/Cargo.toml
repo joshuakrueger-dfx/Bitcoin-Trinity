@@ -5,6 +5,7 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
+description  = "Watch-only wallet: descriptor generation, BDK wallet (WP-11+)"
 
 [dependencies]
 trinity-types = { path = "../trinity-types", version = "0.1.0" }
@@ -12,6 +13,8 @@ bdk_wallet = { workspace = true }
 bdk_chain = { workspace = true }
 bitcoin = { workspace = true }
 miniscript = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

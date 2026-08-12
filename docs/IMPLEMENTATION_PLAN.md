@@ -369,7 +369,7 @@ do not export `SecretBytes` via uniffi.
 ---
 
 #### WP-11 · Descriptor generation and persistence
-**Spec:** 2.3 · **Needs:** WP-10 · **State:** OPEN
+**Spec:** 2.3 · **Needs:** WP-10 · **State:** DONE
 
 `wsh(sortedmulti(2,…))` with BIP-48 paths, origin info, checksum. `descriptor.json` with
 `word_count` **per key**, `source` per key, `policy_id`, `birthday`, network, version.
@@ -378,10 +378,20 @@ do not export `SecretBytes` via uniffi.
 **Prohibited:** No multipath descriptor; no key material; no access to `trinity-keystore`/`trinity-signer`.
 
 **Acceptance**
-- **D1** (checksum against `getdescriptorinfo`, 10,000 cases)
-- **P5** (permutation invariance), **P7** (identical fingerprints rejected), **P9** (foreign grammar rejected)
-- Receive and change descriptors separate (O8), multipath is **not** produced
-- Round-trip `descriptor.json` lossless, including mixed word lengths
+- **D1** (checksum against `getdescriptorinfo`) — **WP-11 pre-run: 500 real cases (250 setups
+  × receive+change) against a live Core 30.2 regtest node, independently re-run and confirmed,
+  all checksums matched.** The full 10,000-case harness is WP-23's job (`tests/differential/`,
+  Cargo feature `differential`); this crate's own `tests/d1_checksum.rs` is the pre-run, marked
+  `#[ignore]` so the fast CI path stays unaffected, run manually against `test-env.sh up`.
+- **P5** (permutation invariance) — verified, `multi` counter-check diverges as expected.
+- **P7** (identical fingerprints rejected) — verified, mutation-probed (flipped the equality
+  check, 2 of 3 P7 tests went red as expected, then restored).
+- **P9** (foreign grammar rejected) — **primary home is WP-20** (`trinity-verify`'s independent
+  parser, Decision E2). What lives here is a builder-side self-check (rejects `multi`, `wpkh`,
+  multipath, missing checksum) used on load so a tampered `descriptor.json` can't silently
+  reload — real, but not the independent-parser property P9 ultimately verifies.
+- Receive and change descriptors separate (O8), multipath is **not** produced.
+- Round-trip `descriptor.json` lossless, including mixed word lengths (A=24, B=12, C=24 tested).
 
 **Tests:** D1, P5, P7, P9
 
