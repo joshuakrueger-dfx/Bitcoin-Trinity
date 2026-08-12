@@ -451,7 +451,11 @@ instance for `broadcast` than for scan/sync.
 ---
 
 #### WP-14 · Electrum backend
-**Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
+**Spec:** 1.6 · **Needs:** WP-13 · **State:** DONE
+
+S2/S13 verified live against WP-02's test environment (electrs). Known follow-up: a vendored
+`electrum-client` patch (rustls feature-name collision workaround) could be silently dropped by
+a future `cargo vendor` re-run — needs a proper `[patch.crates-io]` entry or upstream fix.
 
 **Files:** `crates/trinity-chain/**` (Electrum backend)
 **Prohibited:** No silent fallback to Core RPC or CBF; no key material.
