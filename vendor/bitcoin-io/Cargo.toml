@@ -11,20 +11,14 @@
 
 [package]
 edition = "2021"
-rust-version = "1.60.0"
+rust-version = "1.63.0"
 name = "bitcoin-io"
-version = "0.1.101"
+version = "0.2.0"
 authors = ["Matt Corallo <birchneutea@mattcorallo.com>"]
-build = "build.rs"
 exclude = [
     "tests",
     "contrib",
 ]
-autolib = false
-autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
 description = "Simple I/O traits for no-std (and std) environments"
 documentation = "https://docs.rs/bitcoin-io/"
 readme = "README.md"
@@ -43,34 +37,15 @@ rustdoc-args = [
     "docsrs",
 ]
 
-[package.metadata.rbmt.test.msrv_overrides]
-encoding = "1.74.0"
+[dependencies.internals]
+version = "0.4.0"
+package = "bitcoin-internals"
 
 [features]
-alloc = ["encoding?/alloc"]
+alloc = []
 default = ["std"]
-std = [
-    "alloc",
-    "encoding?/std",
-]
-
-[lib]
-name = "bitcoin_io"
-path = "src/lib.rs"
-
-[dependencies.encoding]
-version = "1.0"
-optional = true
-default-features = false
-package = "bitcoin-consensus-encoding"
+std = ["alloc"]
 
 [lints.rust.unexpected_cfgs]
 level = "deny"
 priority = 0
-check-cfg = [
-    "cfg(rust_v_1_63)",
-    "cfg(rust_v_1_72)",
-    "cfg(rust_v_1_73)",
-    "cfg(rust_v_1_75)",
-    "cfg(rust_v_1_78)",
-]

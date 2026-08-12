@@ -485,7 +485,13 @@ a future `cargo vendor` re-run — needs a proper `[patch.crates-io]` entry or u
 ---
 
 #### WP-16 · CBF backend
-**Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
+**Spec:** 1.6 · **Needs:** WP-13 · **State:** DONE
+
+S2/S13 verified live against a P2P regtest peer (COMPOSE_PROJECT_NAME isolated from the
+parallel WP-14/15 sessions). Block-fetch confirmed uniformly-random-peer per the resolved
+B.3 finding. cargo deny: five documented skip entries for bitcoin-ecosystem version
+duplicates (bip157/bip324 pull a newer bitcoin_hashes lineage than the =0.32.11-pinned
+core tree; unification proven impossible without breaking the pins).
 
 **Files:** `crates/trinity-chain/**` (CBF backend)
 **Prohibited:** No silent fallback.

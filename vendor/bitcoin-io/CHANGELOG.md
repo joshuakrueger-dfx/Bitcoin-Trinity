@@ -1,22 +1,9 @@
-# 0.1.100 - 2026-05-26
+# 0.2.0 - 2024-09-18
 
-**Bump the MSRV to Rust 1.74.0**
-
-Note the version number jump. We jumped to `v0.1.100` when doing the MSRV bump
-so as to leave room for a bunch of secuity releases up to this number if needed.
-
-# 0.1.5 - 2026-05-26
-
-* Trivial docs fix.
-
-# 0.1.4 - 2025-10-30
-
-* Remove `doc_auto_cfg`
-
-# 0.1.3 - 2024-11-02
-
-* Backport IO improvements [#3181](https://github.com/rust-bitcoin/rust-bitcoin/pull/3181)
-  (Original PR: [#3176](https://github.com/rust-bitcoin/rust-bitcoin/pull/3176))
+* Add blanket impl of io traits for `&mut T` [#3188](https://github.com/rust-bitcoin/rust-bitcoin/pull/3188)
+* Add `std` bridge [#3176](https://github.com/rust-bitcoin/rust-bitcoin/pull/3176)
+* Bump MSRV to Rust `v1.63.0` [#3100](https://github.com/rust-bitcoin/rust-bitcoin/pull/3100)
+* Remove blanket trait impls [#2453](https://github.com/rust-bitcoin/rust-bitcoin/pull/2453)
 
 # 0.1.2 - 2024-03-14
 

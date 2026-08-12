@@ -111,6 +111,34 @@ skip = [
     # Resolution expected once bdk_wallet moves to rust-bitcoin 0.33.
     { name = "bitcoin_hashes", version = "=1.2.0" },
 
+    # WP-16 / CBF: bip324 0.7.0 (via bip157 → bdk_kyoto) requires
+    # bitcoin_hashes ^0.15.0, while bitcoin 0.32.11 (workspace pin) is on
+    # ^0.14. Cannot unify without lifting the bitcoin pin; 0.15 is only
+    # used on the CBF/P2P path in trinity-chain, outside the signature path.
+    { name = "bitcoin_hashes", version = "=0.15.0" },
+
+    # WP-16 / CBF: bip157 0.6.3 (via bdk_kyoto) requires bitcoin_hashes
+    # ^0.20.0. Same pin conflict as 0.15 above; compact-filter hashing only,
+    # trinity-chain CBF backend, not on the signature path.
+    { name = "bitcoin_hashes", version = "=0.20.0" },
+
+    # WP-16 / CBF: bitcoin_hashes 0.15.0 pulls hex-conservative 0.3.2;
+    # bitcoin 0.32.11 / bitcoin_hashes 0.14 stay on 0.2.2. Pure hex codec,
+    # no crypto; resolves with the bip324/hashes floor above.
+    { name = "hex-conservative", version = "=0.3.2" },
+
+    # WP-16 / CBF: bitcoin_hashes 0.20.0 (bip157) pulls
+    # bitcoin-consensus-encoding 0.1.0; ur → bitcoin_hashes 1.2.0 already
+    # pulls 1.1.0. Encoding helpers only; both consumers sit outside the
+    # signature path (CBF vs QR transport). Unification needs one hashes
+    # generation across bip157 and ur.
+    { name = "bitcoin-consensus-encoding", version = "=0.1.0" },
+
+    # WP-16 / CBF: same bip157/ur hashes split as consensus-encoding —
+    # bitcoin-internals 0.5.0 via hashes 0.20, 0.6.0 via hashes 1.2.
+    # Internal utilities of the rust-bitcoin ecosystem, no secret material.
+    { name = "bitcoin-internals", version = "=0.5.0" },
+
     # argon2 0.5.3 pulls getrandom 0.2 via password-hash → rand_core 0.6.
     # Our own entropy calls getrandom 0.4.3 directly (WP-30); all
     # versions serve the same OS syscall. Resolution with argon2 0.6.
