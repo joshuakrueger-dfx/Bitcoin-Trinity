@@ -15,7 +15,7 @@
 //!
 //! It also derives independently of the builder (WP-21):
 //!
-//! - own BIP-32 CKDpub ([`ckd_pub_raw`], [`derive_child`], [`derive_at`])
+//! - own BIP-32 CKDpub ([`ckd_pub`], [`derive_child`], [`derive_at`])
 //! - own BIP-67 sorting ([`sort_pubkeys`], [`sort_three`])
 //! - own witnessScript construction ([`witness_script_2of3`],
 //!   [`build_checkmultisig_script`])
@@ -46,7 +46,7 @@ mod witness;
 
 pub use bip67::{sort_pubkeys, sort_three};
 pub use ckd::{ckd_pub, ChildKey, MAX_NON_HARDENED_INDEX};
-pub use derive::{ckd_pub_raw, decode_xpub, derive_at, derive_child, DerivedChild, DerivedOutput};
+pub use derive::{decode_xpub, derive_at, derive_child, DerivedChild, DerivedOutput};
 pub use error::{DeriveError, ParseError};
 pub use parse::{parse, parse_trinity_descriptor};
 pub use types::{DerivationBranch, KeyExpr, ParsedDescriptor};

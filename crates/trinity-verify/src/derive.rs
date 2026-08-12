@@ -12,7 +12,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{Address, Network, ScriptBuf};
 
 use crate::bip67;
-use crate::ckd::{self, ChildKey};
+use crate::ckd;
 use crate::error::DeriveError;
 use crate::types::{DerivationBranch, KeyExpr, ParsedDescriptor};
 use crate::witness;
@@ -135,16 +135,6 @@ pub fn derive_at(
     })
 }
 
-/// Single CKD step exposed for tests and for callers that already hold raw fields.
-#[inline]
-pub fn ckd_pub_raw(
-    parent_chain_code: &[u8; 32],
-    parent_pubkey: &[u8; 33],
-    index: u32,
-) -> Result<ChildKey, DeriveError> {
-    ckd::ckd_pub(parent_chain_code, parent_pubkey, index)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,14 +154,21 @@ mod tests {
 
     #[test]
     fn decode_xpub_roundtrip_fields() {
-        let s = "tpubDCKxNyM3bLgbEX13Mcd8mYxbVg9ajDkWXMh29hMWBurKfVmBfWAM96QVP3zaUcN51HvkZ3ar4VwP82kC8JZhhux8vFQoJintSpVBwpFvyU3";
-        let (cc, pk) = decode_xpub(s).unwrap();
+        // Prefix 0x02 (even y).
+        let s02 = "tpubDCKxNyM3bLgbEX13Mcd8mYxbVg9ajDkWXMh29hMWBurKfVmBfWAM96QVP3zaUcN51HvkZ3ar4VwP82kC8JZhhux8vFQoJintSpVBwpFvyU3";
+        let (cc, pk) = decode_xpub(s02).unwrap();
         assert_eq!(cc.len(), 32);
-        assert!(pk[0] == 0x02 || pk[0] == 0x03);
+        assert_eq!(pk[0], 0x02);
         // Re-parse with bitcoin for field identity (decode only, not CKD).
-        let xp = Xpub::from_str(s).unwrap();
+        let xp = Xpub::from_str(s02).unwrap();
         assert_eq!(&cc[..], &xp.chain_code[..]);
         assert_eq!(pk, xp.public_key.serialize());
+
+        // Prefix 0x03 (odd y) — second key from RECEIVE; covers the other SEC1 arm.
+        let s03 = "tpubDDp3ZSH1yCwusRppH7zgSxq2t1VEUyXSeEp8E5aFS8m43MknUjiF1bSLo3CGWAxbDyhF1XowA5ukPzyJZjznYk3kYi6oe7QxtX2euvKWsk4";
+        let (cc3, pk3) = decode_xpub(s03).unwrap();
+        assert_eq!(cc3.len(), 32);
+        assert_eq!(pk3[0], 0x03);
     }
 
     #[test]
