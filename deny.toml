@@ -28,6 +28,9 @@ allow = [
     "Unicode-3.0",
     "Unlicense",                       # via memchr
     "Zlib",
+    # ISC: ring (Apache-2.0 AND ISC), rustls-webpki, untrusted —
+    # WP-14 TLS stack via electrum-client → rustls. Permissive, OSI/FSF.
+    "ISC",
 
     # ── File-level copyleft, deliberately allowed ─────────────────────────
     # MPL-2.0 covers uniffi, and uniffi carries decision E1 (the
@@ -76,9 +79,11 @@ deny = [
     # thus NOT on the signature path. Further wrappers are added when
     # M1/M5 bind the backends — an unused wrapper is worth a warning,
     # not a stockpile.
-    # log: bbqr (QR transport) + electrum-client (via bdk_electrum / WP-14).
-    # electrum-client is only reachable through trinity-chain (see bans below).
-    { name = "log", wrappers = ["bbqr", "electrum-client"] },
+    # log direct parents (cargo deny check bans):
+    #   bbqr — QR transport (WP-00)
+    #   electrum-client — via bdk_electrum / WP-14; only through trinity-chain
+    #   rustls — TLS stack of electrum-client (WP-14); same path, not secrets
+    { name = "log", wrappers = ["bbqr", "electrum-client", "rustls"] },
 
     # WP-10 / SPECIFICATION.md §1.1: `trinity-types` is pure value types —
     # no I/O. The chain-backend crates below perform network/RPC/P2P I/O.
