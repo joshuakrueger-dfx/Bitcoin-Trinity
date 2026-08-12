@@ -77,6 +77,15 @@ deny = [
     # M1/M5 bind the backends — an unused wrapper is worth a warning,
     # not a stockpile.
     { name = "log", wrappers = ["bbqr"] },
+
+    # WP-10 / SPECIFICATION.md §1.1: `trinity-types` is pure value types —
+    # no I/O. The chain-backend crates below perform network/RPC/P2P I/O.
+    # Only `trinity-chain` may depend on them directly; `trinity-types` is
+    # intentionally absent from the wrappers list so an accidental dep
+    # from the types crate fails the build.
+    { name = "bdk_electrum", wrappers = ["trinity-chain"], reason = "network I/O; trinity-types must stay I/O-free (WP-10)" },
+    { name = "bdk_bitcoind_rpc", wrappers = ["trinity-chain"], reason = "RPC I/O; trinity-types must stay I/O-free (WP-10)" },
+    { name = "bdk_kyoto", wrappers = ["trinity-chain"], reason = "P2P/CBF I/O; trinity-types must stay I/O-free (WP-10)" },
 ]
 
 # Accepted multiple versions. EVERY entry needs a justification, and the

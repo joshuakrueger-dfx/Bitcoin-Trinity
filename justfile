@@ -60,8 +60,9 @@ diff-test:
 signet-test:
     cargo test --workspace --locked --features signet -- --test-threads=1 --ignored
 
+# Branch coverage needs nightly (-Z coverage-options=branch); build pin stays 1.94.1.
 coverage:
-    cargo llvm-cov --workspace --lcov --output-path lcov.info
+    cargo +nightly llvm-cov --workspace --locked --lcov --branch --output-path lcov.info
     python3 scripts/coverage_gate.py lcov.info
 
 mutants:

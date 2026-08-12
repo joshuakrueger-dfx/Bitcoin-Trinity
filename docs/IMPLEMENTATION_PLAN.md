@@ -155,6 +155,13 @@ Cargo workspace with the ten crates from 1.1 as empty scaffolds. `[workspace.dep
 - `deny.toml` present with `[licenses]` as an **allowlist** per §1.7 (file-copyleft MPL-2.0 allowed; project-copyleft GPL/AGPL/SSPL/BUSL and usage fees excluded) and `[bans]` rule: `miniscript` is banned in `trinity-verify`
 - `cargo deny check` green
 
+**Toolchain follow-up (2026-08-11 — SPECIFICATION.md §0.3, TESTING.md §3.1 option (b)):**
+Build/test/clippy/fmt/deny stay on pinned **1.94.1** via `rust-toolchain.toml` (unchanged).
+Branch coverage is measured only under **nightly** in the CI `coverage` job and
+`just coverage` (`cargo +nightly llvm-cov … --branch`). Nightly is a measurement
+toolchain for instrumentation, not a ship pin. See §0.3 table "Toolchain: build pin
+vs. coverage measurement".
+
 **Tests:** —
 
 ---
@@ -224,7 +231,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 - Exception list exists as a file with **justification per entry**; an entry without justification breaks the build
 - `cargo-mutants` runs against `trinity-verify` and `trinity-signer`; surviving mutants break the build
 - Missing BRF/BRH lines in lcov are a finding (not silent 100 % branches)
-- Branch coverage feasibility of the pinned toolchain is documented in TESTING.md §3.1/§3.2 as a measurement or named gap
+- Branch coverage: CI/`just coverage` run `cargo +nightly llvm-cov … --branch` (decision recorded in SPECIFICATION.md §0.3 / WP-00); missing BRF/BRH remains a finding if the report lacks branch data
 
 **Tests:** —
 

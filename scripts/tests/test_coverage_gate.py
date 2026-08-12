@@ -41,6 +41,20 @@ def _threshold_map(*names: str) -> dict[str, tuple[float, float]]:
     return {n: (100.0, 100.0) for n in names}
 
 
+def _fixture_repo_with_threshold_crates(
+    root: Path, *, real_crates: frozenset[str] | set[str] = frozenset()
+) -> Path:
+    """Minimal repo layout: scripts/coverage_gate.py + crates/ for each THRESHOLDS name."""
+    (root / "scripts").mkdir(parents=True, exist_ok=True)
+    script_src = (ROOT / "scripts" / "coverage_gate.py").read_text(encoding="utf-8")
+    (root / "scripts" / "coverage_gate.py").write_text(script_src, encoding="utf-8")
+    crates = root / "crates"
+    for name in coverage_gate.THRESHOLDS:
+        body = REAL_FN_LIB if name in real_crates else SCAFFOLD_LIB
+        _write_crate(crates, name, body)
+    return root / "scripts" / "coverage_gate.py"
+
+
 class TestCrateHasSource(unittest.TestCase):
     def test_docs_attributes_only_is_scaffold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,8 +129,15 @@ class TestCrateHasSource(unittest.TestCase):
 
 
 class TestAnyThresholdSource(unittest.TestCase):
-    def test_current_repository_reports_no_real_source(self) -> None:
-        self.assertFalse(coverage_gate.any_threshold_crate_has_source())
+    def test_full_threshold_set_all_scaffolds_is_false(self) -> None:
+        """Every name in THRESHOLDS is a scaffold → probe false (fixture, not live repo)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            crates = Path(tmp) / "crates"
+            for name in coverage_gate.THRESHOLDS:
+                _write_crate(crates, name, SCAFFOLD_LIB)
+            self.assertFalse(
+                coverage_gate.any_threshold_crate_has_source(crates_dir=crates)
+            )
 
     def test_all_scaffolds_is_false(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,18 +192,37 @@ class TestAnyThresholdSource(unittest.TestCase):
 
 
 class TestSourceStateCli(unittest.TestCase):
-    def test_subprocess_source_state_on_current_repo(self) -> None:
-        """Exercise main() wiring: exact `false` + exit 0 on pure scaffolds."""
-        script = ROOT / "scripts" / "coverage_gate.py"
-        proc = subprocess.run(
-            [sys.executable, str(script), "--source-state"],
-            cwd=str(ROOT),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(proc.stdout, "false\n", repr(proc.stdout))
+    def test_subprocess_source_state_false_on_scaffold_fixture(self) -> None:
+        """CLI wiring: exact `false` + exit 0 when every threshold crate is a scaffold."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp)
+            script = _fixture_repo_with_threshold_crates(fixture)
+            proc = subprocess.run(
+                [sys.executable, str(script), "--source-state"],
+                cwd=str(fixture),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, "false\n", repr(proc.stdout))
+
+    def test_subprocess_source_state_true_on_real_source_fixture(self) -> None:
+        """CLI wiring: exact `true` + exit 0 when one threshold crate has real source."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp)
+            script = _fixture_repo_with_threshold_crates(
+                fixture, real_crates={"trinity-types"}
+            )
+            proc = subprocess.run(
+                [sys.executable, str(script), "--source-state"],
+                cwd=str(fixture),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, "true\n", repr(proc.stdout))
 
     def test_subprocess_source_state_fails_on_missing_crates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
