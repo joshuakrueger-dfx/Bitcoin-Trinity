@@ -118,3 +118,156 @@ pub enum DeriveError {
     #[error("compressed pubkey at index {0} is not a valid 33-byte SEC1 key")]
     InvalidCompressedPubkey(usize),
 }
+
+/// Hard rejection reason from independent PSBT verification (Spec §1.5 V1–V10).
+///
+/// Every path is a concrete variant — never a generic "invalid" string
+/// (fail-closed acceptance criterion for WP-22).
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum VerifyError {
+    /// V1: descriptor string failed the independent parser / BIP-380 checksum.
+    #[error("descriptor rejected: {0}")]
+    Descriptor(#[from] ParseError),
+
+    /// Independent derivation failed while reconstructing scripts / keys.
+    #[error("derivation failed: {0}")]
+    Derive(#[from] DeriveError),
+
+    /// V2: input `script_pubkey` is not a P2WSH program independently
+    /// reconstructed from the descriptor in the search window.
+    #[error("input {input_index}: foreign or non-reconstructible script_pubkey (V2)")]
+    ForeignInput {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// V3: output is neither a declared recipient nor a derived change address
+    /// (forged change — the central attack). Spec S9 names this variant.
+    #[error("output {output_index}: forged or undeclared change address (V3)")]
+    ForeignChangeOutput {
+        /// Transaction output index.
+        output_index: usize,
+    },
+
+    /// V4: change output `bip32_derivation` missing fingerprints, wrong path,
+    /// or pubkeys do not reconstruct the output's witnessScript.
+    #[error("output {output_index}: mismatched change bip32_derivation (V4)")]
+    MismatchedDerivation {
+        /// Transaction output index.
+        output_index: usize,
+    },
+
+    /// V5: fee is zero or would underflow (outputs ≥ inputs).
+    #[error("fee is not strictly positive (V5)")]
+    FeeNonPositive,
+
+    /// V5: absolute fee exceeds `policy.max_absolute_fee`.
+    #[error("fee {fee_sats} sat exceeds max_absolute_fee {max_sats} (V5)")]
+    FeeTooHigh {
+        /// Computed fee in satoshi.
+        fee_sats: u64,
+        /// Policy cap in satoshi.
+        max_sats: u64,
+    },
+
+    /// V5: feerate exceeds `policy.max_feerate`.
+    #[error("feerate {feerate_sat_vb} sat/vB exceeds max_feerate {max_sat_vb} (V5)")]
+    FeerateTooHigh {
+        /// Computed feerate (ceil sat/vB).
+        feerate_sat_vb: u64,
+        /// Policy cap (sat/vB).
+        max_sat_vb: u64,
+    },
+
+    /// V5: fee does not match `policy.declared_fee_sats` from a prior display run.
+    #[error("fee {actual_sats} sat ≠ declared fee {expected_sats} (V5/P2)")]
+    FeeMismatch {
+        /// Computed fee in satoshi.
+        actual_sats: u64,
+        /// `policy.declared_fee_sats`.
+        expected_sats: u64,
+    },
+
+    /// V6: sum of non-change outputs ≠ user-confirmed amount.
+    #[error("non-change amount {actual_sats} ≠ declared {expected_sats} (V6)")]
+    AmountMismatch {
+        /// Sum of non-change outputs.
+        actual_sats: u64,
+        /// `policy.declared_amount_sats`.
+        expected_sats: u64,
+    },
+
+    /// V7: input outpoint is not in the watch-only UTXO list.
+    #[error("input {input_index}: outpoint not in known UTXO list (V7)")]
+    UnknownInput {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// V7: outpoint is known, but `witness_utxo` value/script does not match
+    /// the watch-only record for that outpoint.
+    #[error("input {input_index}: witness_utxo does not match known UTXO (V7)")]
+    MismatchedUtxo {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// V8: input/output map lengths disagree with `unsigned_tx`, or the
+    /// unsigned transaction still carries scriptSig/witness data.
+    #[error("PSBT structure inconsistent with unsigned_tx (V8): {detail}")]
+    InconsistentPsbt {
+        /// Short reason for the structural mismatch.
+        detail: &'static str,
+    },
+
+    /// V8: input or output count exceeds the pre-derivation resource bound.
+    #[error("PSBT has too many inputs or outputs (V8): {detail}")]
+    TooManyInputsOutputs {
+        /// Short reason (which side and the count).
+        detail: &'static str,
+    },
+
+    /// V8: proprietary PSBT fields present (field-confusion surface).
+    #[error("PSBT contains proprietary fields (V8)")]
+    ProprietaryField,
+
+    /// V9: input lacks `witness_utxo`.
+    #[error("input {input_index}: missing witness_utxo (V9)")]
+    MissingWitnessUtxo {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// V9: input has `non_witness_utxo` without `witness_utxo`.
+    #[error("input {input_index}: non_witness_utxo without witness_utxo (V9)")]
+    NonWitnessUtxoOnly {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// V10: a present partial signature is high-s (BIP-62), not valid DER, or
+    /// otherwise not a low-s ECDSA signature.
+    #[error("input {input_index}: bad or high-s signature (V10)")]
+    BadSignature {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// P11 / V10: sighash type is not `SIGHASH_ALL` (0x01).
+    #[error("input {input_index}: sighash is not SIGHASH_ALL (P11)")]
+    NonSighashAll {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// Base64 PSBT string failed to deserialize (exported `verify_psbt` path).
+    #[error("PSBT base64/deserialize failed")]
+    PsbtDecode,
+
+    /// Output `script_pubkey` cannot be encoded as an address on the policy network.
+    #[error("output {output_index}: script_pubkey is not a valid address on policy network")]
+    InvalidOutputAddress {
+        /// Transaction output index.
+        output_index: usize,
+    },
+}

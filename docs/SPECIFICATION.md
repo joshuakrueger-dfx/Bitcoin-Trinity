@@ -640,7 +640,7 @@ pub trait ChainBackend: Send + Sync {
 >
 > Further licenses uncovered by the check, unproblematic in the tree: `CC0-1.0` (rust-bitcoin, secp256k1, miniscript — public-domain dedication), `MITNFA`, `BlueOak-1.0.0`, `BSL-1.0`, `Unlicense`, `0BSD`, `Unicode-3.0`, `Zlib`.
 | No dynamic reload paths | No OTA bundles, no CodePush, no remote config, no feature-flag service. The JS bundle is part of the signed app binary. **This rule must be actively enforced with React Native — it is not the default.** |
-| Signature-path budget | Hard upper bound on the transitive external dependency count of `trinity-types`, `-entropy`, `-keystore`, `-signer`, and `-verify` (only `-e normal`, without dev and build deps). **Measured as the union over the shipped mobile targets `aarch64-apple-ios` and `aarch64-linux-android` (not the developer host): 40 external crates. Gate at 45.** The number comes from `scripts/dep_budget.py` (`MEASURED`), not from an estimate; raising only with justification in the PR. For comparison: `trinity-verify` alone gets by with **22**. |
+| Signature-path budget | Hard upper bound on the transitive external dependency count of `trinity-types`, `-entropy`, `-keystore`, `-signer`, and `-verify` (only `-e normal`, without dev and build deps). **Measured as the union over the shipped mobile targets `aarch64-apple-ios` and `aarch64-linux-android` (not the developer host): 41 external crates. Gate at 45.** The number comes from `scripts/dep_budget.py` (`MEASURED`), not from an estimate; raising only with justification in the PR. For comparison: `trinity-verify` alone gets by with **23**. |
 
 > **Honest note on React Native:** The JS layer brings hundreds of npm dependencies. These sit outside the signature path (they never see a secret), but they can **display whatever they want** — in particular a wrong recipient address. The verifier (1.5) and the native confirmation display (Section 6.2) are the answer. The npm supply chain is thus not harmless, but reduced to "can deceive, cannot steal".
 
@@ -1786,7 +1786,7 @@ A release candidate is release-ready when **all** criteria are met. No criterion
 | 6 | Fuzzing ≥ 24 h without crash or timeout on all three targets. |
 | 7 | Memory-hygiene test green on Linux and Android; iOS gap documented. |
 | 8 | Reproducible build confirmed by ≥ 2 independent verifiers, hashes published. |
-| 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` without open findings; signature path within budget limit 45 (`scripts/dep_budget.py`; measured **40 external crates** as the union over shipped targets `aarch64-apple-ios` and `aarch64-linux-android`). |
+| 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` without open findings; signature path within budget limit 45 (`scripts/dep_budget.py`; measured **41 external crates** as the union over shipped targets `aarch64-apple-ios` and `aarch64-linux-android`). |
 | 9b | **License check:** every dependency matches the allowlist in `deny.toml` and the distinction from §1.7 — **file copyleft (MPL-2.0) admitted**, **project copyleft (GPL/AGPL/SSPL/BUSL) and everything with a usage fee excluded**; no service with ongoing costs in the signature or chain path. `cargo-deny [licenses]` with allowlist instead of denylist, so an unknown license breaks the build instead of slipping through. |
 | 10 | FFI allowlist unchanged **or** change with documented security rationale and second review. |
 | 11 | D14/D15/S6 manually against the **current** Sparrow version performed and logged. |

@@ -1,6 +1,8 @@
-//! `trinity-verify` — independent descriptor parser and key derivation (WP-20 / WP-21).
+//! `trinity-verify` — independent descriptor parser, derivation, and PSBT checks.
 //!
-//! Spec: `docs/SPECIFICATION.md` §1.5, Decision E2.
+//! Spec: `docs/SPECIFICATION.md` §1.5, Decision E2; verification call-site
+//! context in §3.3 (WP-22 builds the check function; signer/UI wire-up is
+//! WP-33+).
 //!
 //! This crate parses **exactly** one grammar:
 //!
@@ -13,23 +15,26 @@
 //! with `k = 2` and exactly three `keyexpr`s. Everything else is a hard
 //! [`ParseError`]. BIP-380 checksum validation is included (check V1).
 //!
-//! It also derives independently of the builder (WP-21):
+//! Independent derivation (WP-21):
 //!
 //! - own BIP-32 CKDpub ([`ckd_pub`], [`derive_child`], [`derive_at`])
 //! - own BIP-67 sorting ([`sort_pubkeys`], [`sort_three`])
 //! - own witnessScript construction ([`witness_script_2of3`],
 //!   [`build_checkmultisig_script`])
 //!
-//! **Not in scope (WP-22):** checks V2–V10, or `verify()` on a PSBT.
+//! Independent verification (WP-22):
+//!
+//! - [`verify`] / [`verify_psbt`] run hard-rejection checks **V1–V10**
+//! - policy input: [`VerifyPolicy`] (gap window supplied by caller; no wallet I/O)
+//! - success payload: [`trinity_types::PsbtVerdict`]
 //!
 //! **Prohibited dependency:** `miniscript` (direct or transitive). Enforced
 //! by `deny.toml` `[bans]` wrappers and CI `cargo deny check`.
 //!
 //! **Independence boundary (Spec §1.5):** derivation and sorting here must not
 //! call `bitcoin::bip32::Xpub::derive_pub` / `ckd_pub` / `derive_priv`. Shared
-//! remain only `bitcoin::hashes` (HMAC-SHA512 / SHA-256) and
-//! `bitcoin::secp256k1` (EC point arithmetic). `Xpub::from_str` is used only
-//! to base58check-decode an xpub into raw fields.
+//! remain only `bitcoin::hashes` (HMAC-SHA512 / SHA-256), `bitcoin::secp256k1`
+//! (EC point arithmetic), and `bitcoin::psbt` (PSBT deserialization).
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -41,15 +46,19 @@ mod ckd;
 mod derive;
 mod error;
 mod parse;
+mod policy;
 mod types;
+mod verify;
 mod witness;
 
 pub use bip67::{sort_pubkeys, sort_three};
 pub use ckd::{ckd_pub, ChildKey, MAX_NON_HARDENED_INDEX};
 pub use derive::{decode_xpub, derive_at, derive_child, DerivedChild, DerivedOutput};
-pub use error::{DeriveError, ParseError};
+pub use error::{DeriveError, ParseError, VerifyError};
 pub use parse::{parse, parse_trinity_descriptor};
+pub use policy::VerifyPolicy;
 pub use types::{DerivationBranch, KeyExpr, ParsedDescriptor};
+pub use verify::{verify, verify_psbt, MAX_PSBT_INS_OR_OUTS};
 pub use witness::{
     build_checkmultisig_script, p2wsh_address, p2wsh_script_pubkey, witness_script_2of3,
 };
