@@ -398,7 +398,7 @@ do not export `SecretBytes` via uniffi.
 ---
 
 #### WP-12 · `trinity-watch` — BDK wallet
-**Spec:** 1.1, 3.2 · **Needs:** WP-11 · **State:** OPEN
+**Spec:** 1.1, 3.2 · **Needs:** WP-11 · **State:** DONE
 
 Wallet build from descriptor, address derivation, UTXO management, `TxBuilder`, persistence.
 Gap limit 20 (O10). BDK 3.1.0 signatures resolved (Appendix B.1, 2026-08-10):
@@ -406,13 +406,20 @@ Gap limit 20 (O10). BDK 3.1.0 signatures resolved (Appendix B.1, 2026-08-10):
 `BranchAndBoundCoinSelection<SingleRandomDraw>` default;
 iterators collected before any higher layer.
 
+**D2/D3 WP-12 pre-run:** 2,000 real cases each (40 setups × 50 addresses) against a live
+Core 30.2 regtest node, independently re-run and confirmed. The full 500×1,000-case harness
+is WP-23's job. Persistence is `ChangeSet` staging (`take_staged`/`apply_update`) only — no
+`rusqlite`/`PersistedWallet` yet; open whether that belongs in a later WP or gets added here.
+
 **Files:** `crates/trinity-watch/**`
 **Prohibited:** No access to `trinity-keystore`/`trinity-signer` — enforced via `[bans]`.
 
 **Acceptance**
 - **D2**, **D3** (addresses against `deriveaddresses`, 500 setups × 1,000 addresses)
 - **D6** (BIP-67 across all 6 permutations)
-- `nLockTime = tip height`, `nSequence = 0xFFFFFFFE` (anti-fee-sniping)
+- `nLockTime = tip height`, `nSequence = 0xFFFFFFFD` (anti-fee-sniping **and** BIP-125
+  replaceability — corrected 2026-08-12, see SPECIFICATION.md §3.2 table; `0xFFFFFFFE` would
+  enforce locktime but silently break the RBF path S12/S29h already require)
 - Coin selection: `BranchAndBoundCoinSelection` with `SingleRandomDraw` type-parameter default; changeless solution preferred
 - **P8** (fee identity, overflow edge cases)
 - Dust change goes into the fee
