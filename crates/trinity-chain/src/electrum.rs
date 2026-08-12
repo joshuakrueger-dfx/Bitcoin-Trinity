@@ -660,4 +660,104 @@ mod tests {
             }
         }
     }
+
+    /// Minimal plaintext Electrum peer: answers `server.version`, errors on
+    /// everything else. Exercises the connect-success path (Debug, accessors,
+    /// privacy, ChainBackend method entry) without the WP-02 stack — needed
+    /// after the WP-14∪WP-16 merge so offline CI still clears the 90 % line gate.
+    fn spawn_mock_electrum() -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            let mut writer = stream;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    break;
+                };
+                let id = req.get("id").cloned().unwrap_or(serde_json::json!(0));
+                let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                let resp = if method == "server.version" {
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": ["MockElectrum 1.0", "1.4"],
+                    })
+                } else {
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": 1, "message": "mock: unimplemented" },
+                    })
+                };
+                if writeln!(writer, "{resp}").is_err() {
+                    break;
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn mock_server_covers_connected_surface() {
+        let (port, _handle) = spawn_mock_electrum();
+        let mut c = ElectrumConfig::new("127.0.0.1", port);
+        c.timeout = Some(Duration::from_secs(2));
+        c.retry = 0;
+        c.own_server = true;
+
+        let backend = ElectrumBackend::connect(c).expect("mock must accept version handshake");
+        // Debug + accessors + own-server privacy (connected shape).
+        let dbg = format!("{backend:?}");
+        assert!(dbg.contains("127.0.0.1"));
+        assert_eq!(backend.config().port, port);
+        let _ = backend.client();
+        assert_eq!(
+            backend.privacy_profile().kind,
+            BackendKind::ElectrumOwnServer
+        );
+
+        // Method entry without a real electrs. Empty full_scan/sync may short-
+        // circuit inside bdk_electrum; fee/tip/broadcast hit the mock and map
+        // protocol errors to ChainError (no Core/CBF fallback — S13).
+        let full = FullScanRequest::<KeychainKind>::builder_at(0).build();
+        let _ = backend.full_scan(full);
+        let partial = SyncRequest::<(KeychainKind, u32)>::builder_at(0).build();
+        let _ = backend.sync(partial);
+        assert!(backend.fee_estimates().is_err());
+        assert!(backend.tip_height().is_err());
+        let junk = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+        assert!(backend.broadcast(&junk).is_err());
+    }
+
+    #[test]
+    fn mock_server_third_party_privacy_branch() {
+        let (port, _handle) = spawn_mock_electrum();
+        let mut c = ElectrumConfig::new("127.0.0.1", port).third_party();
+        c.timeout = Some(Duration::from_secs(2));
+        c.retry = 0;
+        let backend = ElectrumBackend::connect(c).expect("mock handshake");
+        assert_eq!(
+            backend.privacy_profile().kind,
+            BackendKind::ElectrumThirdParty
+        );
+        assert!(backend.privacy_profile().requires_selection_warning);
+    }
 }

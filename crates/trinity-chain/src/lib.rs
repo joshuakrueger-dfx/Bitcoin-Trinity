@@ -1,13 +1,14 @@
 //! `trinity-chain` — swappable chain connectivity.
 //!
 //! Spec: docs/SPECIFICATION.md §1.6. Work packages: WP-13 (trait + in-memory
-//! fake), WP-14 Electrum; Core RPC (WP-15) and CBF (WP-16) follow.
+//! fake), WP-14 Electrum, WP-16 CBF; Core RPC (WP-15) follows.
 //!
 //! ## Surface
 //!
 //! - [`ChainBackend`] — trait matching Spec §1.6 (including `privacy_profile`)
 //! - [`ElectrumBackend`] / [`ElectrumConfig`] — Electrum via `bdk_electrum`
 //! - [`MemoryBackend`] — offline test double
+//! - [`CbfBackend`] / [`CbfConfig`] — BIP-157/158 compact filters (WP-16)
 //! - [`SplitBackend`] — scan/sync on one backend, broadcast on another
 //! - [`PrivacyProfile`] / [`BackendKind`] — Spec §1.6 disclosure table
 //! - [`FeeEstimates`] — sat/vB by confirmation target
@@ -32,6 +33,7 @@
 #![deny(missing_docs)]
 
 mod backend;
+mod cbf;
 mod electrum;
 mod error;
 mod fee;
@@ -40,6 +42,7 @@ mod privacy;
 mod split;
 
 pub use backend::ChainBackend;
+pub use cbf::{CbfBackend, CbfConfig};
 pub use electrum::{
     ElectrumBackend, ElectrumConfig, Socks5Proxy, DEFAULT_BATCH_SIZE, DEFAULT_STOP_GAP,
 };
