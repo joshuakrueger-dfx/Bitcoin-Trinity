@@ -76,7 +76,9 @@ deny = [
     # thus NOT on the signature path. Further wrappers are added when
     # M1/M5 bind the backends — an unused wrapper is worth a warning,
     # not a stockpile.
-    { name = "log", wrappers = ["bbqr"] },
+    # log: bbqr (QR transport) + electrum-client (via bdk_electrum / WP-14).
+    # electrum-client is only reachable through trinity-chain (see bans below).
+    { name = "log", wrappers = ["bbqr", "electrum-client"] },
 
     # WP-10 / SPECIFICATION.md §1.1: `trinity-types` is pure value types —
     # no I/O. The chain-backend crates below perform network/RPC/P2P I/O.

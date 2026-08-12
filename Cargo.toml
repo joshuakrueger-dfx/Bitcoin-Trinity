@@ -29,7 +29,10 @@ bdk_chain    = { version = "=0.23.3" }
 bdk_core     = { version = "=0.6.3" }
 
 # --- Chain backends ---
-bdk_electrum     = { version = "=0.24.0" }
+# use-rustls-ring (not default use-rustls): ring crypto, no aws-lc-sys/cmake.
+# electrum-client 0.25 is vendored with a small feature-name fix (optional dep
+# renamed) so rustls-ring does not also enable rustls/default. Version =0.24.0.
+bdk_electrum     = { version = "=0.24.0", default-features = false, features = ["use-rustls-ring"] }
 bdk_bitcoind_rpc = { version = "=0.22.0" }
 bdk_kyoto        = { version = "=0.17.0" }
 

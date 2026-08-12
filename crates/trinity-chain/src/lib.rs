@@ -1,11 +1,12 @@
 //! `trinity-chain` — swappable chain connectivity.
 //!
-//! Spec: docs/SPECIFICATION.md §1.6. Work package: WP-13 (trait + in-memory
-//! fake); concrete backends WP-14 Electrum, WP-15 Core RPC, WP-16 CBF.
+//! Spec: docs/SPECIFICATION.md §1.6. Work packages: WP-13 (trait + in-memory
+//! fake), WP-14 Electrum; Core RPC (WP-15) and CBF (WP-16) follow.
 //!
 //! ## Surface
 //!
 //! - [`ChainBackend`] — trait matching Spec §1.6 (including `privacy_profile`)
+//! - [`ElectrumBackend`] / [`ElectrumConfig`] — Electrum via `bdk_electrum`
 //! - [`MemoryBackend`] — offline test double
 //! - [`SplitBackend`] — scan/sync on one backend, broadcast on another
 //! - [`PrivacyProfile`] / [`BackendKind`] — Spec §1.6 disclosure table
@@ -24,12 +25,14 @@
 //! ## No vendor default server
 //!
 //! Trinity operates no Electrum/Esplora endpoint. Default is CBF; a server
-//! host is user-supplied (Spec §1.6).
+//! host is user-supplied (Spec §1.6). Electrum failures never fall back to
+//! Core RPC or CBF (S13).
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 mod backend;
+mod electrum;
 mod error;
 mod fee;
 mod memory;
@@ -37,6 +40,9 @@ mod privacy;
 mod split;
 
 pub use backend::ChainBackend;
+pub use electrum::{
+    ElectrumBackend, ElectrumConfig, Socks5Proxy, DEFAULT_BATCH_SIZE, DEFAULT_STOP_GAP,
+};
 pub use error::ChainError;
 pub use fee::FeeEstimates;
 pub use memory::MemoryBackend;

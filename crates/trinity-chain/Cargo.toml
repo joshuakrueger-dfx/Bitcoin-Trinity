@@ -5,13 +5,18 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
-description  = "Swappable chain connectivity: ChainBackend trait, privacy profiles, in-memory fake (WP-13+)"
+description  = "Swappable chain connectivity: ChainBackend trait, Electrum backend, privacy profiles (WP-13+)"
 
 [dependencies]
 # BDK request/update types for the trait surface (Spec §1.6).
 # FullScanRequest / SyncRequest live in bdk_core::spk_client (re-exported by
 # bdk_chain); Update and KeychainKind live in bdk_wallet 3.1.0.
-bdk_chain  = { workspace = true }
-bdk_wallet = { workspace = true }
-bitcoin    = { workspace = true }
-thiserror  = { workspace = true }
+bdk_chain    = { workspace = true }
+bdk_wallet   = { workspace = true }
+bdk_electrum = { workspace = true }
+bitcoin      = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+# JSON value construction in error-mapping unit tests.
+serde_json = { workspace = true }
