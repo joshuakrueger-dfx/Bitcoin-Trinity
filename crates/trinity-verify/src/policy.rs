@@ -128,7 +128,7 @@ mod tests {
             None,
             20,
             known,
-            Some("wsh(...)#xxxx".into()),
+            Some("wsh(...)#dummy".into()),
             Network::Regtest,
         );
         assert_eq!(p.declared_amount_sats, 10_000);

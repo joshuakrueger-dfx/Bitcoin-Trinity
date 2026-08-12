@@ -365,7 +365,8 @@ fn check_v4_change(
         // Bind this entry's fingerprint to *its own* KeyExpr origin_path —
         // not "any of the three" origins (heterogeneous origins are legal
         // under the WP-20 grammar).
-        let key = key_expr_for_fingerprint(change_desc, &fp_bytes).ok_or(())?;
+        let resolve_key = key_expr_for_fingerprint;
+        let key = resolve_key(change_desc, &fp_bytes).ok_or(())?;
         if !path_is_change_at(path, key, index) {
             return Err(());
         }
