@@ -259,7 +259,7 @@ which packages own acceptance. No new bans invented here.
 - **First:** grammar-only parser for `wsh(sortedmulti(2,·,·,·))`, then own CKDpub / BIP-67,
   then checks V1–V10.
 - **Must not:** **`miniscript`** (direct dep banned; E2 / `deny.toml`). No keystore/signer.
-- **Accepts:** D4, D5 (WP-21); P1–P3, P11, P12 (WP-22). Differential harness is WP-23
+- **Accepts:** D4, D5 (WP-23); P1–P3, P11, P12 (WP-22). Differential harness is WP-23
   (`tests/differential/`, feature `differential`).
 
 ### `trinity-entropy` (WP-30)

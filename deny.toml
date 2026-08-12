@@ -69,6 +69,15 @@ deny = [
     #  rejects the combination; multiple versions are covered by `multiple-versions = "deny"`.)
     { name = "miniscript", wrappers = ["bdk_wallet", "bdk_chain", "trinity-watch"] },
 
+    # secp256k1 must not be a direct dependency of workspace crates.
+    # SPECIFICATION.md §0.3 / §1.5: EC arithmetic is shared at the library
+    # layer via bitcoin's re-export (`bitcoin::secp256k1`); a direct
+    # `secp256k1 = …` pin can resolve a second copy of libsecp256k1 and
+    # would also let trinity-verify claim independence while linking the
+    # same crate by a second path. Measured: only `bitcoin` depends on it
+    # directly (`cargo tree -i secp256k1 -e normal`).
+    { name = "secp256k1", wrappers = ["bitcoin"], reason = "use bitcoin::secp256k1 re-export only; no direct pin (SPEC §0.3/§1.5)" },
+
     # hwi wraps the Python HWI and needs a Python runtime — unusable on
     # mobile devices (SPECIFICATION.md §2.7.4).
     { name = "hwi" },
