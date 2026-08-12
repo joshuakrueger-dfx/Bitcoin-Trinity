@@ -80,3 +80,41 @@ pub enum ParseError {
     #[error("unexpected end of descriptor")]
     UnexpectedEof,
 }
+
+/// Hard failure during independent BIP-32 / BIP-67 / witnessScript derivation.
+///
+/// Fail-closed: every rejection path is a specific variant (Spec §1.5). Used by
+/// WP-21 derivation and later by WP-22 checks that re-derive outputs.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum DeriveError {
+    /// Child index is hardened (`i ≥ 2³¹`). Public CKD cannot derive it.
+    #[error("hardened child index is not derivable from xpub (got {0})")]
+    HardenedIndex(u32),
+
+    /// Parent compressed pubkey bytes are not a valid SEC1 secp256k1 point.
+    #[error("invalid compressed public key")]
+    InvalidPublicKey,
+
+    /// BIP-32 tweak invalid: `I_L` not a valid secret key, or point addition
+    /// yielded the point at infinity (BIP-32 §"Public parent key → public
+    /// child key", rare; caller should try the next index).
+    #[error("BIP-32 child key derivation produced an invalid tweak")]
+    InvalidTweak,
+
+    /// Extended public key string failed base58check / BIP-32 decode.
+    #[error("invalid extended public key")]
+    MalformedXpub,
+
+    /// Multisig parameters out of range (`k`/`n` not in 1..=16, or `k > n`).
+    #[error("invalid multisig parameters: k={k}, n={n}")]
+    InvalidMultisigParams {
+        /// Required signatures.
+        k: u32,
+        /// Total keys.
+        n: u32,
+    },
+
+    /// A compressed pubkey in a set for BIP-67 / script build is malformed.
+    #[error("compressed pubkey at index {0} is not a valid 33-byte SEC1 key")]
+    InvalidCompressedPubkey(usize),
+}

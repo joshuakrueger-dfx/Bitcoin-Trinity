@@ -5,15 +5,17 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
-description  = "Independent Trinity descriptor parser (WP-20; no miniscript)"
+description  = "Independent Trinity descriptor parser + BIP-32/67 derivation (WP-20/21; no miniscript)"
 
 [dependencies]
-# DELIBERATELY WITHOUT miniscript — the verifier parses independently
-# (SPECIFICATION.md §1.5, Decision E2). Enforced by deny.toml [bans].
+# DELIBERATELY WITHOUT miniscript — the verifier parses and derives
+# independently (SPECIFICATION.md §1.5, Decision E2). Enforced by
+# deny.toml [bans].
 # trinity-types supplies Fingerprint only (pure value type; no I/O).
-# bitcoin is used for Xpub base58check validation only — not for
-# descriptor/miniscript parsing. BIP-380 checksum is implemented here
-# from the BIP text, not from bitcoin::descriptor / miniscript.
+# bitcoin is used for: (1) Xpub base58check field decode only — never
+# Xpub::derive_pub / ckd_pub; (2) re-exports of hashes (HMAC-SHA512) and
+# secp256k1 for own CKDpub; (3) script assembly / Address for own
+# witnessScript. BIP-380 checksum is implemented here from the BIP text.
 trinity-types = { path = "../trinity-types", version = "0.1.0" }
 bitcoin = { workspace = true }
 thiserror = { workspace = true }

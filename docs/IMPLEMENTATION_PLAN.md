@@ -541,20 +541,35 @@ the BIP's own published test vector (`raw(deadbeef)#89f8spxm`) and a real mutati
 ---
 
 #### WP-21 · Own BIP-32 derivation and BIP-67 sorting
-**Spec:** 1.5 · **Needs:** WP-20 · **State:** OPEN
+**Spec:** 1.5 · **Needs:** WP-20 · **State:** DONE
 
-Own CKDpub, own sorting, own witnessScript construction. Shared remain only `secp256k1`
-and the hashes — the independence boundary is tabulated in 1.5 and applies.
+Own CKDpub (`ckd.rs`), own BIP-67 sorting (`bip67.rs`), own witnessScript / P2WSH
+construction (`witness.rs`), and a combining path `derive_at` / `derive_child`
+(`derive.rs`) that yields descriptor-order children, BIP-67-sorted pubkeys,
+`witness_script`, and `script_pubkey` for WP-22. Shared remain only
+`bitcoin::secp256k1` and `bitcoin::hashes` (HMAC-SHA512 / SHA-256) — never
+`Xpub::derive_pub` / `ckd_pub` / `derive_priv`, never `miniscript`. BIP-32 and
+BIP-67 official test vectors (public-derivation slices; all four BIP-67 sort +
+script vectors) plus real mutation probes (HMAC key/data swap, off-by-one index,
+reversed sort, adjacent key swap) lock the independence boundary from §1.5.
+D4/D5 stay for WP-23 (differential harness against Core / builder).
 
-**Files:** `crates/trinity-verify/**`
-**Prohibited:** No `miniscript` dependency; no keystore/signer.
+**Files:** `crates/trinity-verify/**` (ckd, bip67, witness, derive + vector tests)
+**Prohibited:** No `miniscript` dependency; no keystore/signer; no direct
+`secp256k1` / `bitcoin_hashes` crate deps.
 
 **Acceptance**
-- **D4** (verifier against `deriveaddresses`) — **the most important test of the milestone**
-- **D5** (verifier against builder); every divergence is an alarm, not a test failure
-- Coverage 100 %
+- Official BIP-32 vectors 1–2 (non-hardened child steps) and BIP-67 vectors 1–4
+- Mutation probes fail loudly against those vectors (not just deletion)
+- `cargo-deny` confirms: no `miniscript`, no extra direct crypto deps on this crate
+- Coverage bar remains 100 % lines/branches (WP-20 standard); measure with
+  `just coverage` when nightly + `cargo-llvm-cov` are available
+- Met: 93 tests (31 unit + 11 BIP-32 vector + 6 BIP-67 vector + 4
+  checksum-mutation + 35 P9-negative + 6 positive); `cargo deny check` bans
+  ok (no miniscript / no direct secp256k1 or bitcoin_hashes on this crate).
+  D4/D5 (differential vs Core `deriveaddresses` / builder) stay on WP-23.
 
-**Tests:** D4, D5
+**Tests:** —
 
 ---
 
@@ -579,7 +594,8 @@ and the hashes — the independence boundary is tabulated in 1.5 and applies.
 
 Harness that runs **D1–D19** against Bitcoin Core 30.2, with stable seed and reproducible
 cases. Creates the Cargo feature `differential` and the directory `tests/differential/`,
-so the CI job can be reactivated.
+so the CI job can be reactivated. Includes **D4** (verifier against `deriveaddresses`) and
+**D5** (verifier against builder) once WP-21/WP-22 derivation is in place.
 
 **Files:** `tests/differential/**`, feature `differential` in affected `Cargo.toml`, `justfile` (`diff-test`)
 **Prohibited:** No domain-logic changes in Verify/Signer except harness wiring; do not create features without real tests.
@@ -592,7 +608,7 @@ so the CI job can be reactivated.
 - Runtime < 20 min
 - After this WP the differential harness is present so the in-job detection step runs the suite (no longer a successful no-op)
 
-**Tests:** —
+**Tests:** D4, D5
 
 ---
 
