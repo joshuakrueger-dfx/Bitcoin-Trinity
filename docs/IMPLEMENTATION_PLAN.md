@@ -470,7 +470,11 @@ a future `cargo vendor` re-run — needs a proper `[patch.crates-io]` entry or u
 ---
 
 #### WP-15 · Core RPC backend
-**Spec:** 1.6 · **Needs:** WP-13 · **State:** OPEN
+**Spec:** 1.6 · **Needs:** WP-13 · **State:** DONE
+
+S2/S13 verified live against the WP-02 test environment (Core 30.2 RPC, COMPOSE_PROJECT_NAME
+isolated from the parallel WP-14/16 sessions). cargo deny: ISC license allowed, log wrapper
+extended (bitcoincore-rpc), base64 duplicate version skip documented (jsonrpc pins 0.13.1).
 
 **Files:** `crates/trinity-chain/**` (Core RPC backend)
 **Prohibited:** No silent fallback; no key material.

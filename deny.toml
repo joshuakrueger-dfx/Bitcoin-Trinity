@@ -28,8 +28,8 @@ allow = [
     "Unicode-3.0",
     "Unlicense",                       # via memchr
     "Zlib",
-    # ISC: ring (Apache-2.0 AND ISC), rustls-webpki, untrusted —
-    # WP-14 TLS stack via electrum-client → rustls. Permissive, OSI/FSF.
+    # ISC: ring / rustls-webpki / untrusted (WP-14 TLS via electrum-client →
+    # rustls) and minreq (WP-15 jsonrpc → bitcoincore-rpc). Permissive, OSI/FSF.
     "ISC",
 
     # ── File-level copyleft, deliberately allowed ─────────────────────────
@@ -83,7 +83,8 @@ deny = [
     #   bbqr — QR transport (WP-00)
     #   electrum-client — via bdk_electrum / WP-14; only through trinity-chain
     #   rustls — TLS stack of electrum-client (WP-14); same path, not secrets
-    { name = "log", wrappers = ["bbqr", "electrum-client", "rustls"] },
+    #   bitcoincore-rpc — via bdk_bitcoind_rpc / WP-15; RPC client only, not secrets
+    { name = "log", wrappers = ["bbqr", "electrum-client", "rustls", "bitcoincore-rpc"] },
 
     # WP-10 / SPECIFICATION.md §1.1: `trinity-types` is pure value types —
     # no I/O. The chain-backend crates below perform network/RPC/P2P I/O.
@@ -152,6 +153,13 @@ skip = [
     #    does not count it). Entropy comes exclusively from WP-30
     #    (OS-CSPRNG + additional source), nonces from RFC 6979 via libsecp256k1.
     { name = "rand_core", version = "=0.10.1" },
+
+    # WP-15 / Core-RPC: jsonrpc 0.18.0 (via bitcoincore-rpc 0.19.0 →
+    # bdk_bitcoind_rpc) still pins base64 0.13.1 for JSON-RPC wire
+    # encoding. The rest of the tree is on base64 0.21.7 via bitcoin 0.32.
+    # Cannot unify until jsonrpc/bitcoincore-rpc bump their base64 floor;
+    # both versions are pure encoding, no crypto, outside the signature path.
+    { name = "base64", version = "=0.13.1" },
 ]
 
 skip-tree = [
