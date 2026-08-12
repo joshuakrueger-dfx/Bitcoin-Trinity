@@ -1,0 +1,31 @@
+[package]
+name = "trinity-verify-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Standalone fuzz workspace — not a member of the root workspace.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+# Path-vendored so the monorepo's crates-io → vendor/ redirect does not need
+# libfuzzer-sys (fuzz-only; not part of the shipped dependency budget).
+libfuzzer-sys = { path = "vendor-local/libfuzzer-sys" }
+
+[dependencies.trinity-verify]
+path = ".."
+
+# trinity-verify pulls bitcoin etc. from the root vendor via workspace path;
+# those resolve through the parent crate's already-built graph when linked.
+# For the fuzz package's own build of trinity-verify, we still need the
+# parent crates-io redirect — so bitcoin comes from root vendor.
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+test = false
+doc = false
+bench = false

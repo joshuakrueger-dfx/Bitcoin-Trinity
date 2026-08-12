@@ -512,10 +512,17 @@ core tree; unification proven impossible without breaking the pins).
 ### M2 — Verifier
 
 #### WP-20 · Own descriptor parser
-**Spec:** 1.5, E2 · **Needs:** WP-10 · **State:** OPEN
+**Spec:** 1.5, E2 · **Needs:** WP-10 · **State:** DONE
 
-~250 lines for **exactly** the grammar `wsh(sortedmulti(2,·,·,·))`. Everything else is a hard
-error. **Without `miniscript`.**
+New crate `trinity-verify`, grammar-only parser for `wsh(sortedmulti(2,·,·,·))` plus BIP-380
+checksum validation (V1); everything else (`multi`, `tr(...)`, `sh(wsh(...))`, wrong k/n,
+malformed fingerprint/path/xpub/checksum) is a specific hard-error `ParseError` variant, not a
+catch-all or a fallback. Independently confirmed via `cargo tree -p trinity-verify` that
+`miniscript` does not appear anywhere in the crate's dependency graph, direct or transitive
+(dev-deps included). BIP-380 checksum implemented from the BIP text directly, verified against
+the BIP's own published test vector (`raw(deadbeef)#89f8spxm`) and a real mutation probe
+(single checksum-char flip on an otherwise-valid descriptor is rejected specifically as
+`InvalidChecksum`, not just any error).
 
 **Files:** `crates/trinity-verify/**` (parser)
 **Prohibited:** No `miniscript` dependency; no access to `trinity-keystore` or `trinity-signer`.
@@ -525,6 +532,9 @@ error. **Without `miniscript`.**
 - Negative cases with random valid Miniscript descriptors (supplement to P9)
 - `cargo-fuzz` ≥ 1 h without finding (full run in WP-70)
 - Coverage **100 % lines and branches**, no exceptions
+- All four met: 57 tests (12 unit + 4 checksum-mutation + 35 P9-negative + 6 positive), coverage
+  384/384 lines and 96/96 branches = 100 %/100 %, fuzz 3601 s / 830 805 435 runs / ~230 715
+  exec/s / 0 crashes (`cargo-fuzz`, aarch64-darwin, seeded from valid-descriptor corpus)
 
 **Tests:** —
 
