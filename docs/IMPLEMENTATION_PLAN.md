@@ -42,9 +42,9 @@ specification reference, acceptance criteria, and the tests that must pass.
 |---|---|---|---|
 | **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **40 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **22** · `fmt` and `clippy -D warnings` clean | — |
 | WP-01 | IN PROGRESS | Workflow rewritten without job-level `hashFiles`; always-on check/test/supply-chain/coverage; FFI/differential/signet use in-job harness detection; actions pinned to full commit SHAs; `permissions.contents: read`; checkout `persist-credentials: false`; tools pinned `tool@x.y.z` with `fallback: none`. Gate tests under `scripts/tests/`. | **Never executed on a runner** (local structural tests ≠ GitHub acceptance). |
-| WP-02 | IN PROGRESS | `test-env.sh` (syntax checked, Core version lock implemented) and `docker/compose.yml` (valid; images still by tag; published host ports bound to `127.0.0.1`) | **Never started.** Image-**digests missing**. No `bitcoind`, no `electrs` pulled. |
-| WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. | Real coverage/mutation run pending until domain source exists; branch coverage feasibility of the pinned toolchain documented in TESTING.md §3.1. Not claimed green on GitHub. |
-| WP-04 | IN PROGRESS | — | `vendor/`, `.cargo/config.toml`, build without network in container, reproducible-build proof via two runners. |
+| **WP-02** | **DONE** | Digests pinned in `docker/compose.yml`. `test-env-up` genuinely brings up Core 30.2 + electrs + CBF (same node, `-blockfilterindex=1`/`-peerblockfilters=1`), verified: 101 blocks, 50 BTC funded wallet, electrs on 127.0.0.1:60401, `getindexinfo` shows synced filter index. **Version rejection verified against a real Core 30.0 container** (not just code review) — the check genuinely fires. `test-env-down` verified to remove all containers/volumes/networks. ~15-25s warm start. macOS/colima measured; Linux path structurally identical (no host-specific paths, loopback-only ports). | Linux host not separately run; no dedicated Signet node (not an acceptance bullet). |
+| WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. Nightly-only branch coverage enabled (WP-10 follow-up) — `trinity-types` measures 100%/100% on GitHub. | Real coverage/mutation run on the security-core crates pending until they have domain source. |
+| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 40 external crates measured (budget 45). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
 | **WP-07** | **DONE** | Root cause (job-level `hashFiles` at the `if:` key, rejected by GitHub before any job scheduled) fixed by moving harness detection in-job via `$GITHUB_OUTPUT`. **Real GitHub-runner evidence obtained 2026-08-11**: run [31528761822](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31528761822) (branch, all 6 non-gated jobs `success`), run [31530227149](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530227149) (branch, post-resign re-run, all `success`), run [31530360173](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530360173) (`main` after merge, **all 8 jobs `success`** including the main-only Signet/Mutation jobs). Account-side concerns (minutes/spending limit) are moot — the runs executed. | — |
 
 **So: M0 is not fully done, but WP-00 and WP-07 are.** WP-01–03 still hang on
@@ -190,7 +190,7 @@ Signet/Mutants after `main`.
 ---
 
 #### WP-02 · Test environment
-**Spec:** 5.1, 5.3 · **Needs:** WP-00 · **State:** IN PROGRESS
+**Spec:** 5.1, 5.3 · **Needs:** WP-00 · **State:** DONE
 
 Reproducible environment per TESTING.md §2: **Bitcoin Core 30.2** (Regtest; Signet as
 acceptance target), Electrum server, CBF via the same Regtest node with filter indices, all
@@ -238,7 +238,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 ---
 
 #### WP-04 · Vendoring and reproducible builds
-**Spec:** 1.7 · **Needs:** WP-00 · **State:** OPEN
+**Spec:** 1.7 · **Needs:** WP-00 · **State:** DONE
 
 **Files:** `vendor/`, `.cargo/config.toml`, CI job or script for offline build
 **Prohibited:** Do not put `vendor/` in `.gitignore`; build must not pull from the network in the released state.

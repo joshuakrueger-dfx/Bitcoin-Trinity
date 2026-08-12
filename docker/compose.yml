@@ -1,8 +1,8 @@
 # Test environment — docs/TESTING.md §2
 #
-# Current state: WP-02 remains open and images use mutable tags. Tags are
-# mutable — digest pinning is an acceptance criterion of WP-02 and makes the
-# setup reproducible and offline-capable after the first pull.
+# Image digests are pinned (WP-02 acceptance). Tags kept as comments for
+# humans. Re-pin after deliberate upgrades: docker pull <image>:<tag> &&
+# docker inspect --format='{{index .RepoDigests 0}}' <image>:<tag>
 #
 # ⚠️ Bitcoin Core 30.0 and 30.1 are forbidden (wallet migration bug,
 #    binaries withdrawn on 2026-01-05). scripts/test-env.sh checks the
@@ -10,9 +10,8 @@
 
 services:
   bitcoind:
-    # WP-02 requires a digest once the image is chosen:
-    # image: <repo>@sha256:<digest>
-    image: bitcoin/bitcoin:30.2
+    # bitcoin/bitcoin:30.2
+    image: bitcoin/bitcoin@sha256:2b1d8a8d23c67b426afa8cd5b3ffd66b8c4ebbbceef3e214df8627aaead1f517
     command:
       - -regtest=1
       - -server=1
@@ -44,16 +43,26 @@ services:
 
   electrs:
     # Backend for trinity-chain::ElectrumBackend (WP-14)
-    image: getumbrel/electrs:v0.10.9
+    # getumbrel/electrs:v0.10.9 — CLI exposes --cookie-file only; user/pass auth
+    # is the `auth` key in a config file (Auth::UserPass). Same credentials as
+    # bitcoind -rpcuser/-rpcpassword. A synthetic cookie file was rejected by
+    # bitcoincore-rpc against Core 30.2 (HTTP 401); conf-auth works.
+    image: getumbrel/electrs@sha256:622657fbdc7331a69f5b3444e6f87867d51ac27d90c399c8bf25d9aab020052b
     depends_on:
       bitcoind:
         condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --network=regtest
-      - --daemon-rpc-addr=bitcoind:18443
-      - --daemon-p2p-addr=bitcoind:18444
-      - --electrum-rpc-addr=0.0.0.0:60401
-      - --cookie=trinity:regtest
+      - |
+        cat > /tmp/electrs.toml <<'EOF'
+        auth = "trinity:regtest"
+        network = "regtest"
+        daemon_rpc_addr = "bitcoind:18443"
+        daemon_p2p_addr = "bitcoind:18444"
+        electrum_rpc_addr = "0.0.0.0:60401"
+        db_dir = "/data/db"
+        EOF
+        exec electrs --conf /tmp/electrs.toml --skip-default-conf-files
     ports:
       - "127.0.0.1:60401:60401"
     volumes:

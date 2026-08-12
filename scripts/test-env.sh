@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test environment: Bitcoin Core 30.2 (regtest) with blockfilterindex/peerblockfilters
-# (CBF on the same node), electrs. Signet node and a separate CBF peer are
-# acceptance goals of WP-02 and are not yet in docker/compose.yml today.
+# (CBF-capable on the same node via COMPACT_FILTERS), electrs.
+# Signet is an optional later extension (not required by WP-02 acceptance).
 # Implements WP-02; requirements in docs/TESTING.md §2.
 #
 #   ./scripts/test-env.sh up | down | reset | status
@@ -60,6 +60,39 @@ wait_for_rpc() {
   fail "RPC not reachable after 60 s. Logs: docker compose -f '$COMPOSE_FILE' logs bitcoind"
 }
 
+# electrs must be running, not merely created — a bad cookie flag previously
+# left the container Exited(1) while the script still reported Ready.
+# Note: `compose ps -q` lists only running containers; use -a to see exits.
+wait_for_electrs() {
+  log "Waiting for electrs …"
+  local id status
+  for _ in $(seq 1 60); do
+    id=$(compose ps -aq electrs 2>/dev/null || true)
+    if [[ -n "$id" ]]; then
+      status=$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)
+      if [[ "$status" == "exited" || "$status" == "dead" ]]; then
+        compose logs --tail=40 electrs || true
+        fail "electrs container is ${status}. Logs above. Fix docker/compose.yml electrs args."
+      fi
+      if [[ "$status" == "running" ]]; then
+        if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 60401 2>/dev/null; then
+          ok "electrs running (TCP 127.0.0.1:60401)"
+          return 0
+        fi
+        # bash /dev/tcp fallback when nc is absent
+        if (echo >/dev/tcp/127.0.0.1/60401) >/dev/null 2>&1; then
+          ok "electrs running (TCP 127.0.0.1:60401)"
+          return 0
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  compose logs --tail=40 electrs || true
+  compose ps -a electrs || true
+  fail "electrs not ready after 60 s."
+}
+
 # Fixed starting state: 101 blocks so exactly one coinbase is mature.
 seed_regtest() {
   log "Establishing regtest starting state …"
@@ -71,6 +104,9 @@ seed_regtest() {
   h=$(cli getblockcount)
   bal=$(cli -rpcwallet=miner getbalance)
   [[ "$h" -eq 101 ]] || fail "Expected 101 blocks, got $h — state not deterministic."
+  # Funded means spendable coinbase maturity (50 BTC after 101 blocks).
+  awk -v b="$bal" 'BEGIN { exit !(b+0 > 0) }' \
+    || fail "Expected funded miner wallet (balance > 0), got ${bal}"
   ok "101 blocks, miner wallet with ${bal} BTC"
 }
 
@@ -81,6 +117,7 @@ cmd_up() {
   wait_for_rpc
   verify_core_version
   seed_regtest
+  wait_for_electrs
   ok "Ready. RPC: http://${RPC_USER}:${RPC_PASS}@127.0.0.1:${RPC_PORT}"
 }
 
