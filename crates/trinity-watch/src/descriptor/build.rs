@@ -326,6 +326,7 @@ mod tests {
     use miniscript::{Descriptor, DescriptorPublicKey};
     use std::str::FromStr;
     use trinity_types::{Fingerprint, KeySlot, WordCount};
+    use DescriptorError::DuplicateFingerprint as DupFp;
 
     // Fixed tpubs from BDK Caravan tests (testnet/regtest xpubs).
     const FP_A: &str = "73756c7f";
@@ -538,7 +539,7 @@ mod tests {
         ));
 
         for e in [
-            DescriptorError::DuplicateFingerprint("aabbccdd".into()),
+            DupFp("aabbccdd".into()),
             DescriptorError::MultipathForbidden,
             DescriptorError::PrivateKeyForbidden,
             DescriptorError::InvalidOriginPath("84'".into()),
