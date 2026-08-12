@@ -86,6 +86,12 @@ deny = [
     { name = "bdk_electrum", wrappers = ["trinity-chain"], reason = "network I/O; trinity-types must stay I/O-free (WP-10)" },
     { name = "bdk_bitcoind_rpc", wrappers = ["trinity-chain"], reason = "RPC I/O; trinity-types must stay I/O-free (WP-10)" },
     { name = "bdk_kyoto", wrappers = ["trinity-chain"], reason = "P2P/CBF I/O; trinity-types must stay I/O-free (WP-10)" },
+
+    # WP-12 / SPECIFICATION.md §1.1: trinity-watch is watch-only — no key
+    # material path. An accidental direct dependency on the secret crates
+    # must fail the build. Only the signer/FFI may touch keystore/signer.
+    { name = "trinity-keystore", wrappers = ["trinity-signer", "trinity-ffi"], reason = "secrets; trinity-watch must stay watch-only (WP-12)" },
+    { name = "trinity-signer", wrappers = ["trinity-ffi"], reason = "signing; trinity-watch must stay watch-only (WP-12)" },
 ]
 
 # Accepted multiple versions. EVERY entry needs a justification, and the
