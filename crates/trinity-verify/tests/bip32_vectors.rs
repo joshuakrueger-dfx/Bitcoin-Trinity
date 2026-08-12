@@ -95,6 +95,7 @@ fn vector1_master_fields_decode() {
 }
 
 /// Mutation probe: wrong child index must not silently match the vector child.
+/// Calls the real `ckd_pub` (unlike a standalone HMAC reimplementation).
 #[test]
 fn mutation_off_by_one_index_fails_vector() {
     let (p_cc, p_pk) = fields(TV1_M_0H);
@@ -102,65 +103,6 @@ fn mutation_off_by_one_index_fails_vector() {
     let (e_cc, e_pk) = fields(TV1_M_0H_1);
     assert_ne!(wrong.chain_code, e_cc);
     assert_ne!(wrong.public_key, e_pk);
-}
-
-/// Mutation probe: HMAC with key/data swapped produces a different key
-/// (and therefore fails the official vector comparison).
-#[test]
-fn mutation_hmac_key_data_swapped_fails_vector() {
-    use bitcoin::hashes::{sha512, Hash as _, HashEngine, Hmac, HmacEngine};
-    use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-
-    let (p_cc, p_pk) = fields(TV2_M);
-    // Wrong: Key = serP(K_par), Data = c_par || ser32(i)  (swapped roles).
-    let mut engine: HmacEngine<sha512::Hash> = HmacEngine::new(&p_pk);
-    engine.input(&p_cc);
-    engine.input(&0u32.to_be_bytes());
-    let i: Hmac<sha512::Hash> = Hmac::from_engine(engine);
-    let il = SecretKey::from_slice(&i[..32]).expect("il for this vector is valid");
-    let mut ir = [0u8; 32];
-    ir.copy_from_slice(&i[32..]);
-    let secp = Secp256k1::verification_only();
-    let parent = PublicKey::from_slice(&p_pk).unwrap();
-    let wrong_pk = parent.add_exp_tweak(&secp, &il.into()).unwrap().serialize();
-
-    let (e_cc, e_pk) = fields(TV2_M_0);
-    assert_ne!(
-        ir, e_cc,
-        "swapped HMAC must not yield the vector chain code"
-    );
-    assert_ne!(
-        wrong_pk, e_pk,
-        "swapped HMAC must not yield the vector pubkey"
-    );
-}
-
-/// Mutation probe: using ser32(i) alone as HMAC key (no chain code) fails vector.
-#[test]
-fn mutation_hmac_key_is_index_only_fails_vector() {
-    use bitcoin::hashes::{sha512, Hash as _, HashEngine, Hmac, HmacEngine};
-    use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-
-    let (p_cc, p_pk) = fields(TV1_M_0H);
-    let idx = 1u32;
-    // Wrong: Key = ser32(i), Data = serP(K_par)  (chain code omitted as key).
-    let mut engine: HmacEngine<sha512::Hash> = HmacEngine::new(&idx.to_be_bytes());
-    engine.input(&p_pk);
-    // Even if we append chain code as data, key is wrong:
-    engine.input(&p_cc);
-    let i: Hmac<sha512::Hash> = Hmac::from_engine(engine);
-    let il = match SecretKey::from_slice(&i[..32]) {
-        Ok(sk) => sk,
-        Err(_) => return, // invalid tweak already proves divergence
-    };
-    let secp = Secp256k1::verification_only();
-    let parent = PublicKey::from_slice(&p_pk).unwrap();
-    let wrong_pk = match parent.add_exp_tweak(&secp, &il.into()) {
-        Ok(pk) => pk.serialize(),
-        Err(_) => return,
-    };
-    let (_, e_pk) = fields(TV1_M_0H_1);
-    assert_ne!(wrong_pk, e_pk);
 }
 
 #[test]
