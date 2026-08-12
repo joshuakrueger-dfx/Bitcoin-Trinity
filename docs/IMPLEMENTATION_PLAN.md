@@ -40,11 +40,11 @@ specification reference, acceptance criteria, and the tests that must pass.
 
 | WP | State | Evidence | What's missing |
 |---|---|---|---|
-| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **40 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **22** · `fmt` and `clippy -D warnings` clean | — |
+| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **41 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **23** · `fmt` and `clippy -D warnings` clean | — |
 | WP-01 | IN PROGRESS | Workflow rewritten without job-level `hashFiles`; always-on check/test/supply-chain/coverage; FFI/differential/signet use in-job harness detection; actions pinned to full commit SHAs; `permissions.contents: read`; checkout `persist-credentials: false`; tools pinned `tool@x.y.z` with `fallback: none`. Gate tests under `scripts/tests/`. | **Never executed on a runner** (local structural tests ≠ GitHub acceptance). |
 | **WP-02** | **DONE** | Digests pinned in `docker/compose.yml`. `test-env-up` genuinely brings up Core 30.2 + electrs + CBF (same node, `-blockfilterindex=1`/`-peerblockfilters=1`), verified: 101 blocks, 50 BTC funded wallet, electrs on 127.0.0.1:60401, `getindexinfo` shows synced filter index. **Version rejection verified against a real Core 30.0 container** (not just code review) — the check genuinely fires. `test-env-down` verified to remove all containers/volumes/networks. ~15-25s warm start. macOS/colima measured; Linux path structurally identical (no host-specific paths, loopback-only ports). | Linux host not separately run; no dedicated Signet node (not an acceptance bullet). |
 | WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. Nightly-only branch coverage enabled (WP-10 follow-up) — `trinity-types` measures 100%/100% on GitHub. | Real coverage/mutation run on the security-core crates pending until they have domain source. |
-| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 40 external crates measured (budget 45). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
+| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 41 external crates measured (budget 45). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
 | **WP-07** | **DONE** | Root cause (job-level `hashFiles` at the `if:` key, rejected by GitHub before any job scheduled) fixed by moving harness detection in-job via `$GITHUB_OUTPUT`. **Real GitHub-runner evidence obtained 2026-08-11**: run [31528761822](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31528761822) (branch, all 6 non-gated jobs `success`), run [31530227149](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530227149) (branch, post-resign re-run, all `success`), run [31530360173](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530360173) (`main` after merge, **all 8 jobs `success`** including the main-only Signet/Mutation jobs). Account-side concerns (minutes/spending limit) are moot — the runs executed. | — |
 
 **So: M0 is not fully done, but WP-00 and WP-07 are.** WP-01–03 still hang on
@@ -247,7 +247,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 - `vendor/` checked in, `.cargo/config.toml` with `replace-with = "vendored-sources"`
 - Build without network succeeds (proven in a container without network)
 - Two independent CI runners produce **bit-identical** artifact hashes
-- `scripts/dep_budget.py` runs in CI; budget limit **45**, measured **40 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
+- `scripts/dep_budget.py` runs in CI; budget limit **45**, measured **41 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
 
 **Tests:** —
 
@@ -574,16 +574,35 @@ D4/D5 stay for WP-23 (differential harness against Core / builder).
 ---
 
 #### WP-22 · Checks V1–V10
-**Spec:** 1.5, 3.3 · **Needs:** WP-21 · **State:** OPEN
+**Spec:** 1.5, 3.3 · **Needs:** WP-21 · **State:** DONE
 
-**Files:** `crates/trinity-verify/**`
+`verify(psbt, descriptor, policy) -> Result<PsbtVerdict, VerifyError>` and the
+base64 wrapper `verify_psbt` implement hard-rejection checks V1–V10 on real
+`bitcoin::psbt::Psbt` values. V1 reuses the WP-20 parser; V2–V4 reconstruct
+scripts/paths via WP-21 `derive_at` + BIP-67 (V4 binds each `bip32_derivation`
+entry’s path to the matching key’s own `origin_path`); V5–V9 enforce
+fee/amount/UTXO/PSBT structure (V7 matches full known `TxOut` per outpoint;
+optional `declared_fee_sats` pins fee across display→sign runs for P2; V8 caps
+input/output count at `MAX_PSBT_INS_OR_OUTS`); V10 validates already-present
+partial signatures (low-s, SIGHASH_ALL) without key access. `VerifyPolicy` is a
+pure value type in this crate (`known_utxos: BTreeMap<OutPoint, TxOut>`,
+`gap_limit`, optional `declared_fee_sats` — no wallet I/O). Concrete
+`VerifyError` variants per rejection reason. The three §3.3 call sites
+(`verify_psbt` display, pre-A, pre-B) are not wired here — they are WP-33+.
+
+**Files:** `crates/trinity-verify/**` (policy, verify, VerifyError; types already in crate)
 **Prohibited:** No `miniscript` dependency; no keystore/signer.
 
 **Acceptance**
 - Every check V1–V10 has at least one positive and one negative test
 - **P1, P2, P3, P11, P12**
 - Every rejection returns a **concrete** error reason, never a generic "invalid"
-- The verifier runs at all **three** places from 3.3
+- The verifier function exists for all **three** places from 3.3 (call-site
+  wiring is WP-33+; this WP ships the shared check)
+- Met: `cargo test -p trinity-verify --locked` 154 tests (32 unit + 9 BIP-32 +
+  6 BIP-67 + 4 checksum-mutation + 35 P9-negative + 6 positive + 62 V/property);
+  coverage 100 %/100 % lines/branches on `trinity-verify`; `cargo deny check`
+  ok (no miniscript; base64 via `bitcoin` feature only)
 
 **Tests:** P1, P2, P3, P11, P12
 
