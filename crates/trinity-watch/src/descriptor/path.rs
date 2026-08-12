@@ -116,5 +116,58 @@ mod tests {
             validate_public_xpub("xpubA/<0;1>/*"),
             Err(DescriptorError::MultipathForbidden)
         );
+        assert_eq!(
+            validate_public_xpub("xpubA;evil"),
+            Err(DescriptorError::MultipathForbidden)
+        );
+    }
+
+    #[test]
+    fn origin_and_xpub_edge_errors() {
+        // Each multipath marker arm of the origin guard.
+        assert_eq!(
+            validate_bip48_origin("48'/1'/<0;1>", Network::Regtest),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        assert_eq!(
+            validate_bip48_origin("48'/1';only", Network::Regtest),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        assert_eq!(
+            validate_bip48_origin("48'/1'/*", Network::Regtest),
+            Err(DescriptorError::MultipathForbidden)
+        );
+        assert!(matches!(
+            validate_bip48_origin("not-a-path", Network::Regtest),
+            Err(DescriptorError::InvalidOriginPath(_))
+        ));
+        validate_bip48_origin("m/48'/1'/0'/2'", Network::Regtest).unwrap();
+        assert!(validate_bip48_origin("m/48h/1h/0h/2h", Network::Bitcoin).is_err());
+
+        // Prefix arms: tpub accepted, xpub accepted, neither → error.
+        assert!(validate_public_xpub(
+            "tpubDCKxNyM3bLgbEX13Mcd8mYxbVg9ajDkWXMh29hMWBurKfVmBfWAM96QVP3zaUcN51HvkZ3ar4VwP82kC8JZhhux8vFQoJintSpVBwpFvyU3"
+        )
+        .is_ok());
+        assert!(validate_public_xpub(
+            "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
+        )
+        .is_ok());
+        assert!(matches!(
+            validate_public_xpub("vpub1234"),
+            Err(DescriptorError::InvalidKeyExpression(_))
+        ));
+        assert!(matches!(
+            validate_public_xpub("upub1234"),
+            Err(DescriptorError::InvalidKeyExpression(_))
+        ));
+        assert!(matches!(
+            validate_public_xpub("notanextendedkey"),
+            Err(DescriptorError::InvalidKeyExpression(_))
+        ));
+        assert!(matches!(
+            validate_public_xpub(""),
+            Err(DescriptorError::InvalidKeyExpression(_))
+        ));
     }
 }

@@ -343,8 +343,14 @@ mod tests {
         assert_eq!(original.word_count_map().c, 24);
 
         let json = original.to_json().unwrap();
-        assert!(json.contains(r#""A": 24"#) || json.contains(r#""A":24"#));
-        assert!(json.contains(r#""B": 12"#) || json.contains(r#""B":12"#));
+        // Pretty JSON always inserts a space after `:`; evaluate both needles so
+        // coverage does not leave short-circuit `||` arms as unevaluated (`-`).
+        let a_pretty = json.contains(r#""A": 24"#);
+        let a_compact = json.contains(r#""A":24"#);
+        assert!(a_pretty | a_compact);
+        let b_pretty = json.contains(r#""B": 12"#);
+        let b_compact = json.contains(r#""B":12"#);
+        assert!(b_pretty | b_compact);
         assert!(json.contains("coldcard_mk4"));
         assert!(json.contains("pol-deadbeef"));
 
@@ -373,5 +379,159 @@ mod tests {
             ),
             "got {err:?}"
         );
+    }
+
+    /// Load-path error arms that need `WireDocument` (crate-private).
+    #[test]
+    fn load_error_arms() {
+        let base = sample(false);
+
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.format_version = 99;
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // Full swap hits receive.contains("/1/*") first.
+        let mut wire = WireDocument::from_wallet(&base);
+        std::mem::swap(&mut wire.receive_descriptor, &mut wire.change_descriptor);
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // O8 chain-check arms with descriptors that still pass Trinity grammar.
+        use miniscript::{Descriptor, DescriptorPublicKey};
+        use std::str::FromStr;
+        let reparse = |s: &str| -> String {
+            Descriptor::<DescriptorPublicKey>::from_str(s)
+                .unwrap()
+                .to_string()
+        };
+
+        // Receive without /0/* and without /1/* (fixed index), change ok.
+        let mut wire = WireDocument::from_wallet(&base);
+        let recv_fixed = wire.receive_descriptor.replace("/0/*", "/0/0");
+        // Drop checksum then reparse so grammar validates with fixed child.
+        let recv_body = recv_fixed.split('#').next().unwrap();
+        wire.receive_descriptor = reparse(recv_body);
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // Change carries /0/* while receive stays external-only.
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.change_descriptor = wire.receive_descriptor.clone();
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // Change missing /1/* (fixed /1/0), receive ok with /0/*.
+        let mut wire = WireDocument::from_wallet(&base);
+        let ch_body = wire
+            .change_descriptor
+            .replace("/1/*", "/1/0")
+            .split('#')
+            .next()
+            .unwrap()
+            .to_owned();
+        wire.change_descriptor = reparse(&ch_body);
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // Slot sets that fail different arms of the A/B/C check after sort.
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.keys[2].slot = KeySlot::A; // A,B,A → after sort A,A,B (fails B)
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.keys[2].slot = KeySlot::B; // A,B,B → after sort A,B,B (fails C)
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.keys[0].slot = KeySlot::B;
+        wire.keys[1].slot = KeySlot::B;
+        wire.keys[2].slot = KeySlot::C; // B,B,C
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.receive_descriptor = wire.receive_descriptor.replacen(FP_A, "00000000", 1);
+        assert!(WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()).is_err());
+
+        // Tamper keys so rebuild diverges on both descriptors.
+        let mut wire = WireDocument::from_wallet(&base);
+        let x0 = wire.keys[0].xpub.clone();
+        let f0 = wire.keys[0].fingerprint.clone();
+        wire.keys[0].xpub = wire.keys[1].xpub.clone();
+        wire.keys[0].fingerprint = wire.keys[1].fingerprint.clone();
+        wire.keys[1].xpub = x0;
+        wire.keys[1].fingerprint = f0;
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        // Change-only mismatch: keep keys + receive, reorder keys inside change
+        // string (valid sortedmulti + /1/*) so rebuild receive matches but change does not.
+        let mut wire = WireDocument::from_wallet(&base);
+        let ch = &wire.change_descriptor;
+        // Swap first two key expressions between commas inside sortedmulti.
+        // Pattern: wsh(sortedmulti(2, KEY0, KEY1, KEY2))#cs
+        let body = ch.split('#').next().unwrap();
+        let inner = body
+            .strip_prefix("wsh(sortedmulti(2,")
+            .and_then(|s| s.strip_suffix("))"))
+            .expect("change descriptor shape");
+        let parts: Vec<&str> = inner.splitn(3, ',').collect();
+        assert_eq!(parts.len(), 3);
+        let reordered = format!("wsh(sortedmulti(2,{},{},{}))", parts[1], parts[0], parts[2]);
+        wire.change_descriptor = reparse(&reordered);
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.word_count.a = 18;
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.keys[0].policy_id = Some("nope".into());
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidDocument(_))
+        ));
+
+        let mut wire = WireDocument::from_wallet(&base);
+        wire.keys[0].fingerprint = "zzzzzzzz".into();
+        assert!(matches!(
+            WalletDescriptors::from_json(&serde_json::to_string(&wire).unwrap()),
+            Err(DescriptorError::InvalidKeyExpression(_))
+        ));
+
+        assert!(matches!(
+            WalletDescriptors::from_json("not-json{"),
+            Err(DescriptorError::Json(_))
+        ));
+
+        let d = sample(true);
+        assert_eq!(d.receive(), d.receive_descriptor.as_str());
+        assert_eq!(d.change(), d.change_descriptor.as_str());
+        assert_eq!(d.key(KeySlot::B).word_count, WordCount::Words12);
     }
 }
