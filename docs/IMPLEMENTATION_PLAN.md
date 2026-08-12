@@ -430,7 +430,13 @@ is WP-23's job. Persistence is `ChangeSet` staging (`take_staged`/`apply_update`
 ---
 
 #### WP-13 · `ChainBackend` trait
-**Spec:** 1.6 · **Needs:** WP-12 · **State:** OPEN
+**Spec:** 1.6 · **Needs:** WP-12 · **State:** DONE
+
+`KeychainKind` in the trait signature is BDK's own type (`bdk_wallet::KeychainKind`), not
+`trinity_types::KeychainKind` — the BDK 3.1.0 scan/sync flow this trait wraps
+(`start_full_scan`/`start_sync_with_revealed_spks`) is typed against it; `trinity-watch`
+already maps between the two. `SplitBackend` allows (does not force) a different backend
+instance for `broadcast` than for scan/sync.
 
 **Files:** `crates/trinity-chain/src/lib.rs` (trait), tests under `crates/trinity-chain/**`
 **Prohibited:** No concrete backend implementation except in-memory fake; no network requirement in unit tests.
