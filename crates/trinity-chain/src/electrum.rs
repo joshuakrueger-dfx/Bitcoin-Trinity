@@ -412,6 +412,18 @@ mod tests {
             matches!(err, ChainError::Other(ref m) if m.contains("tls_pin")),
             "got {err:?}"
         );
+
+        // Compound guard false arm: `tls_pin.is_some() && !use_tls` is false when
+        // use_tls is true, so validation continues. Unreachable port → network
+        // failure after validate() (S13), not the tls_pin configuration error.
+        let mut c = ElectrumConfig::new("127.0.0.1", 1).with_tls(Some("deadbeef".into()));
+        c.timeout = Some(Duration::from_millis(200));
+        c.retry = 0;
+        let err = ElectrumBackend::connect(c).unwrap_err();
+        assert!(
+            !err.to_string().contains("tls_pin requires use_tls"),
+            "tls_pin+use_tls must pass validation, got {err:?}"
+        );
     }
 
     #[test]
@@ -515,6 +527,12 @@ mod tests {
         ));
         assert!(matches!(n, ChainError::Network(_)));
 
+        // Second OR-arm of the Message classifier (`m.contains("connect")`),
+        // reusing the same assert shape as the agreement-message case above.
+        let connect_msg =
+            map_electrum_error(electrum_client::Error::Message("failed to connect".into()));
+        assert!(matches!(connect_msg, ChainError::Network(_)));
+
         let other_msg =
             map_electrum_error(electrum_client::Error::Message("server says hi".into()));
         assert!(matches!(other_msg, ChainError::Other(_)));
@@ -538,6 +556,40 @@ mod tests {
 
         let mpsc = map_electrum_error(electrum_client::Error::Mpsc);
         assert!(matches!(mpsc, ChainError::Unavailable(_)));
+
+        // ScriptHash is a public newtype over [u8; 32].
+        let sh: electrum_client::ScriptHash = [0u8; 32].into();
+        let already = map_electrum_error(electrum_client::Error::AlreadySubscribed(sh));
+        assert!(matches!(already, ChainError::Unavailable(_)));
+        let not_sub = map_electrum_error(electrum_client::Error::NotSubscribed(sh));
+        assert!(matches!(not_sub, ChainError::Unavailable(_)));
+
+        // Nested library errors via `From` (JSON / hex / bitcoin decode arms).
+        let json_err: electrum_client::Error =
+            serde_json::from_str::<serde_json::Value>("not-json")
+                .unwrap_err()
+                .into();
+        assert!(matches!(
+            map_electrum_error(json_err),
+            ChainError::Protocol(_)
+        ));
+
+        let hex_err: electrum_client::Error = bitcoin::ScriptBuf::from_hex("GG")
+            .expect_err("invalid hex")
+            .into();
+        assert!(matches!(
+            map_electrum_error(hex_err),
+            ChainError::Protocol(_)
+        ));
+
+        let btc_err: electrum_client::Error =
+            bitcoin::consensus::deserialize::<bitcoin::Transaction>(&[])
+                .expect_err("empty is not a tx")
+                .into();
+        assert!(matches!(
+            map_electrum_error(btc_err),
+            ChainError::Protocol(_)
+        ));
 
         let all = map_electrum_error(electrum_client::Error::AllAttemptsErrored(vec![
             electrum_client::Error::Message("a".into()),
