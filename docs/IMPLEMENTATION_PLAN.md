@@ -634,21 +634,63 @@ so the CI job can be reactivated. Includes **D4** (verifier against `deriveaddre
 ### M3 — Keys and signature
 
 #### WP-30 · `trinity-entropy`
-**Spec:** 2.2, 2.2.1–2.2.5 · **Needs:** WP-10 · **State:** OPEN
+**Spec:** 2.2, 2.2.1–2.2.5 · **Needs:** WP-10 · **State:** DONE
 
-`entropy = HMAC-SHA512(key = OS_CSPRNG(32), msg = extra_bytes)[0..L]`. Sources class A
-(dice, coins, cards) with canonical encoding and separator rule; class B injectable only,
-**zero** countable bits. Additional entropy optional (E3), also for C.
+OR-combiner construction in `crates/trinity-entropy`: `extract = HMAC-SHA512(key =
+raw_csprng, msg = extra_bytes)`, `entropy = extract[0..L]`, then BIP-39 (empty
+passphrase) and BIP-32 master via `bitcoin::bip32::Xpriv`. Intermediates
+(`raw_csprng`, `extra_bytes`, `entropy`, mnemonic, seed, xprv, fingerprint) stay
+on `GeneratedKey`; secrets live in `SecretBytes` and print `[redacted]` under
+`Debug`. Additional entropy is optional (empty `extra_bytes` is a first-class
+path). Class A (dice / coins / cards) is validated and encoded; a class-B sensor
+blob is accepted but never appears on `CountableEntropy` (P15: credited bits
+are identically 0).
 
-**Files:** `crates/trinity-entropy/**`
+**Separator-omission rule:** trailing inactive sources omit their `0x1E`; an
+empty slot *between* two active sources keeps the separator. Dice-only `"31662"`
+is just those five ASCII bytes (Spec §2.2.2 example). `dice="1"` and `coin="1"`
+are distinct (`31` vs `1E 31`); `dice="12"` + cards `"AS"` is `31 32 1E 1E 41 53`.
+That is the injective reading of “their separator is omitted” — join-active-only
+would collide `dice="1"` with `coin="1"`.
+
+**S15b:** type-level, not a `SetupError` (that type belongs to `trinity-ffi`).
+`generate` / `generate_from_raw` take `WordCount` for A/B; `generate_c` /
+`generate_c_from_raw` take no word-count argument and hardcode `Words24`.
+trybuild `tests/ui/generate_c_no_word_count.rs` is the compile-fail proof.
+
+**Verification sheet:** `VerificationSheet` (from a `GeneratedKey`). Hex fields
+and the BIP-39 words are revealed only via `Display` / `render()` — `Debug`
+redacts them. The sheet quotes the §2.2 formula chain, `L`, and the §2.2.2
+separator rule, plus `scripts/recompute_entropy.sh` as the offline openssl path.
+
+**Files:** `crates/trinity-entropy/**`, `scripts/recompute_entropy.sh`
 **Prohibited:** No mandatory additional entropy; no I/O except entropy sources; no keystore.
 
 **Acceptance**
 - **D12, D13, D17** · **P10, P14, P15, P16**
 - **S20**: external shell script recomputes `entropy` from `raw_csprng` + `extra_bytes` — for **all** source combinations
-- `word_count` rule: C is fixed at 24, `SetupConfig` with `C = 12` is rejected (**S15b**)
+- `word_count` rule: C is fixed at 24; a 12-word C is unrepresentable (**S15b**)
 - Verification printout is produced and contains `L`, the separator rule, and all intermediate values
 - Coverage 100 %
+- Met: `cargo test -p trinity-entropy --locked` **47 tests** (33 unit + 4 D12/D17 +
+  3 D13/S20 + 5 property + 2 S15b including trybuild); D12/D17 official English
+  vectors from `trezor/python-mnemonic` `vectors.json` (8×12-word + 8×24-word)
+  plus 1,000 random entropy→mnemonic→entropy round-trips per length; seed checked
+  against independent `python3 hashlib.pbkdf2_hmac` (empty passphrase); D13 **1,000**
+  real `openssl dgst -sha512 -mac HMAC` process invocations via
+  `scripts/recompute_entropy.sh` (16.57 s) plus S20 dice/coins/cards/mixtures;
+  mutation probes on production `extract` / `bip39_from_entropy` (HMAC key/data
+  swap: 2/2 extract unit + 2/3 openssl tests red; truncation `L-1`: 2/2 extract
+  unit red; `to_seed("TREZOR")`: 2/4 D12/D17 red — the official seed checks —
+  random round-trips stayed green). A pr-ready review pass found and fixed three
+  gaps: `AdditionalEntropy`'s `Debug` leaked class-A source content in plaintext
+  (fixed, pinned by `debug_redacts_class_a_sources`); intermediate `String`
+  copies before the `SecretBytes` wrap were not zeroized (fixed, `bip39`'s
+  `zeroize` feature enabled, both copies explicitly zeroized after the copy);
+  `xprv()` silently serialized mainnet-only version bytes (documented, not a
+  behavior change). Coverage **884/884 lines and 30/30 branches
+  = 100 %/100 %** (`cargo +nightly llvm-cov --workspace --locked --lcov --branch`
+  + `python3 scripts/coverage_gate.py lcov.info`). `dep_budget.py` still 41/45.
 
 **Tests:** D12, D13, D17, P10, P14, P15, P16, S15b, S20
 

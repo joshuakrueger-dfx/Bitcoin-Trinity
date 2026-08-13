@@ -5,14 +5,16 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
+description  = "Seed generation: OS-CSPRNG OR-combined with optional additional entropy (Spec §2.2)"
 
 [dependencies]
 trinity-types = { path = "../trinity-types", version = "0.1.0" }
 bitcoin = { workspace = true }
-bip39 = { workspace = true }
+bip39 = { workspace = true, features = ["zeroize"] }
 getrandom = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+trybuild = { workspace = true }
