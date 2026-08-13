@@ -5,13 +5,16 @@ edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true
 repository.workspace   = true
+description  = "On-device encrypted blobs for keys A and B (Spec §2.4)"
+
+[features]
+# Explicit-nonce constructor. Not a default — production must not take a nonce.
+test-util = []
 
 [dependencies]
 trinity-types = { path = "../trinity-types", version = "0.1.0" }
-# XChaCha20-Poly1305 for the Spec §2.4 blob format (WP-31). Declared and
-# vendored here; not yet consumed by any source in this crate — the code
-# that uses it lands in the WP-31 PR built on top of this vendoring PR.
 chacha20poly1305 = { workspace = true }
+getrandom = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 
