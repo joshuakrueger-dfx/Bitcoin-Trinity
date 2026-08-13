@@ -697,18 +697,56 @@ separator rule, plus `scripts/recompute_entropy.sh` as the offline openssl path.
 ---
 
 #### WP-31 · Blob format
-**Spec:** 2.4 · **Needs:** WP-30 · **State:** OPEN
+**Spec:** 2.4 · **Needs:** WP-30 · **State:** DONE
 
-XChaCha20-Poly1305, header as AAD, `word_count` in the header. **No KDF field** — Argon2id sits
-since the correction in 2.4 in the policy record.
+XChaCha20-Poly1305 blob encode/decode in `crates/trinity-keystore`: header is
+AAD, ciphertext is `entropy || created_at` (L+8), Poly1305 tag postfix. No
+KDF field — `kdf_profile` / `pp_salt` stay in the policy record (WP-32). The
+KEK is an opaque `[u8; 32]`; this crate does not derive it.
+
+**API:** `encrypt` draws a fresh 24-byte nonce via workspace `getrandom` 0.4
+(production cannot pass a nonce). `encrypt_with_nonce` exists only under
+`cfg(test)` or the crate's non-default `test-util` feature — it is not in
+the production public API. `decrypt` returns `DecodedBlob` with `entropy` in
+`SecretBytes` (redacted `Debug`). `WordCount::entropy_bytes` is the only
+12/24→L map.
+
+**Reserved byte:** nonzero `reserved` is `UnsupportedReserved` (unknown-version-
+like, fail-closed). A future use of that byte must bump `version`. It is still
+included in the AAD of honest v1 blobs.
+
+**word_count vs AEAD:** invalid values (not 12/24) are structural
+`InvalidWordCount` before AEAD. A 24↔12 flip of an otherwise-valid header is
+`BlobError::Aead` — decrypt does not slice the body by claimed `L` before the
+tag check. After a successful open, plaintext length must be `L+8`
+(`PlaintextLength`, defense in depth; AAD-honest blobs never hit it).
+
+**A/B layout:** same field offsets and identical XChaCha20 ciphertext for the
+same entropy/nonce/KEK; `slot` and the Poly1305 tag differ. Tag must differ
+because `slot` is AAD. Spec §2.4's "bit-identical in format" is the layout,
+not byte-identity of two sealed blobs.
+
+**Dependency:** RustCrypto `chacha20poly1305` `=0.11.0` with
+`default-features = false`, features `alloc` + `zeroize`. `XChaCha20Poly1305`
+is not feature-gated. Nonce generation uses workspace `getrandom`, not the
+crate's `getrandom` helper. Signature-path union is now **51** (was 41);
+gate raised 45 → 55.
 
 **Files:** `crates/trinity-keystore/**` (blob)
 **Prohibited:** No KDF in the blob header; no logging of plaintext entropy.
 
 **Acceptance**
-- **P6** (round-trip, every header mutation ⇒ AEAD error), **P13** (`word_count` mutation)
-- Blob format for A and B **bit-identical** — one test compares the layouts
+- **P6** (Blob roundtrip: `decrypt(encrypt(e, kek), kek) == e` for all profiles. Every header mutation is a hard rejection — never a successful decrypt. Mutations of fields whose validity is independent of the AEAD tag (magic, version, reserved, slot, `word_count` outside {12,24}) return a specific structural `BlobError` (`BadMagic`, `UnsupportedVersion`, `UnsupportedReserved`, `InvalidSlot`, `InvalidWordCount`). Mutations that stay structurally valid but change authenticated content (nonce, birthday, or `word_count` 12↔24) return `BlobError::Aead` (P13 is the 12↔24 case). Structural checks exist because AEAD cannot reject a freshly sealed blob whose header is self-consistent but uses an unknown `version`/`magic`: an attacker with the KEK could authenticate a future-format header; only an explicit check distinguishes "authenticated but unknown format" from a v1 blob.), **P13** (`word_count` mutation ⇒ `BlobError::Aead`)
+- A/B layout compared: identical except `slot` and tag
 - Coverage 100 %
+- Met: `cargo test -p trinity-keystore --locked` **26 tests** (20 unit + 6 P6/P13
+  including 256-case proptest). Mutation: empty AAD in production `seal`/`open`
+  → P13 24→12 returns `PlaintextLength` not `Aead` (2/2 P13 red) and P6 header
+  bitflips decrypt as the other slot (1/1 header-mutation test red). AAD↔msg
+  swap: 4/6 `p6_p13` tests red (round-trip broken; P13 stayed green because
+  every decrypt became `Aead`). Coverage **426/426 lines and 16/16 branches
+  = 100 %/100 %** (`cargo +nightly llvm-cov --workspace --locked --lcov --branch`
+  + `python3 scripts/coverage_gate.py lcov.info`). `dep_budget.py` **51/55**.
 
 **Tests:** P6, P13
 
