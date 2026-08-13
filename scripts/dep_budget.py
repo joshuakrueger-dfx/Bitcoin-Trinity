@@ -55,10 +55,10 @@ SHIPPED_TARGETS = (
 # must not be used for this gate.
 # A deviation from MEASURED is a deliberate decision, not a side effect —
 # MEASURED and the documents must then be updated together.
-MEASURED = 41  # as of 2026-08-12; +1 base64 via bitcoin feature for verify_psbt
+MEASURED = 51  # as of 2026-08-13; +10 via chacha20poly1305 0.11 (WP-31)
 # The gate sits just above so a real expansion stands out instead of
 # slipping through. Raise only with justification in the PR.
-BUDGET = 45
+BUDGET = 55
 
 TREE_LINE = re.compile(r"^([a-zA-Z0-9_-]+) v")
 PKG_NAME_LINE = re.compile(r'^name\s*=\s*"([^"]+)"\s*$')
