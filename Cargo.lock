@@ -262,6 +262,7 @@ dependencies = [
  "bitcoin_hashes 0.14.101",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -1542,6 +1543,7 @@ dependencies = [
  "proptest",
  "thiserror",
  "trinity-types",
+ "trybuild",
  "zeroize",
 ]
 
