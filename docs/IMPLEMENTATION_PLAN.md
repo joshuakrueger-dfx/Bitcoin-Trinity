@@ -753,21 +753,78 @@ gate raised 45 → 55.
 ---
 
 #### WP-32 · `trinity-keystore`
-**Spec:** 2.4, 2.5 · **Needs:** WP-31 · **State:** OPEN
+**Spec:** 2.4, 2.5 · **Needs:** WP-31 · **State:** DONE
 
-`SlotPolicy`, `PlatformKeyStore` callback trait, `POLICY_A` (`.biometryCurrentSet`) and
-`POLICY_B` (`.userPresence`). Memory handling per 2.5.
+`SlotPolicy`, `UnlockFactor`, `HwBinding`, `ArgonProfile` (named HIGH/LOW
+parameter sets only — no `argon2` crate, no KDF), `POLICY_A` / `POLICY_B`,
+`PlatformKeyStore` trait, `PlatformError`, and `FakePlatformKeyStore`.
+Memory handling per §2.5.
 
-**Files:** `crates/trinity-keystore/**`
-**Prohibited:** No `log`/`tracing`; no secrets without `ZeroizeOnDrop`; no `print!`/`dbg!`.
+**`hw_binding` in the const policies:** the spec sketch lists
+`hw_binding: HwBinding` (`SecureEnclaveEcies | KeystoreAesGcm`) on
+`SlotPolicy`, then elides the field in both constants. That enum names the
+*wrapping mechanism*, not the unlock class (already captured by `unlock` +
+`invalidate_on_biometric_change` + `require_device_unlocked`). A single
+`const` cannot name one mechanism without lying about the other platform,
+and both slots on one device use the same mechanism anyway. The field is
+therefore `Option<HwBinding>` and both published constants leave it `None`.
+WP-41 / WP-42 fill it at `provision()` via `SlotPolicy::with_hw_binding`.
+`UnlockFactor` is `Biometry | UserPresence` — the spec struct comment's
+`Passphrase` variant is stale after E7.
+
+**No `load_key` composition.** WP-32 acceptance does not ask for
+`unwrap_kek` + `blob::decrypt` to be wired together. The first real
+caller is the signer (WP-33, S9 / S28). KEK bytes on the trait stay
+`Vec<u8>` (FFI shape).
+
+**`PlatformError`:** `UnwrapRejected`, `KeyInvalidated` (split: retry vs
+guided re-setup), `WrapFailed`, `ProvisionFailed`, `DestroyFailed`,
+`InvalidSlot` (slot C, or `provision(slot, policy)` with
+`policy.slot != slot`), `Unexpected`. No string payload.
+
+**Fake store:** `FakePlatformKeyStore` behind the existing non-default
+`test-util` feature (and `cfg(test)`), so WP-33 can import it as a
+dev-dependency. Identity wrap/unwrap by default; per-method
+`fail_*` / `succeed_*_with`; `AtomicUsize` call counters; configured
+payloads in `SecretBytes`, zeroed on drop. Not `Clone`; `Debug` prints
+`[redacted]` for payloads.
+
+**Memory:** `DecodedBlob` now derives `ZeroizeOnDrop` (WP-31 gap: the
+`SecretBytes` field already zeroed, the parent type did not implement the
+bound). Compile-time inventory in `zeroize_proof.rs`
+(`const fn assert_zeroize_on_drop<T: ZeroizeOnDrop>()`) names
+`DecodedBlob`, `FakePlatformKeyStore`, and `SecretBytes`.
+`#![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]`
+still on the crate. Workspace `[profile.release]` and `[profile.dev]`
+still `panic = "abort"` (verified, not changed). `cargo tree -p
+trinity-keystore -e normal` has no `log`. `tracing` was absent from the
+tree (`cargo tree -i tracing` matches nothing) and is now banned in
+`deny.toml` with no wrappers. Probe: temporary path-dep named `tracing`
+→ `error[banned]`; reverted.
+
+**Files:** `crates/trinity-keystore/**` (policy, platform, fake, blob
+ZeroizeOnDrop), `deny.toml`
+**Prohibited:** No `log`/`tracing`; no secrets without `ZeroizeOnDrop`; no `print!`/`dbg!`;
+no `uniffi`; no `argon2`; no `#[cfg(target_os)]` platform impl; no spend authorization.
 
 **Acceptance**
-- No `log`/`tracing` as a dependency — enforced via `[bans]`
-- `#![deny(clippy::print_stdout, clippy::dbg_macro)]`
-- Compile test: no secret type without `ZeroizeOnDrop`
-- `panic = "abort"` in the release profile
-- Fake `PlatformKeyStore` for tests; **mock counts calls** (for S9, S28)
+- No `log`/`tracing` as a dependency — enforced via `[bans]` (`tracing` newly banned; probe `error[banned]`)
+- `#![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]` (unchanged)
+- Compile test: no secret type without `ZeroizeOnDrop` (`zeroize_proof`; mutation: drop the Fake impl or the `DecodedBlob` derive → `E0277`, suite does not compile)
+- `panic = "abort"` in `[profile.release]` **and** `[profile.dev]` (confirmed)
+- Fake `PlatformKeyStore` for tests; **mock counts calls** (for S9, S28). Mutation: `unwrap_calls.fetch_add(1)` → `fetch_add(0)` → **7 of 14** fake tests red (unwrap counters only). `||` → `&&` on provision slot/policy check → **1 of 2** provision tests red (mismatch accepted).
 - Coverage 100 %
+
+**Met:** `cargo test -p trinity-keystore --locked` **49 tests** (43 unit + 6 P6/P13).
+`cargo test --workspace --locked` **43 suites / 443 tests** passed (5 ignored,
+pre-existing live/harness). Mutation: drop Fake `ZeroizeOnDrop` impl **or**
+`DecodedBlob` derive → `E0277` (compile-fail, 0 tests counted).
+`unwrap_calls.fetch_add(1)` → `0` → **7 of 14** fake tests red.
+provision `||` → `&&` → **1 of 2** provision tests red.
+Coverage **863/863 lines and 38/38 branches = 100 %/100 %**
+(`cargo +nightly llvm-cov --workspace --locked --lcov --branch` +
+`python3 scripts/coverage_gate.py lcov.info`). `dep_budget.py` **51/55**
+(unchanged). `cargo deny check` green including the new `tracing` ban.
 
 **Tests:** —
 

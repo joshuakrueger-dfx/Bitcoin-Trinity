@@ -95,6 +95,13 @@ deny = [
     #   bitcoincore-rpc — via bdk_bitcoind_rpc / WP-15; RPC client only, not secrets
     { name = "log", wrappers = ["bbqr", "electrum-client", "rustls", "bitcoincore-rpc"] },
 
+    # Same rule, same crates: no tracing on the secret path either
+    # (SPECIFICATION.md §2.5). Measured 2026-08-13: `cargo tree -i tracing`
+    # matches nothing in the workspace tree, so this is a hard ban with no
+    # wrappers. Add wrappers only if a later WP pulls tracing in via a
+    # named non-secret crate (same style as `log`).
+    { name = "tracing", reason = "no tracing in secret crates; accidental span/event on the signature path is a leak (SPEC §2.5)" },
+
     # WP-10 / SPECIFICATION.md §1.1: `trinity-types` is pure value types —
     # no I/O. The chain-backend crates below perform network/RPC/P2P I/O.
     # Only `trinity-chain` may depend on them directly; `trinity-types` is

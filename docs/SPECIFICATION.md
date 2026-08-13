@@ -828,7 +828,7 @@ Decision O8 (two separate descriptors, not multipath) is what BDK consumes via
 pub struct SlotPolicy {
     pub slot: KeySlot,                    // A or B
     pub unlock: UnlockFactor,             // Biometry | Passphrase
-    pub hw_binding: HwBinding,            // SecureEnclaveEcies | KeystoreAesGcm
+    pub hw_binding: Option<HwBinding>,    // SecureEnclaveEcies | KeystoreAesGcm; None in POLICY_A/B, filled at provision (WP-41/42)
     pub argon: Option<ArgonProfile>,      // None for A, Some(..) for B
     pub invalidate_on_biometric_change: bool,
     pub require_device_unlocked: bool,
