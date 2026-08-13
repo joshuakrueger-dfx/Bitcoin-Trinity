@@ -29,7 +29,7 @@ use chacha20poly1305::{
 };
 use thiserror::Error;
 use trinity_types::{KeySlot, SecretBytes, WordCount};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Spec §2.4 magic: ASCII `TRIN`.
 pub const MAGIC: [u8; 4] = *b"TRIN";
@@ -116,12 +116,20 @@ pub enum BlobError {
 ///
 /// `entropy` is key material and lives in [`SecretBytes`]. [`Debug`] prints
 /// `[redacted]` for that field via `SecretBytes` — never the bytes.
-#[derive(Debug)]
+///
+/// WP-31 shipped this type without [`ZeroizeOnDrop`] on the parent (the
+/// field still zeroed via [`SecretBytes`]). WP-32 adds the parent bound so
+/// the compile-time inventory can name this type.
+#[derive(Debug, Zeroize, ZeroizeOnDrop)]
 pub struct DecodedBlob {
+    #[zeroize(skip)]
     slot: KeySlot,
+    #[zeroize(skip)]
     word_count: WordCount,
+    #[zeroize(skip)]
     birthday: u32,
     entropy: SecretBytes,
+    #[zeroize(skip)]
     created_at: u64,
 }
 

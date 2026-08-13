@@ -8,7 +8,9 @@ repository.workspace   = true
 description  = "On-device encrypted blobs for keys A and B (Spec §2.4)"
 
 [features]
-# Explicit-nonce constructor. Not a default — production must not take a nonce.
+# Test-only surface: explicit-nonce encrypt, plus `FakePlatformKeyStore`.
+# Not a default — production must not take a nonce, and other crates import
+# the fake only as a dev-dependency (WP-33 / S9 / S28).
 test-util = []
 
 [dependencies]
