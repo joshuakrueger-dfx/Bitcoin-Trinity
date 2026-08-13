@@ -169,6 +169,23 @@ skip = [
     # Cannot unify until jsonrpc/bitcoincore-rpc bump their base64 floor;
     # both versions are pure encoding, no crypto, outside the signature path.
     { name = "base64", version = "=0.13.1" },
+
+    # WP-31: chacha20poly1305 0.11 / aead 0.6 / cipher 0.5 sit on
+    # crypto-common 0.2 + block-buffer 0.12. argon2 0.5 / digest 0.10 stay
+    # on crypto-common 0.1 + block-buffer 0.10. Cannot unify without
+    # lifting argon2; both copies are RustCrypto trait crates, no extra
+    # primitive. Resolution with argon2 0.6 / digest 0.11.
+    # chacha20poly1305 0.10.1 would avoid these three skip entries by staying
+    # on the same RustCrypto generation as argon2, but has had no release
+    # since 2022-08-10. 0.11.0 (2026-06-28) was chosen for patch currency on
+    # a key-material-handling dependency; the larger vendor footprint is the
+    # accepted trade-off.
+    { name = "crypto-common", version = "=0.2.2" },
+    { name = "block-buffer", version = "=0.12.1" },
+
+    # WP-31: chacha20 0.10 (via chacha20poly1305) wants cpufeatures 0.3;
+    # argon2 0.5 stays on 0.2. Same CPU-feature detect, two crate gens.
+    { name = "cpufeatures", version = "=0.3.0" },
 ]
 
 skip-tree = [
