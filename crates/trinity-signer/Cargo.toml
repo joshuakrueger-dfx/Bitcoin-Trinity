@@ -10,6 +10,7 @@ repository.workspace   = true
 trinity-types = { path = "../trinity-types", version = "0.1.0" }
 trinity-keystore = { path = "../trinity-keystore", version = "0.1.0" }
 trinity-verify = { path = "../trinity-verify", version = "0.1.0" }
+trinity-entropy = { path = "../trinity-entropy", version = "0.1.0" }
 bitcoin = { workspace = true }
 argon2 = { workspace = true }
 subtle = { workspace = true }
@@ -18,3 +19,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+trinity-keystore = { path = "../trinity-keystore", version = "0.1.0", features = ["test-util"] }
