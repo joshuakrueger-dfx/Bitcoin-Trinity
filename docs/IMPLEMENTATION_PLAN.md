@@ -40,11 +40,11 @@ specification reference, acceptance criteria, and the tests that must pass.
 
 | WP | State | Evidence | What's missing |
 |---|---|---|---|
-| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **41 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **23** · `fmt` and `clippy -D warnings` clean | — |
+| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **51 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **23** · `fmt` and `clippy -D warnings` clean | — |
 | WP-01 | IN PROGRESS | Workflow rewritten without job-level `hashFiles`; always-on check/test/supply-chain/coverage; FFI/differential/signet use in-job harness detection; actions pinned to full commit SHAs; `permissions.contents: read`; checkout `persist-credentials: false`; tools pinned `tool@x.y.z` with `fallback: none`. Gate tests under `scripts/tests/`. | **Never executed on a runner** (local structural tests ≠ GitHub acceptance). |
 | **WP-02** | **DONE** | Digests pinned in `docker/compose.yml`. `test-env-up` genuinely brings up Core 30.2 + electrs + CBF (same node, `-blockfilterindex=1`/`-peerblockfilters=1`), verified: 101 blocks, 50 BTC funded wallet, electrs on 127.0.0.1:60401, `getindexinfo` shows synced filter index. **Version rejection verified against a real Core 30.0 container** (not just code review) — the check genuinely fires. `test-env-down` verified to remove all containers/volumes/networks. ~15-25s warm start. macOS/colima measured; Linux path structurally identical (no host-specific paths, loopback-only ports). | Linux host not separately run; no dedicated Signet node (not an acceptance bullet). |
 | WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. Nightly-only branch coverage enabled (WP-10 follow-up) — `trinity-types` measures 100%/100% on GitHub. | Real coverage/mutation run on the security-core crates pending until they have domain source. |
-| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 41 external crates measured (budget 45). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
+| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 51 external crates measured (budget 55). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
 | **WP-07** | **DONE** | Root cause (job-level `hashFiles` at the `if:` key, rejected by GitHub before any job scheduled) fixed by moving harness detection in-job via `$GITHUB_OUTPUT`. **Real GitHub-runner evidence obtained 2026-08-11**: run [31528761822](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31528761822) (branch, all 6 non-gated jobs `success`), run [31530227149](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530227149) (branch, post-resign re-run, all `success`), run [31530360173](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530360173) (`main` after merge, **all 8 jobs `success`** including the main-only Signet/Mutation jobs). Account-side concerns (minutes/spending limit) are moot — the runs executed. | — |
 
 **So: M0 is not fully done, but WP-00 and WP-07 are.** WP-01–03 still hang on
@@ -247,7 +247,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 - `vendor/` checked in, `.cargo/config.toml` with `replace-with = "vendored-sources"`
 - Build without network succeeds (proven in a container without network)
 - Two independent CI runners produce **bit-identical** artifact hashes
-- `scripts/dep_budget.py` runs in CI; budget limit **45**, measured **41 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
+- `scripts/dep_budget.py` runs in CI; budget limit **55**, measured **51 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
 
 **Tests:** —
 
@@ -697,18 +697,56 @@ separator rule, plus `scripts/recompute_entropy.sh` as the offline openssl path.
 ---
 
 #### WP-31 · Blob format
-**Spec:** 2.4 · **Needs:** WP-30 · **State:** OPEN
+**Spec:** 2.4 · **Needs:** WP-30 · **State:** DONE
 
-XChaCha20-Poly1305, header as AAD, `word_count` in the header. **No KDF field** — Argon2id sits
-since the correction in 2.4 in the policy record.
+XChaCha20-Poly1305 blob encode/decode in `crates/trinity-keystore`: header is
+AAD, ciphertext is `entropy || created_at` (L+8), Poly1305 tag postfix. No
+KDF field — `kdf_profile` / `pp_salt` stay in the policy record (WP-32). The
+KEK is an opaque `[u8; 32]`; this crate does not derive it.
+
+**API:** `encrypt` draws a fresh 24-byte nonce via workspace `getrandom` 0.4
+(production cannot pass a nonce). `encrypt_with_nonce` exists only under
+`cfg(test)` or the crate's non-default `test-util` feature — it is not in
+the production public API. `decrypt` returns `DecodedBlob` with `entropy` in
+`SecretBytes` (redacted `Debug`). `WordCount::entropy_bytes` is the only
+12/24→L map.
+
+**Reserved byte:** nonzero `reserved` is `UnsupportedReserved` (unknown-version-
+like, fail-closed). A future use of that byte must bump `version`. It is still
+included in the AAD of honest v1 blobs.
+
+**word_count vs AEAD:** invalid values (not 12/24) are structural
+`InvalidWordCount` before AEAD. A 24↔12 flip of an otherwise-valid header is
+`BlobError::Aead` — decrypt does not slice the body by claimed `L` before the
+tag check. After a successful open, plaintext length must be `L+8`
+(`PlaintextLength`, defense in depth; AAD-honest blobs never hit it).
+
+**A/B layout:** same field offsets and identical XChaCha20 ciphertext for the
+same entropy/nonce/KEK; `slot` and the Poly1305 tag differ. Tag must differ
+because `slot` is AAD. Spec §2.4's "bit-identical in format" is the layout,
+not byte-identity of two sealed blobs.
+
+**Dependency:** RustCrypto `chacha20poly1305` `=0.11.0` with
+`default-features = false`, features `alloc` + `zeroize`. `XChaCha20Poly1305`
+is not feature-gated. Nonce generation uses workspace `getrandom`, not the
+crate's `getrandom` helper. Signature-path union is now **51** (was 41);
+gate raised 45 → 55.
 
 **Files:** `crates/trinity-keystore/**` (blob)
 **Prohibited:** No KDF in the blob header; no logging of plaintext entropy.
 
 **Acceptance**
-- **P6** (round-trip, every header mutation ⇒ AEAD error), **P13** (`word_count` mutation)
-- Blob format for A and B **bit-identical** — one test compares the layouts
+- **P6** (Blob roundtrip: `decrypt(encrypt(e, kek), kek) == e` for all profiles. Every header mutation is a hard rejection — never a successful decrypt. Mutations of fields whose validity is independent of the AEAD tag (magic, version, reserved, slot, `word_count` outside {12,24}) return a specific structural `BlobError` (`BadMagic`, `UnsupportedVersion`, `UnsupportedReserved`, `InvalidSlot`, `InvalidWordCount`). Mutations that stay structurally valid but change authenticated content (nonce, birthday, or `word_count` 12↔24) return `BlobError::Aead` (P13 is the 12↔24 case). Structural checks exist because AEAD cannot reject a freshly sealed blob whose header is self-consistent but uses an unknown `version`/`magic`: an attacker with the KEK could authenticate a future-format header; only an explicit check distinguishes "authenticated but unknown format" from a v1 blob.), **P13** (`word_count` mutation ⇒ `BlobError::Aead`)
+- A/B layout compared: identical except `slot` and tag
 - Coverage 100 %
+- Met: `cargo test -p trinity-keystore --locked` **26 tests** (20 unit + 6 P6/P13
+  including 256-case proptest). Mutation: empty AAD in production `seal`/`open`
+  → P13 24→12 returns `PlaintextLength` not `Aead` (2/2 P13 red) and P6 header
+  bitflips decrypt as the other slot (1/1 header-mutation test red). AAD↔msg
+  swap: 4/6 `p6_p13` tests red (round-trip broken; P13 stayed green because
+  every decrypt became `Aead`). Coverage **426/426 lines and 16/16 branches
+  = 100 %/100 %** (`cargo +nightly llvm-cov --workspace --locked --lcov --branch`
+  + `python3 scripts/coverage_gate.py lcov.info`). `dep_budget.py` **51/55**.
 
 **Tests:** P6, P13
 
