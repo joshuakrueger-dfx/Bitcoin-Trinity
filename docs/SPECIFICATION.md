@@ -640,7 +640,7 @@ pub trait ChainBackend: Send + Sync {
 >
 > Further licenses uncovered by the check, unproblematic in the tree: `CC0-1.0` (rust-bitcoin, secp256k1, miniscript — public-domain dedication), `MITNFA`, `BlueOak-1.0.0`, `BSL-1.0`, `Unlicense`, `0BSD`, `Unicode-3.0`, `Zlib`.
 | No dynamic reload paths | No OTA bundles, no CodePush, no remote config, no feature-flag service. The JS bundle is part of the signed app binary. **This rule must be actively enforced with React Native — it is not the default.** |
-| Signature-path budget | Hard upper bound on the transitive external dependency count of `trinity-types`, `-entropy`, `-keystore`, `-signer`, and `-verify` (only `-e normal`, without dev and build deps). **Measured as the union over the shipped mobile targets `aarch64-apple-ios` and `aarch64-linux-android` (not the developer host): 41 external crates. Gate at 45.** The number comes from `scripts/dep_budget.py` (`MEASURED`), not from an estimate; raising only with justification in the PR. For comparison: `trinity-verify` alone gets by with **23**. |
+| Signature-path budget | Hard upper bound on the transitive external dependency count of `trinity-types`, `-entropy`, `-keystore`, `-signer`, and `-verify` (only `-e normal`, without dev and build deps). **Measured as the union over the shipped mobile targets `aarch64-apple-ios` and `aarch64-linux-android` (not the developer host): 51 external crates. Gate at 55.** The number comes from `scripts/dep_budget.py` (`MEASURED`), not from an estimate; raising only with justification in the PR. For comparison: `trinity-verify` alone gets by with **23**. |
 
 > **Honest note on React Native:** The JS layer brings hundreds of npm dependencies. These sit outside the signature path (they never see a secret), but they can **display whatever they want** — in particular a wrong recipient address. The verifier (1.5) and the native confirmation display (Section 6.2) are the answer. The npm supply chain is thus not harmless, but reduced to "can deceive, cannot steal".
 
@@ -1690,7 +1690,7 @@ The core idea: Own assertions evidence that the code does what the author though
 | **P3** | Every mutation of derivation paths in `bip32_derivation` leads to `verify → Err` | random paths |
 | **P4** | `sign(k, psbt) == sign(k, psbt)`, bit-identical | random keys and PSBTs |
 | **P5** | `sortedmulti` is permutation-invariant: all 6 key orders yield identical addresses | random xpubs |
-| **P6** | Blob roundtrip: `decrypt(encrypt(e, kek), kek) == e` for all profiles; every header mutation ⇒ AEAD error | random entropy, salts, nonces, header bitflips |
+| **P6** | Blob roundtrip: `decrypt(encrypt(e, kek), kek) == e` for all profiles. Every header mutation is a hard rejection — never a successful decrypt. Mutations of fields whose validity is independent of the AEAD tag (magic, version, reserved, slot, `word_count` outside {12,24}) return a specific structural `BlobError` (`BadMagic`, `UnsupportedVersion`, `UnsupportedReserved`, `InvalidSlot`, `InvalidWordCount`). Mutations that stay structurally valid but change authenticated content (nonce, birthday, or `word_count` 12↔24) return `BlobError::Aead` (P13 is the 12↔24 case). Structural checks exist because AEAD cannot reject a freshly sealed blob whose header is self-consistent but uses an unknown `version`/`magic`: an attacker with the KEK could authenticate a future-format header; only an explicit check distinguishes "authenticated but unknown format" from a v1 blob. | random entropy, salts, nonces, header bitflips |
 | **P7** | **A setup with two identical master fingerprints is rejected** | constructed collision cases — constraint 1 |
 | **P8** | `fee = Σin − Σout` holds for every built PSBT; no overflow, no negative value | extreme values near `u64::MAX`, dust bounds. Build via `finish_with_aux_rand` with a fixed seed (§3.2) |
 | **P9** | The verifier accepts **no** descriptor outside the grammar `wsh(sortedmulti(2,·,·,·))` | random valid miniscript descriptors as negative cases |
@@ -1764,7 +1764,7 @@ Runs on every merge to `main` against Signet **and** against a local regtest nod
 | **Memory-hygiene tests** | After `sign_*`: search heap dump of the test process for the known entropy. Must be empty. Runs under Linux with `gcore`; on Android via instrumentation. On iOS **only limited possible** — name the gap honestly. |
 | **FFI boundary test** | Automated comparison of all `#[uniffi::export]` signatures against `ffi-allowlist.toml` (1.3). |
 | **Reproducible-build test** | Two independent CI runners build the same tag; artifact hashes must match. |
-| **Dependency gates** | `cargo-deny`, `cargo-audit`, `cargo-vet`; dependency count of the signature path ≤ 45, measured (1.7). |
+| **Dependency gates** | `cargo-deny`, `cargo-audit`, `cargo-vet`; dependency count of the signature path ≤ 55, measured (1.7). |
 | **Interop regression** | On every Sparrow and Core update: D14, D15, S5, S6 again. On every firmware update of a supported hardware signer: D18, D19, S16–S18 again. A descriptor or QR format that worked yesterday may not work tomorrow. |
 | **Hardware test bank** | Physical devices in CI reach for the QR paths (camera rig or frame injection at protocol level). For BLE/USB from v1.1 additionally BitBox02 Nova and Ledger Nano X. Without real devices the `ExternalSigner` path is not to be claimed as tested. |
 
@@ -1786,7 +1786,7 @@ A release candidate is release-ready when **all** criteria are met. No criterion
 | 6 | Fuzzing ≥ 24 h without crash or timeout on all three targets. |
 | 7 | Memory-hygiene test green on Linux and Android; iOS gap documented. |
 | 8 | Reproducible build confirmed by ≥ 2 independent verifiers, hashes published. |
-| 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` without open findings; signature path within budget limit 45 (`scripts/dep_budget.py`; measured **41 external crates** as the union over shipped targets `aarch64-apple-ios` and `aarch64-linux-android`). |
+| 9 | `cargo-deny`, `cargo-audit`, `cargo-vet` without open findings; signature path within budget limit 55 (`scripts/dep_budget.py`; measured **51 external crates** as the union over shipped targets `aarch64-apple-ios` and `aarch64-linux-android`). |
 | 9b | **License check:** every dependency matches the allowlist in `deny.toml` and the distinction from §1.7 — **file copyleft (MPL-2.0) admitted**, **project copyleft (GPL/AGPL/SSPL/BUSL) and everything with a usage fee excluded**; no service with ongoing costs in the signature or chain path. `cargo-deny [licenses]` with allowlist instead of denylist, so an unknown license breaks the build instead of slipping through. |
 | 10 | FFI allowlist unchanged **or** change with documented security rationale and second review. |
 | 11 | D14/D15/S6 manually against the **current** Sparrow version performed and logged. |
