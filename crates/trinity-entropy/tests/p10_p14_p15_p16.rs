@@ -167,7 +167,7 @@ proptest! {
         let extra = extra_from(dice, coins, None, None);
         let a = generate_from_raw(WordCount::Words12, &raw, &extra).unwrap();
         let b = generate_from_raw(WordCount::Words24, &raw, &extra).unwrap();
-        prop_assert_ne!(a.fingerprint(), b.fingerprint());
+        prop_assert_ne!(a.fp(), b.fp());
         prop_assert_eq!(a.raw_csprng().as_slice(), b.raw_csprng().as_slice());
         prop_assert_eq!(a.extra_bytes().as_slice(), b.extra_bytes().as_slice());
         // 12-word entropy is the prefix of the 24-word HMAC; fingerprints

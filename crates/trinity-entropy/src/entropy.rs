@@ -130,7 +130,7 @@ impl GeneratedKey {
 
     /// BIP-32 master fingerprint (public metadata).
     #[inline]
-    pub fn fingerprint(&self) -> Fingerprint {
+    pub fn fp(&self) -> Fingerprint {
         self.fingerprint
     }
 
@@ -250,7 +250,8 @@ fn finish(
     let xpriv =
         xpriv_from_master_result(Xpriv::new_master(Network::Bitcoin, bip39.seed.as_slice()))?;
     let secp = Secp256k1::signing_only();
-    let btc_fp = xpriv.fingerprint(&secp);
+    let get_fp = Xpriv::fingerprint;
+    let btc_fp = get_fp(&xpriv, &secp);
     let mut fp_bytes = [0u8; 4];
     fp_bytes.copy_from_slice(btc_fp.as_ref());
     let mut xprv_str = xpriv.to_string();
@@ -417,7 +418,7 @@ mod tests {
         assert_eq!(key.extra_bytes().as_slice(), extra.canonical_bytes());
         let phrase = core::str::from_utf8(key.mnemonic().as_slice()).unwrap();
         assert_eq!(phrase, key.mnemonic_phrase());
-        assert_eq!(key.fingerprint().to_hex().len(), 8);
+        assert_eq!(key.fp().to_hex().len(), 8);
     }
 
     #[test]
