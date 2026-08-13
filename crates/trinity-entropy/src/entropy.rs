@@ -14,13 +14,14 @@ use bitcoin::hashes::{sha512, Hash as _, HashEngine, Hmac, HmacEngine};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::Network;
 use trinity_types::{Fingerprint, SecretBytes, WordCount};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::EntropyError;
 use crate::hex;
 use crate::sources::AdditionalEntropy;
 
 /// BIP-39 mnemonic + seed (empty passphrase) from already-extracted entropy.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct Bip39Material {
     /// Space-separated English words (UTF-8).
     pub mnemonic: SecretBytes,
@@ -43,7 +44,9 @@ impl core::fmt::Debug for Bip39Material {
 /// live in [`SecretBytes`]. [`Debug`] prints only `"[redacted]"` for those
 /// fields. Hex and the word list are exposed through named accessors and
 /// [`crate::VerificationSheet`] — never through `Debug`.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct GeneratedKey {
+    #[zeroize(skip)]
     word_count: WordCount,
     raw_csprng: SecretBytes,
     extra_bytes: SecretBytes,
@@ -51,7 +54,9 @@ pub struct GeneratedKey {
     mnemonic: SecretBytes,
     seed: SecretBytes,
     xprv: SecretBytes,
+    #[zeroize(skip)]
     fingerprint: Fingerprint,
+    #[zeroize(skip)]
     sources: AdditionalEntropy,
 }
 
@@ -246,7 +251,7 @@ fn finish(
 ) -> Result<GeneratedKey, EntropyError> {
     let extra_bytes = extra.canonical_bytes();
     let entropy = extract(raw_csprng, &extra_bytes, word_count);
-    let bip39 = bip39_from_entropy(entropy.as_slice())?;
+    let mut bip39 = bip39_from_entropy(entropy.as_slice())?;
     let xpriv =
         xpriv_from_master_result(Xpriv::new_master(Network::Bitcoin, bip39.seed.as_slice()))?;
     let secp = Secp256k1::signing_only();
@@ -258,13 +263,15 @@ fn finish(
     // `xprv_str` is a second heap copy of the serialized master key.
     // `SecretBytes` takes its own copy; zeroize this buffer before it is
     // freed. No `?` or early return sits between the copy and this call.
+    // `Bip39Material` implements `Drop` (`ZeroizeOnDrop`); fields cannot be
+    // moved out, so ownership is transferred via replace with an empty buffer.
     let key = GeneratedKey {
         word_count,
         raw_csprng: SecretBytes::from_slice(raw_csprng),
         extra_bytes: SecretBytes::from(extra_bytes),
         entropy,
-        mnemonic: bip39.mnemonic,
-        seed: bip39.seed,
+        mnemonic: core::mem::replace(&mut bip39.mnemonic, SecretBytes::new(Vec::new())),
+        seed: core::mem::replace(&mut bip39.seed, SecretBytes::new(Vec::new())),
         xprv: SecretBytes::from_slice(xprv_str.as_bytes()),
         fingerprint: Fingerprint::new(fp_bytes),
         sources: extra.clone(),

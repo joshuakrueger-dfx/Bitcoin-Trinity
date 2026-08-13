@@ -39,3 +39,6 @@ pub use evidence::{bytes_to_hex, VerificationSheet};
 pub use sources::{
     encode_slots, AdditionalEntropy, Card, CountableEntropy, Rank, Suit, SLOT_SEPARATOR,
 };
+
+#[cfg(test)]
+mod zeroize_proof;
