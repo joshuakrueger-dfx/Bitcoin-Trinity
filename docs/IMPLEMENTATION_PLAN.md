@@ -609,12 +609,31 @@ pure value type in this crate (`known_utxos: BTreeMap<OutPoint, TxOut>`,
 ---
 
 #### WP-23 · Differential harness
-**Spec:** 5.1 · **Needs:** WP-22, WP-02 · **State:** OPEN
+**Spec:** 5.1 · **Needs:** WP-22, WP-02 · **State:** DONE
 
-Harness that runs **D1–D19** against Bitcoin Core 30.2, with stable seed and reproducible
-cases. Creates the Cargo feature `differential` and the directory `tests/differential/`,
-so the CI job can be reactivated. Includes **D4** (verifier against `deriveaddresses`) and
-**D5** (verifier against builder) once WP-21/WP-22 derivation is in place.
+Workspace member `tests/differential/` (`trinity-differential`), Cargo feature
+`differential` (not default). CI's in-job `tests/differential/` detection now
+finds real files, so the job is no longer a successful no-op. Shared setup
+generator: 500 deterministic 2-of-3 documents (fixed seed `0x5452494E49545923`
+mixed into SHA-256 → BIP-32 master → `m/48'/1'/0'/2'`, same construction as
+the WP-12 D2/D3 `xpub_from_tag`). D4 and D5 consume that generator — they do
+not re-roll.
+
+**D4** parses each receive descriptor with `trinity-verify::parse` / `derive_at`
+and compares all 1_000 addresses to Core `deriveaddresses(desc, [0, 999])`
+(one RPC per setup). One descriptor wallet is created (`descriptors=true`) and
+the first setup is imported (`importdescriptors`); the remaining 499 setups
+use the utility RPC only. Importing all 500 into one wallet is superlinear;
+creating 500 wallets exhausted Docker Desktop's bitcoind HTTP transport.
+
+**D5** compares the same 500 × 1_000 receive addresses between `trinity-verify`
+and `trinity-watch::WatchWallet::reveal_next_address` (public API; BDK
+`peek_address`/`derive_addresses` is O(n²) via `Iterator::nth` and is too
+slow at this scale in debug). A divergence is an independence alarm.
+
+`justfile` `diff-test` is unchanged. Test-profile opt-level 2 on
+`secp256k1` / `bitcoin_hashes` / `bitcoin` / `miniscript` / `bdk_wallet` keeps
+500 × 1_000 derivations under the 20-minute cap.
 
 **Files:** `tests/differential/**`, feature `differential` in affected `Cargo.toml`, `justfile` (`diff-test`)
 **Prohibited:** No domain-logic changes in Verify/Signer except harness wiring; do not create features without real tests.
@@ -626,6 +645,21 @@ so the CI job can be reactivated. Includes **D4** (verifier against `deriveaddre
 - A failure shows input, expected, and actual in plain text
 - Runtime < 20 min
 - After this WP the differential harness is present so the in-job detection step runs the suite (no longer a successful no-op)
+
+**Met:** `cargo test --workspace --locked --features differential -- --test-threads=1`
+(equivalent of `just diff-test`; `just` not on PATH) **45 suites / 446 tests**
+passed (5 ignored) in **705 s / 11.75 min** locally on the Pro against Core
+30.2 (`./scripts/test-env.sh`). D4 **344.73 s** (500 × 1_000 vs
+`deriveaddresses`); D5 **322.80 s** (same vectors vs `trinity-watch`).
+Without the feature: `cargo test --workspace --locked` **43 suites / 444 tests**
+passed (5 ignored) — D4/D5 not compiled. `cargo build --workspace --locked`
+green. `cargo clippy --workspace --locked --all-targets -- -D warnings` 0
+warnings. `python3 scripts/check_plan.py` 703 checks, no findings.
+`python3 scripts/dep_budget.py` **51/55** (unchanged; `bitcoincore-rpc` is
+dev/feature-only on the harness crate). Mutation: `derive_at(&parsed, i)` →
+`i + 1` in `tests/differential/src/lib.rs` (1 hit) → **1 of 1** D4 test red
+in 0.81 s (setup=0 index=0, input + expected/core + actual/verify printed);
+restored without `git checkout`.
 
 **Tests:** D4, D5
 

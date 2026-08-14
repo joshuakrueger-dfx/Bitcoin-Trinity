@@ -1,0 +1,39 @@
+[package]
+name         = "trinity-differential"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+description  = "Differential harness against Bitcoin Core 30.2 (D4, D5; WP-23)"
+publish      = false
+autotests    = false
+
+[lib]
+test    = false
+doctest = false
+bench   = false
+
+[features]
+default = []
+# Not a default feature. Bound to the D4/D5 (and later D*) harness.
+# Requires the WP-02 test environment (Core 30.2 on 127.0.0.1:18443).
+differential = ["dep:bitcoincore-rpc", "dep:serde_json"]
+
+[dependencies]
+trinity-types  = { path = "../../crates/trinity-types", version = "0.1.0" }
+trinity-verify = { path = "../../crates/trinity-verify", version = "0.1.0" }
+trinity-watch  = { path = "../../crates/trinity-watch", version = "0.1.0" }
+bitcoin        = { workspace = true }
+bitcoincore-rpc = { workspace = true, optional = true }
+serde_json      = { workspace = true, optional = true }
+
+[[test]]
+name = "d4_verifier_against_core"
+path = "tests/d4_verifier_against_core.rs"
+required-features = ["differential"]
+
+[[test]]
+name = "d5_verifier_against_watch"
+path = "tests/d5_verifier_against_watch.rs"
+required-features = ["differential"]

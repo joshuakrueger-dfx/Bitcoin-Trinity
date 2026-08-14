@@ -11,7 +11,7 @@
 
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "tests/differential"]
 
 [workspace.package]
 version = "0.1.0"
@@ -62,6 +62,9 @@ thiserror  = { version = "=2.0.17" }
 # --- Tests only ---
 proptest = { version = "=1.8.0" }
 trybuild = { version = "=1.0.114" }
+# Already in the tree via bdk_bitcoind_rpc 0.22.0 (WP-15). Direct pin for
+# the WP-23 differential harness (tests/differential, feature `differential`).
+bitcoincore-rpc = { version = "=0.19.0" }
 
 [profile.release]
 # No unwinding: prevents half-cleaned secrets on the stack (SPECIFICATION.md §2.5)
@@ -72,3 +75,20 @@ strip         = true
 
 [profile.dev]
 panic = "abort"
+
+# WP-23: 500 × 1_000 derivations in the test profile are dominated by
+# HMAC-SHA512 and secp point ops. Raise opt-level on those crates so
+# `just diff-test` stays under the 20-minute cap. `cargo build` (dev)
+# is unchanged.
+[profile.test.package.secp256k1]
+opt-level = 2
+[profile.test.package.secp256k1-sys]
+opt-level = 2
+[profile.test.package.bitcoin_hashes]
+opt-level = 2
+[profile.test.package.bitcoin]
+opt-level = 2
+[profile.test.package.miniscript]
+opt-level = 2
+[profile.test.package.bdk_wallet]
+opt-level = 2

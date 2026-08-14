@@ -1650,6 +1650,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "trinity-differential"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "bitcoincore-rpc",
+ "serde_json",
+ "trinity-types",
+ "trinity-verify",
+ "trinity-watch",
+]
+
+[[package]]
 name = "trinity-entropy"
 version = "0.1.0"
 dependencies = [
