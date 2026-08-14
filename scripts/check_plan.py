@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 CRATES = ROOT / "crates"
+TESTS = ROOT / "tests"
 README = ROOT / "README.md"
 
 SPEC = DOCS / "SPECIFICATION.md"
@@ -440,6 +441,10 @@ def check_tests_exist(spec: str, blocks: dict[str, str], rep: Report) -> None:
     owners = test_owners_unique(blocks)
 
     sources = list(CRATES.rglob("*.rs")) if CRATES.exists() else []
+    # Harness tests live under tests/ (WP-23 differential, later D/S suites),
+    # not only crates/. CRATES is unchanged — crate-inventory still uses it.
+    if TESTS.is_dir():
+        sources.extend(TESTS.rglob("*.rs"))
     implemented: set[str] = set()
     for src in sources:
         implemented |= {m.lower() for m in TEST_FN.findall(src.read_text(encoding="utf-8"))}
