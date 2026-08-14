@@ -914,7 +914,14 @@ Production signing uses `sign_ecdsa_low_r` (RFC 6979 + deterministic
 low-R grind, same as Core `CKey::Sign(..., grind=true)`). D7/D8 compare
 DER+sighash bytes bit-identically against `walletprocesspsbt`.
 
-**Files:** `crates/trinity-signer/**`, `tests/differential/src/rpc_signer.rs`
+V2/V3 address matching tries the PSBT `bip32_derivation` last index first
+(then falls back to the `0..gap_limit` scan). Without that hint, D7/D8's
+`gap_limit = 1000` and `index = i` made `verify` O(i) per PSBT and the
+suite quadratic (CI D8: 19.7 s / first 100 → 331.7 s / last 100, then
+the 20-minute cap). Isolated probe: `walletprocesspsbt` stayed flat
+(~0.4 s / 100); `sign_a`+`build_psbt` carried the ramp.
+
+**Files:** `crates/trinity-signer/**`, `crates/trinity-verify/src/verify.rs`, `tests/differential/src/rpc_signer.rs`
 **Prohibited:** No RNG on the signature path; no export of seeds; no SIGHASH except ALL.
 
 **Acceptance**
@@ -925,20 +932,16 @@ DER+sighash bytes bit-identically against `walletprocesspsbt`.
 - Every SIGHASH other than `ALL` is rejected (**P11** — owned by WP-22; signer path enforces it again)
 - Coverage 100 % lines/branches. `cargo-mutants` is CI-on-main only (not a local gate).
 
-**Met:** Signer uses `sign_ecdsa_low_r`. D7 **358.26 s** (5.97 min) —
-**1000/1000 bit-identical** vs Core `walletprocesspsbt` (`xprv_A`). D8
-**704.19 s** (11.74 min) — **1000/1000 bit-identical** (`xprv_B`). Both
-against Core 30.2 (`./scripts/test-env.sh`). `erase_xpriv` also overwrites
-`chain_code` with `[1u8; 32]`. Mutation: drop the `chain_code` assignment
-(1 hit) → **1 of 1** `erase_xpriv_overwrites_chain_code` red (`before ==
-after` on the original 32 bytes); restored from a file snapshot (not
-`git checkout`). `cargo test --workspace --locked` (without feature)
-**43 suites / 487 passed** (5 ignored) — +1 vs previous 486, the new
-`erase_xpriv_overwrites_chain_code` test. `cargo test -p trinity-signer
---locked` **43** lib tests. `cargo build --workspace --locked` and
-`cargo clippy --workspace --locked --all-targets -- -D warnings` green
-(also with `--features differential`). `python3 scripts/check_plan.py`
-703 checks, no findings.
+**Met:** Signer uses `sign_ecdsa_low_r`. After the V2/V3 bip32-index hint,
+D7 **6.78 s** — **1000/1000 bit-identical**, ~0.67 s per 100 (linear;
+was 358 s / last-100 ~67 s). D8 **10.84 s** — **1000/1000 bit-identical**,
+~1.07 s per 100 (was 704 s local / 1756 s on CI run 31789060098). Both
+against Core 30.2. 20-minute per-test cap kept. `erase_xpriv` overwrites
+`chain_code` with `[1u8; 32]`. `cargo test --workspace --locked` (without
+feature) **43 suites / 489 passed** (5 ignored) — +2 `v_checks` for the
+hint/fallback. `cargo build` / `clippy -D warnings` (also with
+`--features differential`) green. `python3 scripts/check_plan.py` 703
+checks, no findings.
 
 **Tests:** D7, D8, P4, S9, S10
 

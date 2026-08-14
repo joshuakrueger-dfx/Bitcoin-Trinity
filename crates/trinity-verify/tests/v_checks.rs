@@ -153,6 +153,21 @@ fn v2_positive_input_spk_matches_derived() {
 }
 
 #[test]
+fn v2_v3_high_index_uses_bip32_hint() {
+    let (psbt, mut policy) = build_valid(80, 81, 82, 100_000, 40_000, 1_000);
+    policy.gap_limit = 100;
+    assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+}
+
+#[test]
+fn v2_high_index_without_hint_still_scans() {
+    let (mut psbt, mut policy) = build_valid(80, 81, 82, 100_000, 40_000, 1_000);
+    policy.gap_limit = 100;
+    psbt.inputs[0].bip32_derivation.clear();
+    assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+}
+
+#[test]
 fn v3_positive_change_in_gap_window() {
     let (psbt, policy) = build_valid(0, 7, 4, 150_000, 50_000, 1_500);
     let v = trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap();
@@ -612,6 +627,23 @@ fn v3_negative_forged_change() {
     let foreign = derive_at(&recv, 9).unwrap();
     psbt.unsigned_tx.output[1].script_pubkey = foreign.script_pubkey;
     psbt.outputs[1].bip32_derivation.clear();
+    assert_eq!(
+        trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
+        VerifyError::ForeignChangeOutput { output_index: 1 }
+    );
+}
+
+#[test]
+fn v3_negative_forged_change_with_intact_bip32_hint() {
+    // Same T6 case as `v3_negative_forged_change`, but the change output
+    // keeps a consistent bip32_derivation for the *original* change index.
+    // That is a plausible attacker-supplied hint: internally consistent,
+    // not matching the foreign scriptPubKey. V3 must still reject.
+    let (mut psbt, policy) = build_valid(0, 0, 5, 100_000, 40_000, 1_000);
+    let recv = parse(RECEIVE).unwrap();
+    let foreign = derive_at(&recv, 9).unwrap();
+    psbt.unsigned_tx.output[1].script_pubkey = foreign.script_pubkey;
+    assert_eq!(psbt.outputs[1].bip32_derivation.len(), 3);
     assert_eq!(
         trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
         VerifyError::ForeignChangeOutput { output_index: 1 }

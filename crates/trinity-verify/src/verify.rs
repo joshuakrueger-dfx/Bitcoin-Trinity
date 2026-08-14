@@ -17,11 +17,12 @@
 //! re-derivation (signer self-test is §3.4 / WP-33–36). Inputs without a
 //! signature simply skip the V10 body for that input.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
-use bitcoin::bip32::DerivationPath;
+use bitcoin::bip32::{DerivationPath, KeySource};
 use bitcoin::psbt::{Output, Psbt, PsbtSighashType};
+use bitcoin::secp256k1::PublicKey as SecpPublicKey;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::{Address, Network, ScriptBuf};
 use trinity_types::PsbtVerdict;
@@ -252,7 +253,13 @@ fn check_v2(
             .witness_utxo
             .as_ref()
             .expect("V9 already required witness_utxo");
-        if !matches_any_derived(&utxo.script_pubkey, receive, change, policy.gap_limit)? {
+        if !matches_any_derived(
+            &utxo.script_pubkey,
+            receive,
+            change,
+            policy.gap_limit,
+            bip32_index_hint(&input.bip32_derivation),
+        )? {
             return Err(VerifyError::ForeignInput { input_index: i });
         }
     }
@@ -264,22 +271,57 @@ fn matches_any_derived(
     receive: &ParsedDescriptor,
     change: Option<&ParsedDescriptor>,
     gap_limit: u32,
+    hint: Option<u32>,
 ) -> Result<bool, VerifyError> {
-    if find_index_matching(script_pubkey, receive, gap_limit)?.is_some() {
+    if find_index_matching(script_pubkey, receive, gap_limit, hint)?.is_some() {
         return Ok(true);
     }
     match change {
-        Some(chg) => Ok(find_index_matching(script_pubkey, chg, gap_limit)?.is_some()),
+        Some(chg) => Ok(find_index_matching(script_pubkey, chg, gap_limit, hint)?.is_some()),
         None => Ok(false),
     }
+}
+
+/// Last normal child of every `bip32_derivation` path, if they all agree.
+///
+/// Trinity PSBTs carry `…/{0|1}/{index}` on every key. Trying that index
+/// first makes V2/V3 O(1) instead of O(index) when `gap_limit` is large
+/// (D7/D8 use 1_000). A missing or disagreeing map falls back to the scan.
+fn bip32_index_hint(derivation: &BTreeMap<SecpPublicKey, KeySource>) -> Option<u32> {
+    let mut hint = None;
+    for (_, path) in derivation.values() {
+        let last = path.into_iter().last()?;
+        let idx = match last {
+            bitcoin::bip32::ChildNumber::Normal { index } => *index,
+            bitcoin::bip32::ChildNumber::Hardened { .. } => return None,
+        };
+        match hint {
+            None => hint = Some(idx),
+            Some(h) if h != idx => return None,
+            Some(_) => {}
+        }
+    }
+    hint.filter(|_| !derivation.is_empty())
 }
 
 fn find_index_matching(
     script_pubkey: &ScriptBuf,
     descriptor: &ParsedDescriptor,
     gap_limit: u32,
+    hint: Option<u32>,
 ) -> Result<Option<u32>, VerifyError> {
+    if let Some(h) = hint {
+        if h < gap_limit {
+            let derived = derive::derive_at(descriptor, h)?;
+            if derived.script_pubkey == *script_pubkey {
+                return Ok(Some(h));
+            }
+        }
+    }
     for i in 0..gap_limit {
+        if hint == Some(i) {
+            continue;
+        }
         let derived = derive::derive_at(descriptor, i)?;
         if derived.script_pubkey == *script_pubkey {
             return Ok(Some(i));
@@ -316,7 +358,8 @@ fn classify_outputs(
 
         // Not a declared recipient → must be change in the gap window (V3).
         let chg = change.ok_or(VerifyError::ForeignChangeOutput { output_index: i })?;
-        let idx = find_index_matching(&txout.script_pubkey, chg, policy.gap_limit)?
+        let hint = bip32_index_hint(&psbt.outputs[i].bip32_derivation);
+        let idx = find_index_matching(&txout.script_pubkey, chg, policy.gap_limit, hint)?
             .ok_or(VerifyError::ForeignChangeOutput { output_index: i })?;
 
         // V4 on this change output. V8 already equalised map vs unsigned_tx lengths.
