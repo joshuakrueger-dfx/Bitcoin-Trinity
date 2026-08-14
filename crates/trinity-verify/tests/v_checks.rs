@@ -19,7 +19,7 @@ use bitcoin::{
 // Re-exports used by edge-case tests below.
 use proptest::prelude::*;
 use trinity_verify::{
-    derive_at, parse, DerivationBranch, ParsedDescriptor, VerifyError, VerifyPolicy,
+    derive_at, parse, DerivationBranch, DeriveError, ParsedDescriptor, VerifyError, VerifyPolicy,
 };
 
 const RECEIVE: &str = "wsh(sortedmulti(2,\
@@ -165,6 +165,40 @@ fn v2_high_index_without_hint_still_scans() {
     policy.gap_limit = 100;
     psbt.inputs[0].bip32_derivation.clear();
     assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+}
+
+#[test]
+fn v2_hint_at_or_above_gap_limit_falls_back_to_scan() {
+    // Fast-path is `if h < gap_limit`. A consistent hint *equal* to the
+    // exclusive bound must skip `derive_at(h)` and still accept via the scan.
+    let (mut psbt, mut policy) = build_valid(5, 0, 8, 100_000, 40_000, 1_000);
+    policy.gap_limit = 20;
+    for (_fp, path) in psbt.inputs[0].bip32_derivation.values_mut() {
+        let mut children: Vec<_> = path.into_iter().copied().collect();
+        children[5] = bitcoin::bip32::ChildNumber::from_normal_idx(20).unwrap();
+        *path = DerivationPath::from(children);
+    }
+    assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+}
+
+#[test]
+fn v2_hint_hardened_range_index_is_derive_error() {
+    // Normal last-child 2³¹ is still a hint (`bip32_index_hint` only rejects
+    // the Hardened variant). `h < gap_limit` is true, then `derive_at` fails
+    // and `check_v2`'s `?` must surface `VerifyError::Derive`.
+    let (mut psbt, mut policy) = build_valid(0, 0, 5, 100_000, 40_000, 1_000);
+    policy.gap_limit = 0x8000_0001;
+    for (_fp, path) in psbt.inputs[0].bip32_derivation.values_mut() {
+        let mut children: Vec<_> = path.into_iter().copied().collect();
+        children[5] = bitcoin::bip32::ChildNumber::Normal {
+            index: 0x8000_0000,
+        };
+        *path = DerivationPath::from(children);
+    }
+    assert_eq!(
+        trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
+        VerifyError::Derive(DeriveError::HardenedIndex(0x8000_0000))
+    );
 }
 
 #[test]
