@@ -190,9 +190,7 @@ fn v2_hint_hardened_range_index_is_derive_error() {
     policy.gap_limit = 0x8000_0001;
     for (_fp, path) in psbt.inputs[0].bip32_derivation.values_mut() {
         let mut children: Vec<_> = path.into_iter().copied().collect();
-        children[5] = bitcoin::bip32::ChildNumber::Normal {
-            index: 0x8000_0000,
-        };
+        children[5] = bitcoin::bip32::ChildNumber::Normal { index: 0x8000_0000 };
         *path = DerivationPath::from(children);
     }
     assert_eq!(
