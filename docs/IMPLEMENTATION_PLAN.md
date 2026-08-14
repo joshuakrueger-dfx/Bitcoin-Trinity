@@ -831,21 +831,69 @@ Coverage **863/863 lines and 38/38 branches = 100 %/100 %**
 ---
 
 #### WP-33 · `trinity-signer`
-**Spec:** 3.4 · **Needs:** WP-32, WP-22 · **State:** OPEN
+**Spec:** 3.4 · **Needs:** WP-32, WP-22 · **State:** IN PROGRESS (D7/D8 pending WP-23)
 
-`Signer` trait, `LocalSigner`. RFC-6979 via `secp256k1`, low-s, `SIGHASH_ALL` exclusively,
-self-verification after every signature. Crate-internal `sign_a`/`sign_b`; later only
-`sign_ab` / `sign_ab_with_passphrase` are exported (WP-40).
+`Signer` trait, `LocalSigner`, `SignerKind` (`Local | ExternalNfc | ExternalQr |
+ExternalUsb`). RFC-6979 via `bitcoin::secp256k1::Secp256k1::sign_ecdsa` (libsecp
+default nonce; no direct `secp256k1` pin). Low-s checked, `SIGHASH_ALL` only,
+self-verification after every signature. Crate-internal `sign_a`/`sign_b`;
+Rust-public `sign_ab` composes them (captures the unsigned txid before A).
+FFI export of `sign_ab` / `sign_ab_with_passphrase` is WP-40.
+
+**No `Keystore` type (design b).** Spec §6.6 sketches `keystore: Arc<Keystore>`,
+but no such type exists. WP-32 explicitly left `unwrap_kek` → `blob::decrypt`
+to this WP and asked not to grow `trinity-keystore`. `LocalSigner` therefore
+holds `Arc<dyn PlatformKeyStore>` plus the sealed blob and the wrapped KEK
+(`SecretBytes`) and does the chain itself. Documented on `local.rs` in the
+same style as WP-32's `hw_binding` note.
+
+**Entropy API.** `trinity_entropy::bip39_from_entropy` was already `pub` and
+is the function this WP needs (entropy bytes → `Bip39Material`). No new
+wrapper and no domain-logic change in `trinity-entropy`. `trinity-signer`
+depends on `trinity-entropy`; master derivation is `Xpriv::new_master`
+(same pin to `Network::Bitcoin` as `finish()`).
+
+**`SignError` (this WP only):** `Verify`, `SelfVerificationFailed`,
+`NonSighashAll`, `Platform`, `UnsignedTxChanged`, `UnexpectedKeyASignature`,
+`Blob`, `Entropy`, `Bip32`, `InvalidKekLength`, `InvalidSlot`,
+`FingerprintMismatch`, `MissingWitnessUtxo`, `MissingWitnessScript`,
+`MissingDerivation`, `PubkeyMismatch`, `Sighash`, `EmptyPsbt`. No
+`PassphraseRequired` / `SpendLimitExceeded` (WP-34/35). No string payload.
+
+**S9 / S10:** crate-local `#[test]`s (`s9_manipulated_change_output_blocks_before_key_access`,
+`s10_manipulation_between_a_and_b_is_detected`) with `FakePlatformKeyStore`.
+Literal Signet-CI scenarios (`tests/signet-e2e/`, WP-45) are not built.
+
+**D7 / D8 not built.** The differential harness (`tests/differential/`, WP-23)
+is not in this checkout. Building them here would pre-empt WP-23 structure.
+P4 covers determinism in pure Rust. Re-open D7/D8 when WP-23 merges.
 
 **Files:** `crates/trinity-signer/**`
 **Prohibited:** No RNG on the signature path; no export of seeds; no SIGHASH except ALL.
 
 **Acceptance**
-- **D7, D8** (bit-identical to `walletprocesspsbt`) · **P4** (determinism)
+- **D7, D8** (bit-identical to `walletprocesspsbt`) — **deferred to WP-23**
+- **P4** (determinism)
 - Verifier runs **before** every key access; **S9** including mock assertion that `unwrap_kek` was **not** called
 - **S10** (manipulation between A and B is detected)
-- Every SIGHASH other than `ALL` is rejected (**P11** — owned by WP-22; contribution here)
-- Coverage 100 %, `cargo-mutants` without survivors
+- Every SIGHASH other than `ALL` is rejected (**P11** — owned by WP-22; signer path enforces it again)
+- Coverage 100 % lines/branches. `cargo-mutants` is CI-on-main only (not a local gate).
+
+**Met:** `cargo test -p trinity-signer --locked` **40 tests**.
+`cargo test --workspace --locked` **43 suites / 484 passed** (5 ignored,
+pre-existing live/harness) — vorher in diesem Checkout 444 passed + 5 ignored
+(`--list` 449). Mutation (a) `sighash_is_all` → `true`: **4 of 40** signer
+tests red (`sighash_is_all_accepts_only_all`,
+`sign_rejects_non_all_sighash_without_verify`,
+`sign_rejects_nonstandard_sighash_field`,
+`preflight_non_all_is_independent_of_verify`). Mutation (b) verify after
+`unwrap_kek` in `sign_a`: **s9** red (`unwrap_kek_calls` 1 ≠ 0). Both
+restored from a file snapshot (not `git checkout`). Coverage
+**1004/1004 lines and 40/40 branches = 100 %/100 %**
+(`cargo +nightly llvm-cov -p trinity-signer --branch --locked --summary-only`;
+region 98.97 %, as accepted on WP-32). `dep_budget.py` **51/55** (unchanged).
+`python3 scripts/check_plan.py` 703 checks, no findings. D7/D8 not built
+(WP-23 harness absent).
 
 **Tests:** D7, D8, P4, S9, S10
 

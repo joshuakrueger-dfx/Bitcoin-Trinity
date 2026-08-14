@@ -1709,6 +1709,7 @@ dependencies = [
  "proptest",
  "subtle",
  "thiserror",
+ "trinity-entropy",
  "trinity-keystore",
  "trinity-types",
  "trinity-verify",
