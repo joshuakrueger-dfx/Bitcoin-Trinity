@@ -1362,7 +1362,7 @@ Additionally the internal step for B checks that the already present signature o
 | Specification | Detail |
 |---|---|
 | Algorithm | ECDSA over secp256k1, nonce per **RFC 6979** |
-| Implementation | `secp256k1 0.29.1` → libsecp256k1, `secp256k1_ecdsa_sign` with the default nonce function `nonce_function_rfc6979`. **Nothing self-written, no own nonce derivation, no own RNG in the signature path.** |
+| Implementation | `secp256k1 0.29.1` → libsecp256k1, `Secp256k1::sign_ecdsa_low_r` (RFC 6979 nonce via `nonce_function_rfc6979`, then deterministic low-R grind — the same libsecp256k1 convention Bitcoin Core's own `CKey::Sign` uses). **Nothing self-written, no own nonce derivation, no own RNG in the signature path.** |
 | Low-s | Signatures are normalized (BIP-62/policy rule). libsecp256k1 produces low-s by default; additionally checked. |
 | SIGHASH | `SIGHASH_ALL` (0x01), exclusively. Any other value in the PSBT is a hard error. |
 | **Self-verification** | After every signature the signer verifies its own signature against its own pubkey and the sighash. Costs microseconds, catches mis-derivation and memory corruption. |

@@ -151,13 +151,13 @@ pub fn derive_receive_addresses(client: &Client, descriptor: &str) -> Vec<String
     );
 }
 
-fn auth() -> Auth {
+pub(crate) fn auth() -> Auth {
     Auth::UserPass(RPC_USER.to_owned(), RPC_PASS.to_owned())
 }
 
 /// Transient HTTP/socket failure (`jsonrpc::Error::Transport`), not a Core RPC
 /// rejection. `bitcoincore-rpc` 0.19 re-exports `jsonrpc` (`pub extern crate`)
 /// and wraps it as `Error::JsonRpc` — match the variant, not the Display text.
-fn is_transport_error(err: &RpcError) -> bool {
+pub(crate) fn is_transport_error(err: &RpcError) -> bool {
     matches!(err, RpcError::JsonRpc(jsonrpc::Error::Transport(_)))
 }

@@ -1,9 +1,10 @@
 //! Crate-internal `sign_a` / `sign_b` and the RFC-6979 signing primitive.
 //!
 //! Spec §3.3: the verifier runs **before** any key access. Spec §3.4:
-//! ECDSA via `bitcoin::secp256k1::Secp256k1::sign_ecdsa` (RFC 6979 nonce,
-//! libsecp256k1 default), low-s checked, `SIGHASH_ALL` only, self-verify
-//! after every signature. No RNG on this path.
+//! ECDSA via `bitcoin::secp256k1::Secp256k1::sign_ecdsa_low_r` (RFC 6979
+//! nonce, then deterministic low-R grind — same as Core `CKey::Sign`),
+//! low-s checked, `SIGHASH_ALL` only, self-verify after every signature.
+//! No RNG on this path.
 
 use bitcoin::bip32::Xpriv;
 use bitcoin::hashes::Hash;
@@ -164,7 +165,7 @@ fn sign_inputs_inner(
     for (i, expected_pk, sk) in derived {
         let input = &psbt.inputs[*i];
         let msg = sighash_message(&psbt.unsigned_tx, *i, input)?;
-        let sig = secp.sign_ecdsa(&msg, sk);
+        let sig = secp.sign_ecdsa_low_r(&msg, sk);
         reject_high_s(&sig)?;
         verify_own_signature(&msg, &sig, expected_pk)?;
         produced.push((
@@ -194,14 +195,17 @@ pub(crate) fn erase_secret_key(sk: &mut SecretKey) {
     sk.non_secure_erase();
 }
 
-/// Best-effort wipe of an [`Xpriv`]'s secret scalar.
+/// Best-effort wipe of an [`Xpriv`]'s secret scalar and chain code.
 ///
 /// `bitcoin 0.32.11::bip32::Xpriv` is `Copy` and has no zeroize code at
 /// all. `Copy` and `Drop` are mutually exclusive, so it can never grow
-/// `ZeroizeOnDrop` while it stays `Copy`. Only
-/// `xpriv.private_key.non_secure_erase()` is available.
+/// `ZeroizeOnDrop` while it stays `Copy`. The scalar is overwritten via
+/// [`SecretKey::non_secure_erase`] (`0x01`). `chain_code` has no such
+/// hook; it is replaced with `[1u8; 32]` (same fill, via `From` — this
+/// pin has no `ChainCode::from_byte_array`).
 pub(crate) fn erase_xpriv(xpriv: &mut Xpriv) {
     xpriv.private_key.non_secure_erase();
+    xpriv.chain_code = bitcoin::bip32::ChainCode::from([1u8; 32]);
 }
 
 pub(crate) fn sighash_is_all(sht: PsbtSighashType) -> bool {
@@ -361,6 +365,18 @@ mod helper_tests {
         assert_ne!(before, [1u8; 32]);
         erase_xpriv(&mut xpriv);
         let after = xpriv.private_key.secret_bytes();
+        assert_ne!(before, after);
+        assert_eq!(after, [1u8; 32]);
+    }
+
+    #[test]
+    fn erase_xpriv_overwrites_chain_code() {
+        let seed = [0x5Au8; 64];
+        let mut xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed).unwrap();
+        let before = xpriv.chain_code.to_bytes();
+        assert_ne!(before, [1u8; 32]);
+        erase_xpriv(&mut xpriv);
+        let after = xpriv.chain_code.to_bytes();
         assert_ne!(before, after);
         assert_eq!(after, [1u8; 32]);
     }

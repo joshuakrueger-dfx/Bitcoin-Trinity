@@ -1721,6 +1721,7 @@ dependencies = [
  "proptest",
  "subtle",
  "thiserror",
+ "trinity-differential",
  "trinity-entropy",
  "trinity-keystore",
  "trinity-types",

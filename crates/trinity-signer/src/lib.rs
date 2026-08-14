@@ -41,6 +41,8 @@ pub trait Signer: Send + Sync {
     fn kind(&self) -> SignerKind;
 }
 
+#[cfg(all(test, feature = "differential"))]
+mod tests_d7_d8;
 #[cfg(test)]
 mod tests_wp33;
 #[cfg(test)]
