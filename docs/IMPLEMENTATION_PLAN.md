@@ -865,11 +865,12 @@ Coverage **863/863 lines and 38/38 branches = 100 %/100 %**
 ---
 
 #### WP-33 · `trinity-signer`
-**Spec:** 3.4 · **Needs:** WP-32, WP-22 · **State:** IN PROGRESS (D7/D8 pending WP-23)
+**Spec:** 3.4 · **Needs:** WP-32, WP-22 · **State:** DONE
 
 `Signer` trait, `LocalSigner`, `SignerKind` (`Local | ExternalNfc | ExternalQr |
-ExternalUsb`). RFC-6979 via `bitcoin::secp256k1::Secp256k1::sign_ecdsa` (libsecp
-default nonce; no direct `secp256k1` pin). Low-s checked, `SIGHASH_ALL` only,
+ExternalUsb`). RFC-6979 via `bitcoin::secp256k1::Secp256k1::sign_ecdsa_low_r` (libsecp
+RFC-6979 nonce plus deterministic low-R grind, matching Core `walletprocesspsbt`;
+no direct `secp256k1` pin). Low-s checked, `SIGHASH_ALL` only,
 self-verification after every signature. Crate-internal `sign_a`/`sign_b`;
 Rust-public `sign_ab` composes them (captures the unsigned txid before A).
 FFI export of `sign_ab` / `sign_ab_with_passphrase` is WP-40.
@@ -898,36 +899,46 @@ depends on `trinity-entropy`; master derivation is `Xpriv::new_master`
 `s10_manipulation_between_a_and_b_is_detected`) with `FakePlatformKeyStore`.
 Literal Signet-CI scenarios (`tests/signet-e2e/`, WP-45) are not built.
 
-**D7 / D8 not built.** The differential harness (`tests/differential/`, WP-23)
-is not in this checkout. Building them here would pre-empt WP-23 structure.
-P4 covers determinism in pure Rust. Re-open D7/D8 when WP-23 merges.
+**D7 / D8.** `sign_a` / `sign_b` stay crate-internal (Spec §1.3). An external
+`tests/differential/` target cannot see `pub(crate)`, so D7/D8 live as
+`#[cfg(all(test, feature = "differential"))]` inside `crates/trinity-signer/src/`
+and pull RPC helpers from `trinity-differential` (dev-dep; Cargo forbids
+optional `[dev-dependencies]`, so the `differential` feature only enables
+`trinity-differential/differential`). 1_000 deterministic PSBTs from
+`D7D8_SEED` (distinct from D4/D5 `SETUP_SEED`), fabricated `witness_utxo`,
+no on-chain funding. Core wallet is private-key capable
+(`disable_private_keys=false`) and imports a `wsh(sortedmulti(2, xprv, xpub,
+xpub))` receive descriptor.
 
-**Files:** `crates/trinity-signer/**`
+Production signing uses `sign_ecdsa_low_r` (RFC 6979 + deterministic
+low-R grind, same as Core `CKey::Sign(..., grind=true)`). D7/D8 compare
+DER+sighash bytes bit-identically against `walletprocesspsbt`.
+
+**Files:** `crates/trinity-signer/**`, `tests/differential/src/rpc_signer.rs`
 **Prohibited:** No RNG on the signature path; no export of seeds; no SIGHASH except ALL.
 
 **Acceptance**
-- **D7, D8** (bit-identical to `walletprocesspsbt`) — **deferred to WP-23**
+- **D7, D8** against Core `walletprocesspsbt` (1_000 PSBTs each)
 - **P4** (determinism)
 - Verifier runs **before** every key access; **S9** including mock assertion that `unwrap_kek` was **not** called
 - **S10** (manipulation between A and B is detected)
 - Every SIGHASH other than `ALL` is rejected (**P11** — owned by WP-22; signer path enforces it again)
 - Coverage 100 % lines/branches. `cargo-mutants` is CI-on-main only (not a local gate).
 
-**Met:** `cargo test -p trinity-signer --locked` **40 tests**.
-`cargo test --workspace --locked` **43 suites / 484 passed** (5 ignored,
-pre-existing live/harness) — vorher in diesem Checkout 444 passed + 5 ignored
-(`--list` 449). Mutation (a) `sighash_is_all` → `true`: **4 of 40** signer
-tests red (`sighash_is_all_accepts_only_all`,
-`sign_rejects_non_all_sighash_without_verify`,
-`sign_rejects_nonstandard_sighash_field`,
-`preflight_non_all_is_independent_of_verify`). Mutation (b) verify after
-`unwrap_kek` in `sign_a`: **s9** red (`unwrap_kek_calls` 1 ≠ 0). Both
-restored from a file snapshot (not `git checkout`). Coverage
-**1004/1004 lines and 40/40 branches = 100 %/100 %**
-(`cargo +nightly llvm-cov -p trinity-signer --branch --locked --summary-only`;
-region 98.97 %, as accepted on WP-32). `dep_budget.py` **51/55** (unchanged).
-`python3 scripts/check_plan.py` 703 checks, no findings. D7/D8 not built
-(WP-23 harness absent).
+**Met:** Signer uses `sign_ecdsa_low_r`. D7 **358.26 s** (5.97 min) —
+**1000/1000 bit-identical** vs Core `walletprocesspsbt` (`xprv_A`). D8
+**704.19 s** (11.74 min) — **1000/1000 bit-identical** (`xprv_B`). Both
+against Core 30.2 (`./scripts/test-env.sh`). `erase_xpriv` also overwrites
+`chain_code` with `[1u8; 32]`. Mutation: drop the `chain_code` assignment
+(1 hit) → **1 of 1** `erase_xpriv_overwrites_chain_code` red (`before ==
+after` on the original 32 bytes); restored from a file snapshot (not
+`git checkout`). `cargo test --workspace --locked` (without feature)
+**43 suites / 487 passed** (5 ignored) — +1 vs previous 486, the new
+`erase_xpriv_overwrites_chain_code` test. `cargo test -p trinity-signer
+--locked` **43** lib tests. `cargo build --workspace --locked` and
+`cargo clippy --workspace --locked --all-targets -- -D warnings` green
+(also with `--features differential`). `python3 scripts/check_plan.py`
+703 checks, no findings.
 
 **Tests:** D7, D8, P4, S9, S10
 

@@ -17,6 +17,16 @@ subtle = { workspace = true }
 zeroize = { workspace = true }
 thiserror = { workspace = true }
 
+[features]
+default = []
+# D7/D8 against Core `walletprocesspsbt`. Requires the WP-02 test environment.
+# Does not re-export `sign_a` / `sign_b` — those stay crate-internal and the
+# tests live in `src/` under `cfg(test)`. Cargo forbids optional
+# `[dev-dependencies]`; the dep is therefore always listed, and this feature
+# only turns on `trinity-differential/differential` (RPC + `rpc_signer`).
+differential = ["trinity-differential/differential"]
+
 [dev-dependencies]
 proptest = { workspace = true }
 trinity-keystore = { path = "../trinity-keystore", version = "0.1.0", features = ["test-util"] }
+trinity-differential = { path = "../../tests/differential", version = "0.1.0" }

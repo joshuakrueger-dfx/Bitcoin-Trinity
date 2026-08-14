@@ -33,6 +33,14 @@ pub const ADDR_END: u32 = ADDRS - 1;
 /// ASCII `TRINITY#` — same family as [`trinity_watch::PSBT_BUILD_SEED`].
 pub const SETUP_SEED: u64 = 0x5452_494e_4954_5923;
 
+/// Fixed seed for D7/D8 PSBT variants (TESTING.md §2.4).
+///
+/// ASCII `D7D8PSBT`. Distinct from [`SETUP_SEED`] so the signature-vector
+/// set cannot be confused with the D4/D5 address setups.
+pub const D7D8_SEED: u64 = 0x4437_4438_5053_4254;
+/// Spec §5.1: 1_000 PSBTs each for D7 (`sign_a`) and D8 (`sign_b`).
+pub const D7D8_PSBTS: u32 = 1_000;
+
 /// One deterministic 2-of-3 descriptor document (receive + change).
 #[derive(Clone, Debug)]
 pub struct Setup {
@@ -163,3 +171,5 @@ fn xpub_from_tag(tag: u32) -> XpubWithOrigin {
 
 #[cfg(feature = "differential")]
 pub mod rpc;
+#[cfg(feature = "differential")]
+pub mod rpc_signer;
