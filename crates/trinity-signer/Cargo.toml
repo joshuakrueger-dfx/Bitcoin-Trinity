@@ -21,6 +21,9 @@ getrandom = { workspace = true }
 
 [features]
 default = []
+# Test doubles (`FakeClock`, `FakeBlockHeightSource`). Same gate as
+# `trinity-keystore`'s `FakePlatformKeyStore`.
+test-util = []
 # D7/D8 against Core `walletprocesspsbt`. Requires the WP-02 test environment.
 # Does not re-export `sign_a` / `sign_b` — those stay crate-internal and the
 # tests live in `src/` under `cfg(test)`. Cargo forbids optional
@@ -31,4 +34,5 @@ differential = ["trinity-differential/differential"]
 [dev-dependencies]
 proptest = { workspace = true }
 trinity-keystore = { path = "../trinity-keystore", version = "0.1.0", features = ["test-util"] }
+trinity-signer = { path = ".", version = "0.1.0", features = ["test-util"] }
 trinity-differential = { path = "../../tests/differential", version = "0.1.0" }

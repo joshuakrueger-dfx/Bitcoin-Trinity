@@ -1,6 +1,6 @@
 //! S28, S29, S29b, S29f, S29h, S29i, S29j, S29k — Spec §5.3 / WP-34.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use bitcoin::absolute::LockTime;
@@ -8,8 +8,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::psbt::Psbt;
 use bitcoin::transaction::Version;
 use bitcoin::{
-    Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, WPubkeyHash,
-    Witness,
+    Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
+    WPubkeyHash, Witness,
 };
 use trinity_types::{Balance, SecretBytes};
 use trinity_verify::{derive_at, parse, VerifyPolicy};
@@ -19,8 +19,8 @@ use crate::tests_wp33::{
     WalletFixture,
 };
 use crate::{
-    allowance, set_spend_policy, sign_ab, FakeBlockHeightSource, FakeClock, SignError, SpendPolicy,
-    SpendSession, WindowCounter,
+    allowance, set_spend_policy, sign_ab, FakeBlockHeightSource, FakeClock, SignError,
+    SpendApproval, SpendPolicy, SpendSession, WindowCounter,
 };
 
 const CORE_KEK: [u8; 32] = [0x3C; 32];
@@ -202,24 +202,84 @@ fn s29_splitting_does_not_help_and_counter_survives_restart() {
 }
 
 #[test]
+fn s29_full_booking_table_rejects_without_unwrap() {
+    let wallet = default_wallet();
+    let (a, fake_a, b, fake_b) = pair_signers(&wallet);
+    let policy = SpendPolicy::off();
+    let mut counter = ready_counter();
+    for i in 0..crate::core_state::MAX_BOOKINGS {
+        let set: BTreeSet<OutPoint> = [OutPoint {
+            txid: Txid::from_byte_array([(i % 256) as u8; 32]),
+            vout: i as u32,
+        }]
+        .into_iter()
+        .collect();
+        counter.commit(SpendApproval::new(set, 1));
+    }
+    let clock = FakeClock::new();
+    let blocks = FakeBlockHeightSource::new(Some(50));
+    let built = build_foreign_send(&wallet, outpoint(40), 0, 0, 10_000, 40, 10);
+    fake_a.reset_calls();
+    fake_b.reset_calls();
+    let mut spend = session(&policy, &mut counter, &clock, &blocks, 10_000, None);
+    let err = sign_ab(
+        &a,
+        &b,
+        built.psbt,
+        &wallet.receive,
+        &built.policy,
+        &mut spend,
+    )
+    .unwrap_err();
+    assert_eq!(err, SignError::SpendLimitExceeded);
+    assert_eq!(fake_a.unwrap_kek_calls(), 0);
+    assert_eq!(fake_b.unwrap_kek_calls(), 0);
+}
+
+#[test]
 fn s29b_clamp_via_authorize_matches_allowance() {
     let p = SpendPolicy::standard();
-    for bal in [0, 100, 199, 200, 999, 1000, 1500, 2500, 2501, 10_000] {
-        assert_eq!(
-            allowance(&p, bal),
-            crate::allowance(&p, bal),
-            "balance {bal}"
-        );
+    let expected: &[(u64, u64)] = &[
+        (0, 0),
+        (100, 100),
+        (199, 199),
+        (200, 200),
+        (999, 200),
+        (1000, 200),
+        (1500, 300),
+        (2500, 500),
+        (2501, 500),
+        (10_000, 500),
+    ];
+    for &(bal, want) in expected {
+        assert_eq!(allowance(&p, bal), want, "balance {bal}");
     }
-    let equal = SpendPolicy {
-        window_fraction: Some(crate::Ratio::PERCENT_20),
-        window_floor_sat: Some(300),
-        window_cap_sat: Some(300),
-        window: Duration::from_secs(86_400),
-        passphrase_on_first_use: true,
-    };
-    assert_eq!(allowance(&equal, 50), 50);
-    assert_eq!(allowance(&equal, 10_000), 300);
+
+    let wallet = default_wallet();
+    let (a, _, b, _) = pair_signers(&wallet);
+    let mut counter = ready_counter();
+    let clock = FakeClock::new();
+    let blocks = FakeBlockHeightSource::new(Some(50));
+    // allowance at 1_000 = 200; 150 is under, 250 is over.
+    let under = build_foreign_send(&wallet, outpoint(30), 0, 0, 10_000, 140, 10);
+    {
+        let mut spend = session(&p, &mut counter, &clock, &blocks, 1_000, None);
+        sign_ab(
+            &a,
+            &b,
+            under.psbt,
+            &wallet.receive,
+            &under.policy,
+            &mut spend,
+        )
+        .unwrap();
+    }
+    let over = build_foreign_send(&wallet, outpoint(31), 0, 0, 10_000, 240, 10);
+    let mut spend = session(&p, &mut counter, &clock, &blocks, 1_000, None);
+    assert_eq!(
+        sign_ab(&a, &b, over.psbt, &wallet.receive, &over.policy, &mut spend,).unwrap_err(),
+        SignError::SpendLimitExceeded
+    );
 }
 
 #[test]
@@ -238,7 +298,6 @@ fn s29f_floor_above_cap_rejected_not_reshaped() {
 #[test]
 fn s29h_accounting_change_fee_self_rbf_dropped() {
     let wallet = default_wallet();
-    let recv = parse(&wallet.receive).unwrap();
 
     // Change + foreign: charge = send + fee, not change.
     let with_change = build_foreign_send(&wallet, outpoint(1), 0, 0, 10_000, 100, 25);
@@ -258,7 +317,6 @@ fn s29h_accounting_change_fee_self_rbf_dropped() {
     let charge =
         crate::window::spend_charge(&self_xfer.psbt, &wallet.receive, &self_xfer.policy).unwrap();
     assert_eq!(charge, 25);
-    let _ = recv;
 
     // RBF: same input set, fee +10, extra = 10. Dropped tx stays booked.
     let mut counter = ready_counter();
@@ -287,9 +345,19 @@ fn s29h_accounting_change_fee_self_rbf_dropped() {
     }
     assert_eq!(counter.booked_sat(), 60);
 
-    // Never-confirmed: still booked after a "drop".
-    clock.advance(Duration::from_secs(60));
-    assert_eq!(counter.booked_sat(), 60);
+    // Never confirmed: still booked after an hour inside the 24 h window.
+    clock.advance(Duration::from_secs(3_600));
+    blocks.set(Some(16));
+    {
+        let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, None);
+        let probe = build_foreign_send(&wallet, outpoint(32), 0, 0, 10_000, 1, 1);
+        // Probe is tiny; authorize prunes then accepts. The dropped first
+        // spend must still occupy 60 sat.
+        spend
+            .authorize(&probe.psbt, &wallet.receive, &probe.policy)
+            .unwrap();
+        assert_eq!(counter.booked_sat(), 60);
+    }
 }
 
 #[test]
@@ -388,8 +456,7 @@ fn s29k_device_clock_jump_never_resets_window() {
     }
     assert_eq!(counter.booked_sat(), 200);
 
-    // +24 h on the wall only. Mono and tip stay put. Auto-sync off = we
-    // never read a network clock.
+    // +24 h on the wall only. Mono and tip stay put.
     fake_a.reset_calls();
     fake_b.reset_calls();
     let plus_day = build_foreign_send(&wallet, outpoint(7), 0, 0, 10_000, 45, 5);
@@ -422,6 +489,25 @@ fn s29k_device_clock_jump_never_resets_window() {
     let back = build_foreign_send(&wallet, outpoint(8), 0, 0, 10_000, 45, 5);
     let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, Some(1));
     let err = sign_ab(&a, &b, back.psbt, &wallet.receive, &back.policy, &mut spend).unwrap_err();
+    assert_eq!(err, SignError::SpendLimitExceeded);
+    assert_eq!(fake_a.unwrap_kek_calls(), 0);
+    assert_eq!(fake_b.unwrap_kek_calls(), 0);
+
+    // Automatic time sync off: no wall reading is supplied. Mono and tip
+    // stay put — we never invent progress from a missing network clock.
+    fake_a.reset_calls();
+    fake_b.reset_calls();
+    let nosync = build_foreign_send(&wallet, outpoint(41), 0, 0, 10_000, 45, 5);
+    let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, None);
+    let err = sign_ab(
+        &a,
+        &b,
+        nosync.psbt,
+        &wallet.receive,
+        &nosync.policy,
+        &mut spend,
+    )
+    .unwrap_err();
     assert_eq!(err, SignError::SpendLimitExceeded);
     assert_eq!(fake_a.unwrap_kek_calls(), 0);
     assert_eq!(fake_b.unwrap_kek_calls(), 0);
@@ -523,7 +609,7 @@ fn spend_charge_missing_utxo_and_overdraft_and_bad_change() {
     over.psbt.unsigned_tx.output[0].value = Amount::from_sat(20_000);
     assert_eq!(
         crate::window::spend_charge(&over.psbt, &wallet.receive, &over.policy).unwrap_err(),
-        SignError::SpendLimitExceeded
+        SignError::UnbalancedPsbt
     );
 
     let ok = build_foreign_send(&wallet, outpoint(22), 0, 0, 10_000, 40, 10);

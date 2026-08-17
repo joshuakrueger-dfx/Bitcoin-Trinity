@@ -948,7 +948,7 @@ checks, no findings.
 ---
 
 #### WP-34 · `SpendPolicy` and window counter
-**Spec:** 3.6.3, 3.6.5, 3.6.7, O18 · **Needs:** WP-33 · **State:** DONE
+**Spec:** 3.6.3, 3.6.5, 3.6.7, O18 · **Needs:** WP-33 · **State:** REVIEW
 
 `clamp(20 % of balance, 200 €, 500 €)` per 24 h, sliding window, counter in
 encrypted core state. Accounting **exactly** per 3.6.7. Window time source per O18
@@ -978,7 +978,7 @@ Core-state blob is a standalone XChaCha20-Poly1305 AEAD (`TRCS` / v1) with a
 dedicated 32-byte KEK — not `trinity-keystore::{encrypt,decrypt}` (those are
 slot-specific) and not `unwrap_kek(A|B)` (S28). `Ratio` is a two-integer
 fraction in `trinity-signer` (none in `trinity-types`). `cargo test --workspace
---locked` **43 suites / 559 passed** (5 ignored). `cargo build` / `clippy -D
+--locked` **43 suites / 565 passed** (5 ignored). `cargo build` / `clippy -D
 warnings` green. `cargo +nightly llvm-cov -p trinity-signer --branch --locked
 --summary-only`: **100 % lines / 100 % branches** (regions 99.32 %).
 `python3 scripts/check_plan.py` 703 checks, no findings; S28/S29/S29b/S29f/
@@ -987,7 +987,11 @@ S29h/S29i/S29j/S29k due and covered by real `fn s28_…` / `fn s29*_…` includi
 `python3 scripts/dep_budget.py` **51** (MEASURED 51, budget 55). Nachbesserung 1:
 `(None, Some(b)) => b` restored → **2 of 2** new tests red
 (`reboot_does_not_advance_from_blocks_alone`, `s29k_block_height_jump…`).
-`cargo-mutants` remains CI-on-main only.
+
+**Open acceptance (why this WP is REVIEW, not DONE):**
+- `cargo-mutants` without survivors — CI-on-main only; not run in this worktree.
+- “not resettable by deleting JS-readable files” — the core has no filesystem
+  (`tests_wp34.rs` s29 comment). Closed in the app-layer persist WP.
 
 **Tests:** S28, S29, S29b, S29f, S29h, S29i, S29j, S29k
 
@@ -1492,7 +1496,7 @@ Scope depends on **WP-06** via WP-60.
 | ~~Appendix B.3 (Kyoto peers)~~ | ~~CBF as default (O3)~~ | ✅ Resolved 2026-08-11 — uniformly-random-peer, O3 decided, WP-16 unblocked |
 | ~~Appendix B.4 (Keychain after uninstall)~~ | ~~WP-41 wipe path~~ | ✅ Resolved 2026-08-11 — survives uninstall, mandatory wipe mitigation recorded in Spec 2.6, WP-41 implements |
 | O13 (entropy sources) | WP-30 | Decision before WP-30 |
-| O18 (window time source) | WP-34 | Decision before WP-34 implements the source; fail-closed rule in 3.6.7 is fixed either way |
+| ~~O18 (window time source)~~ | ~~WP-34~~ | ✅ **Resolved 2026-08-14 — WP-34.** Option (c): both trustworthy → `min`; mono untrusted → no progress |
 | O6 (crash reporting) | WP-60 | Decision before WP-60 |
 | Base decision open | M6 | WP-06 |
 | O14 (BLE order) | v1.1, not v1 | after WP-54 |

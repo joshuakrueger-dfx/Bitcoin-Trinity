@@ -1726,6 +1726,7 @@ dependencies = [
  "trinity-differential",
  "trinity-entropy",
  "trinity-keystore",
+ "trinity-signer",
  "trinity-types",
  "trinity-verify",
  "zeroize",

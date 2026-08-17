@@ -4,7 +4,9 @@
 //! local stand-in for `trinity-chain::ChainBackend::tip_height` — this
 //! crate must not depend on `trinity-chain`.
 
+#[cfg(any(test, feature = "test-util"))]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(any(test, feature = "test-util"))]
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -35,11 +37,13 @@ pub trait BlockHeightSource: Send + Sync {
 }
 
 /// Test clock whose time and boot id are set by the caller.
+#[cfg(any(test, feature = "test-util"))]
 pub struct FakeClock {
     now_ns: AtomicU64,
     boot_id: AtomicU64,
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl FakeClock {
     /// Boot 1, time zero.
     #[must_use]
@@ -59,11 +63,9 @@ impl FakeClock {
     /// Advance by `delta` (saturating).
     pub fn advance(&self, delta: Duration) {
         let extra = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
-        let _ = self
-            .now_ns
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                Some(n.saturating_add(extra))
-            });
+        let now = self.now_ns.load(Ordering::SeqCst);
+        self.now_ns
+            .store(now.saturating_add(extra), Ordering::SeqCst);
     }
 
     /// New boot session: time restarts at zero, boot id increments.
@@ -73,12 +75,14 @@ impl FakeClock {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl Default for FakeClock {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl MonotonicClock for FakeClock {
     fn now(&self) -> Duration {
         Duration::from_nanos(self.now_ns.load(Ordering::SeqCst))
@@ -90,14 +94,17 @@ impl MonotonicClock for FakeClock {
 }
 
 /// Test tip. `None` models an offline / stalled attachment.
+#[cfg(any(test, feature = "test-util"))]
 pub struct FakeBlockHeightSource {
     tip: Mutex<Option<u32>>,
 }
 
+#[cfg(any(test, feature = "test-util"))]
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl FakeBlockHeightSource {
     /// Start at `tip` (`None` = offline).
     #[must_use]
@@ -113,12 +120,14 @@ impl FakeBlockHeightSource {
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl Default for FakeBlockHeightSource {
     fn default() -> Self {
         Self::new(None)
     }
 }
 
+#[cfg(any(test, feature = "test-util"))]
 impl BlockHeightSource for FakeBlockHeightSource {
     fn tip_height(&self) -> Option<u32> {
         *locked(&self.tip)

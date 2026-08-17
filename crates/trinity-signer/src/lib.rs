@@ -6,7 +6,9 @@
 //! unsigned txid between the two signatures (S10). FFI export is WP-40.
 //!
 //! [`sign_ab`] evaluates [`SpendPolicy`] against the encrypted window
-//! counter **before** either slot is unlocked (S28 / S29k).
+//! counter **before** either slot is unlocked (S28 / S29k). That check
+//! is on [`sign_ab`] only — [`LocalSigner::sign`] is the WP-33 primitive
+//! and does not apply the limit.
 //!
 //! External signer kinds exist on [`SignerKind`] so the trait is complete;
 //! `ExternalSigner` itself lives in `trinity-transport` (WP-50+).
@@ -24,7 +26,9 @@ mod local;
 mod sign;
 mod window;
 
-pub use clock::{BlockHeightSource, FakeBlockHeightSource, FakeClock, MonotonicClock};
+pub use clock::{BlockHeightSource, MonotonicClock};
+#[cfg(any(test, feature = "test-util"))]
+pub use clock::{FakeBlockHeightSource, FakeClock};
 pub use core_state::CoreStateError;
 pub use error::SignError;
 pub use kind::SignerKind;

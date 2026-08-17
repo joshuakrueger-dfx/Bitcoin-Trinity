@@ -108,6 +108,14 @@ pub enum SignError {
     #[error("PSBT has no inputs")]
     EmptyPsbt,
 
+    /// PSBT has more inputs than the local resource bound.
+    #[error("PSBT has too many inputs")]
+    TooManyInputs,
+
+    /// Input sum overflowed or is smaller than the output sum.
+    #[error("PSBT input and output amounts are unbalanced")]
+    UnbalancedPsbt,
+
     /// Spend is above the remaining window allowance, or this is the first
     /// signature after install (Spec §3.6.3 / §3.6.5). Checked before any
     /// `unwrap_kek` (S28, S29k). `PassphraseRequired` is WP-35.
@@ -117,6 +125,10 @@ pub enum SignError {
     /// `SpendPolicy` setter rejected `floor > cap` (S29f). Not reshaped.
     #[error("spend-policy floor is above cap")]
     FloorAboveCap,
+
+    /// Share or window length is outside Spec §3.6.5 (1 %–100 %, 1 h–7 d).
+    #[error("spend-policy share or window is out of range")]
+    PolicyOutOfRange,
 
     /// `SpendPolicy` setter rejected a value that is not settable
     /// (`passphrase_on_first_use = false`, or a zero-denominator ratio).
@@ -155,8 +167,11 @@ mod tests {
             SignError::PubkeyMismatch { input_index: 1 },
             SignError::Sighash { input_index: 1 },
             SignError::EmptyPsbt,
+            SignError::TooManyInputs,
+            SignError::UnbalancedPsbt,
             SignError::SpendLimitExceeded,
             SignError::FloorAboveCap,
+            SignError::PolicyOutOfRange,
             SignError::InvalidSpendPolicy,
             SignError::CoreState(crate::core_state::CoreStateError::Aead),
         ];

@@ -33,6 +33,15 @@ impl SpendApproval {
     pub fn charge_sat(&self) -> u64 {
         self.charge_sat
     }
+
+    /// Construct an approval for tests and crate-internal commits.
+    #[cfg(test)]
+    pub(crate) fn new(input_set: BTreeSet<OutPoint>, charge_sat: u64) -> Self {
+        Self {
+            input_set,
+            charge_sat,
+        }
+    }
 }
 
 /// Inputs [`sign_ab`] needs to enforce [`SpendPolicy`] before unlocking A or B.
@@ -125,6 +134,10 @@ impl WindowCounter {
     }
 
     /// Seal the current state (fresh nonce).
+    ///
+    /// Persist this blob **before** releasing a signed PSBT to the next
+    /// layer. [`crate::sign_ab`] returns the signatures first; a crash or
+    /// a skipped write leaves the spend uncounted.
     pub fn seal(&self) -> Result<Vec<u8>, SignError> {
         let mut arr = [0u8; 32];
         arr.copy_from_slice(self.kek.as_slice());
@@ -174,6 +187,7 @@ impl WindowCounter {
         blocks: &dyn BlockHeightSource,
         wall_unix_ns: Option<u64>,
     ) -> Result<SpendApproval, SignError> {
+        policy.validate()?;
         self.advance(clock, blocks, wall_unix_ns);
         self.prune(policy.window);
 
@@ -185,6 +199,14 @@ impl WindowCounter {
         let allowed = allowance(policy, reference);
         let charge = spend_charge(psbt, descriptor, verify)?;
         let input_set = input_set(psbt)?;
+        let known = self
+            .state
+            .bookings
+            .iter()
+            .any(|b| same_inputs(&b.inputs, &input_set));
+        if !known && self.state.bookings.len() >= MAX_BOOKINGS {
+            return Err(SignError::SpendLimitExceeded);
+        }
         let extra = extra_against_bookings(&self.state.bookings, &input_set, charge);
         let used = self.booked_sat();
         let remaining = allowed.saturating_sub(used);
@@ -205,7 +227,10 @@ impl WindowCounter {
             .iter_mut()
             .find(|b| same_inputs(&b.inputs, &approval.input_set))
         {
-            existing.amount_sat = existing.amount_sat.max(approval.charge_sat);
+            if approval.charge_sat > existing.amount_sat {
+                existing.amount_sat = approval.charge_sat;
+                existing.elapsed_at_ns = self.state.window_elapsed_ns;
+            }
         } else if self.state.bookings.len() < MAX_BOOKINGS {
             let mut inputs: Vec<OutPoint> = approval.input_set.into_iter().collect();
             inputs.sort();
@@ -259,16 +284,9 @@ impl WindowCounter {
     fn prune(&mut self, window: Duration) {
         let window_ns = duration_as_ns(window);
         let now = self.state.window_elapsed_ns;
-        self.state
-            .bookings
-            .retain(|b| now.saturating_sub(b.elapsed_at_ns) < window_ns);
-        self.state.window_start_elapsed_ns = self
-            .state
-            .bookings
-            .iter()
-            .map(|b| b.elapsed_at_ns)
-            .min()
-            .unwrap_or(now);
+        let start = now.saturating_sub(window_ns);
+        self.state.window_start_elapsed_ns = start;
+        self.state.bookings.retain(|b| b.elapsed_at_ns >= start);
     }
 }
 
@@ -379,7 +397,7 @@ fn input_set(psbt: &Psbt) -> Result<BTreeSet<OutPoint>, SignError> {
         return Err(SignError::EmptyPsbt);
     }
     if psbt.unsigned_tx.input.len() > MAX_INPUTS {
-        return Err(SignError::EmptyPsbt);
+        return Err(SignError::TooManyInputs);
     }
     Ok(psbt
         .unsigned_tx
@@ -412,22 +430,20 @@ pub(crate) fn spend_charge(
             .ok_or(SignError::MissingWitnessUtxo { input_index: i })?;
         sum_in = sum_in
             .checked_add(utxo.value.to_sat())
-            .ok_or(SignError::SpendLimitExceeded)?;
+            .ok_or(SignError::UnbalancedPsbt)?;
     }
     let mut sum_out = 0u64;
     let mut foreign = 0u64;
     for txout in &psbt.unsigned_tx.output {
         let v = txout.value.to_sat();
-        sum_out = sum_out
-            .checked_add(v)
-            .ok_or(SignError::SpendLimitExceeded)?;
+        sum_out = sum_out.checked_add(v).ok_or(SignError::UnbalancedPsbt)?;
         if !belongs_to_wallet(&txout.script_pubkey, &receive, change.as_ref(), gap)? {
             foreign = foreign.saturating_add(v);
         }
     }
     let fee = sum_in
         .checked_sub(sum_out)
-        .ok_or(SignError::SpendLimitExceeded)?;
+        .ok_or(SignError::UnbalancedPsbt)?;
     Ok(foreign.saturating_add(fee))
 }
 
@@ -464,7 +480,6 @@ fn matches_descriptor(
 mod tests {
     use super::*;
     use crate::clock::{FakeBlockHeightSource, FakeClock};
-    use crate::limits::Ratio;
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
     use bitcoin::transaction::Version;
@@ -516,28 +531,36 @@ mod tests {
         psbt
     }
 
-    fn used_after(
-        counter: &mut WindowCounter,
-        policy: &SpendPolicy,
-        psbt: &Psbt,
-        charge_override: Option<u64>,
-    ) {
+    fn book_for_test(counter: &mut WindowCounter, tag: u8, charge: u64) {
         counter.set_passphrase_used_since_install(true);
-        let clock = FakeClock::new();
-        let blocks = FakeBlockHeightSource::new(Some(100));
-        // Descriptor-less charge path is tested via commit of a synthetic approval.
-        let set = input_set(psbt).unwrap();
-        let charge = charge_override.unwrap_or(1);
-        let extra = extra_against_bookings(&counter.state.bookings, &set, charge);
-        let allowed = allowance(policy, 10_000);
-        assert!(extra <= allowed.saturating_sub(counter.booked_sat()));
-        let _ = extra;
-        counter.advance(&clock, &blocks, None);
-        counter.prune(policy.window);
+        let set: BTreeSet<OutPoint> = [OutPoint {
+            txid: Txid::from_byte_array([tag; 32]),
+            vout: 0,
+        }]
+        .into_iter()
+        .collect();
         counter.commit(SpendApproval {
             input_set: set,
             charge_sat: charge,
         });
+    }
+
+    fn wallet_desc() -> String {
+        crate::tests_wp33::default_wallet().receive
+    }
+
+    fn charge_verify() -> VerifyPolicy {
+        VerifyPolicy::new(
+            vec![],
+            0,
+            50_000,
+            5_000,
+            None,
+            20,
+            Default::default(),
+            None,
+            bitcoin::Network::Regtest,
+        )
     }
 
     #[test]
@@ -717,12 +740,12 @@ mod tests {
             window: Duration::from_secs(60),
             passphrase_on_first_use: true,
         };
-        let a = bare_psbt(1, 10, 9);
-        used_after(&mut c, &policy, &a, Some(5));
-        assert_eq!(c.booked_sat(), 5);
         let clock = FakeClock::new();
-        clock.set(Duration::from_secs(120));
         let blocks = FakeBlockHeightSource::new(None);
+        c.advance(&clock, &blocks, None);
+        book_for_test(&mut c, 1, 5);
+        assert_eq!(c.booked_sat(), 5);
+        clock.set(Duration::from_secs(120));
         c.advance(&clock, &blocks, None);
         c.prune(policy.window);
         assert_eq!(c.booked_sat(), 0);
@@ -769,6 +792,10 @@ mod tests {
             charge_sat: 10,
         });
         c.commit(SpendApproval {
+            input_set: set.clone(),
+            charge_sat: 15,
+        });
+        c.commit(SpendApproval {
             input_set: set,
             charge_sat: 15,
         });
@@ -809,22 +836,10 @@ mod tests {
             output: vec![],
         };
         let psbt = Psbt::from_unsigned_tx(tx).unwrap();
-        let verify = VerifyPolicy::new(
-            vec![],
-            0,
-            50_000,
-            5_000,
-            None,
-            0,
-            Default::default(),
-            None,
-            bitcoin::Network::Regtest,
-        );
+        let desc = wallet_desc();
         assert_eq!(
-            spend_charge(&psbt, "x", &verify).unwrap_err(),
-            SignError::Verify(trinity_verify::VerifyError::from(
-                trinity_verify::ParseError::MissingChecksum
-            ))
+            spend_charge(&psbt, &desc, &charge_verify()).unwrap_err(),
+            SignError::MissingWitnessUtxo { input_index: 0 }
         );
     }
 
@@ -853,7 +868,6 @@ mod tests {
     #[test]
     fn seconds_per_block_is_ten_minutes() {
         assert_eq!(SECONDS_PER_BLOCK, 600);
-        let _ = Ratio::PERCENT_20;
     }
 
     #[test]
@@ -864,24 +878,13 @@ mod tests {
         let blocks = FakeBlockHeightSource::new(None);
         let policy = policy_cap(10);
         let psbt = bare_psbt(1, 100, 50);
-        let verify = VerifyPolicy::new(
-            vec![],
-            50,
-            50_000,
-            5_000,
-            None,
-            0,
-            Default::default(),
-            None,
-            bitcoin::Network::Regtest,
-        );
-        // gap 0, foreign output 50 + fee 50 = 100 > cap 10.
+        let desc = wallet_desc();
         let err = c
             .authorize(
                 &policy,
                 &psbt,
-                "wsh(sortedmulti(2,x))#00000000",
-                &verify,
+                &desc,
+                &charge_verify(),
                 Balance {
                     confirmed_sats: 10_000,
                     trusted_pending_sats: 0,
@@ -893,19 +896,11 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert!(matches!(
-            err,
-            SignError::SpendLimitExceeded | SignError::Verify(_)
-        ));
+        assert_eq!(err, SignError::SpendLimitExceeded);
     }
 
     #[test]
     fn charge_missing_utxo_with_parsed_descriptor() {
-        let wallet_desc = {
-            // Any parse failure is fine to skip; the MissingChecksum path is
-            // already covered. Here we want MissingWitnessUtxo after parse.
-            "not-a-desc"
-        };
         let tx = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -918,37 +913,21 @@ mod tests {
             output: vec![],
         };
         let psbt = Psbt::from_unsigned_tx(tx).unwrap();
-        let verify = VerifyPolicy::new(
-            vec![],
-            0,
-            50_000,
-            5_000,
-            None,
-            0,
-            Default::default(),
-            None,
-            bitcoin::Network::Regtest,
+        let desc = wallet_desc();
+        assert_eq!(
+            spend_charge(&psbt, &desc, &charge_verify()).unwrap_err(),
+            SignError::MissingWitnessUtxo { input_index: 0 }
         );
-        assert!(spend_charge(&psbt, wallet_desc, &verify).is_err());
     }
 
     #[test]
     fn charge_rejects_outputs_exceeding_inputs() {
         let psbt = bare_psbt(1, 10, 50);
-        let verify = VerifyPolicy::new(
-            vec![],
-            50,
-            50_000,
-            5_000,
-            None,
-            0,
-            Default::default(),
-            None,
-            bitcoin::Network::Regtest,
+        let desc = wallet_desc();
+        assert_eq!(
+            spend_charge(&psbt, &desc, &charge_verify()).unwrap_err(),
+            SignError::UnbalancedPsbt
         );
-        // Descriptor will fail parse first. Use gap-0 after a parse success
-        // is covered in wp34. This still hits the Verify map.
-        assert!(spend_charge(&psbt, "nope", &verify).is_err());
     }
 
     #[test]
@@ -971,12 +950,13 @@ mod tests {
             output: vec![],
         };
         let psbt = Psbt::from_unsigned_tx(tx).unwrap();
-        assert_eq!(input_set(&psbt).unwrap_err(), SignError::EmptyPsbt);
+        assert_eq!(input_set(&psbt).unwrap_err(), SignError::TooManyInputs);
     }
 
     #[test]
     fn commit_stops_at_max_bookings() {
         let mut c = empty_counter();
+        c.set_passphrase_used_since_install(true);
         for i in 0..MAX_BOOKINGS {
             let set: BTreeSet<OutPoint> = [OutPoint {
                 txid: Txid::from_byte_array([(i % 256) as u8; 32]),
@@ -990,8 +970,32 @@ mod tests {
             });
         }
         assert_eq!(c.state.bookings.len(), MAX_BOOKINGS);
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        let policy = SpendPolicy::off();
+        let psbt = bare_psbt(0xFE, 100, 50);
+        let desc = wallet_desc();
+        let err = c
+            .authorize(
+                &policy,
+                &psbt,
+                &desc,
+                &charge_verify(),
+                Balance {
+                    confirmed_sats: 10_000,
+                    trusted_pending_sats: 0,
+                    untrusted_pending_sats: 0,
+                    immature_sats: 0,
+                },
+                &clock,
+                &blocks,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(err, SignError::SpendLimitExceeded);
+        assert_eq!(c.state.bookings.len(), MAX_BOOKINGS);
         let extra: BTreeSet<OutPoint> = [OutPoint {
-            txid: Txid::from_byte_array([0xFF; 32]),
+            txid: Txid::from_byte_array([0xFD; 32]),
             vout: 99,
         }]
         .into_iter()
@@ -1001,6 +1005,59 @@ mod tests {
             charge_sat: 9,
         });
         assert_eq!(c.state.bookings.len(), MAX_BOOKINGS);
+    }
+
+    #[test]
+    fn wall_veto_forward_beyond_mono_zeroes_progress() {
+        let mut c = empty_counter();
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(Some(100));
+        c.advance(&clock, &blocks, Some(1_000));
+        clock.advance(Duration::from_secs(3_600));
+        blocks.set(Some(106));
+        c.advance(&clock, &blocks, Some(1_000 + 7_200 * 1_000_000_000));
+        assert_eq!(c.window_elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn wall_veto_backward_zeroes_progress() {
+        let mut c = empty_counter();
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(Some(100));
+        c.advance(&clock, &blocks, Some(10_000));
+        clock.advance(Duration::from_secs(3_600));
+        blocks.set(Some(106));
+        c.advance(&clock, &blocks, Some(1));
+        assert_eq!(c.window_elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn rbf_bump_refreshes_elapsed_so_row_does_not_expire_early() {
+        let mut c = empty_counter();
+        c.set_passphrase_used_since_install(true);
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        c.advance(&clock, &blocks, None);
+        let set: BTreeSet<OutPoint> = [OutPoint {
+            txid: Txid::from_byte_array([3; 32]),
+            vout: 0,
+        }]
+        .into_iter()
+        .collect();
+        c.commit(SpendApproval {
+            input_set: set.clone(),
+            charge_sat: 100,
+        });
+        clock.advance(Duration::from_secs(23 * 3600 + 59 * 60));
+        c.advance(&clock, &blocks, None);
+        c.commit(SpendApproval {
+            input_set: set,
+            charge_sat: 500,
+        });
+        clock.advance(Duration::from_secs(120));
+        c.advance(&clock, &blocks, None);
+        c.prune(Duration::from_secs(24 * 3600));
+        assert_eq!(c.booked_sat(), 500);
     }
 
     #[test]

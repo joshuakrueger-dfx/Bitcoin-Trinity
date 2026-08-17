@@ -114,7 +114,8 @@ impl SpendPolicy {
         }
     }
 
-    /// `floor ≤ cap` and first-use stays enabled.
+    /// `floor ≤ cap`, first-use stays enabled, share 1 %–100 %, window 1 h–7 d
+    /// (Spec §3.6.5). `None` share is "off" and is allowed.
     pub(crate) fn validate(self) -> Result<Self, SignError> {
         let floor = self.window_floor_sat.unwrap_or(0);
         let cap = self.window_cap_sat.unwrap_or(u64::MAX);
@@ -123,6 +124,18 @@ impl SpendPolicy {
         }
         if !self.passphrase_on_first_use {
             return Err(SignError::InvalidSpendPolicy);
+        }
+        if let Some(f) = self.window_fraction {
+            // 1 % ≤ share ≤ 100 %.
+            if f.numer() == 0 || f.numer() > f.denom() || f.numer().saturating_mul(100) < f.denom()
+            {
+                return Err(SignError::PolicyOutOfRange);
+            }
+        }
+        if self.window < Duration::from_secs(60 * 60)
+            || self.window > Duration::from_secs(7 * 24 * 60 * 60)
+        {
+            return Err(SignError::PolicyOutOfRange);
         }
         Ok(self)
     }
@@ -134,8 +147,8 @@ impl Default for SpendPolicy {
     }
 }
 
-/// Crate-internal setter (S29f). Rejects `floor > cap` instead of
-/// reshaping. FFI export is a later WP.
+/// Setter for a user-supplied [`SpendPolicy`] (S29f). Rejects `floor > cap`
+/// and out-of-range share/window instead of reshaping. FFI export is a later WP.
 pub fn set_spend_policy(policy: SpendPolicy) -> Result<SpendPolicy, SignError> {
     policy.validate()
 }
@@ -155,7 +168,6 @@ pub fn allowance(p: &SpendPolicy, balance_sat: u64) -> u64 {
     if floor > cap {
         return 0;
     }
-    debug_assert!(floor <= cap, "floor above cap — to enforce on every set");
     by_fraction.clamp(floor, cap).min(balance_sat)
 }
 
@@ -215,7 +227,7 @@ mod tests {
             window_fraction: Some(Ratio::PERCENT_20),
             window_floor_sat: Some(300),
             window_cap_sat: Some(300),
-            window: Duration::from_secs(1),
+            window: Duration::from_secs(60 * 60),
             passphrase_on_first_use: true,
         };
         assert_eq!(allowance(&p, 100), 100);
@@ -229,7 +241,7 @@ mod tests {
             window_fraction: None,
             window_floor_sat: Some(10),
             window_cap_sat: Some(50),
-            window: Duration::from_secs(1),
+            window: Duration::from_secs(60 * 60),
             passphrase_on_first_use: true,
         };
         assert_eq!(allowance(&p, 10_000), 50);
@@ -249,7 +261,7 @@ mod tests {
             window_fraction: Some(Ratio::PERCENT_20),
             window_floor_sat: Some(500),
             window_cap_sat: Some(200),
-            window: Duration::from_secs(1),
+            window: Duration::from_secs(60 * 60),
             passphrase_on_first_use: true,
         };
         assert_eq!(allowance(&p, 10_000), 0);
@@ -285,10 +297,60 @@ mod tests {
             window_fraction: None,
             window_floor_sat: Some(7),
             window_cap_sat: Some(7),
-            window: Duration::from_secs(60),
+            window: Duration::from_secs(60 * 60),
             passphrase_on_first_use: true,
         };
         assert_eq!(set_spend_policy(p).unwrap(), p);
+    }
+
+    #[test]
+    fn setter_rejects_zero_and_out_of_range_window() {
+        let mut p = SpendPolicy::standard();
+        p.window = Duration::ZERO;
+        assert_eq!(
+            set_spend_policy(p).unwrap_err(),
+            SignError::PolicyOutOfRange
+        );
+        p.window = Duration::from_secs(60 * 60 - 1);
+        assert_eq!(
+            set_spend_policy(p).unwrap_err(),
+            SignError::PolicyOutOfRange
+        );
+        p.window = Duration::from_secs(7 * 24 * 60 * 60 + 1);
+        assert_eq!(
+            set_spend_policy(p).unwrap_err(),
+            SignError::PolicyOutOfRange
+        );
+        p.window = Duration::from_secs(60 * 60);
+        assert!(set_spend_policy(p).is_ok());
+        p.window = Duration::from_secs(7 * 24 * 60 * 60);
+        assert!(set_spend_policy(p).is_ok());
+    }
+
+    #[test]
+    fn setter_rejects_share_outside_one_to_hundred_percent() {
+        let mut p = SpendPolicy::standard();
+        p.window_fraction = Some(Ratio::new(0, 5).unwrap());
+        assert_eq!(
+            set_spend_policy(p).unwrap_err(),
+            SignError::PolicyOutOfRange
+        );
+        p.window_fraction = Some(Ratio::new(1, 200).unwrap());
+        assert_eq!(
+            set_spend_policy(p).unwrap_err(),
+            SignError::PolicyOutOfRange
+        );
+        p.window_fraction = Some(Ratio::new(2, 1).unwrap());
+        assert_eq!(
+            set_spend_policy(p).unwrap_err(),
+            SignError::PolicyOutOfRange
+        );
+        p.window_fraction = Some(Ratio::new(1, 100).unwrap());
+        assert!(set_spend_policy(p).is_ok());
+        p.window_fraction = Some(Ratio::new(1, 1).unwrap());
+        assert!(set_spend_policy(p).is_ok());
+        p.window_fraction = None;
+        assert!(set_spend_policy(p).is_ok());
     }
 
     #[test]
