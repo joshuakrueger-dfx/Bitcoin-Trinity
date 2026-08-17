@@ -964,7 +964,7 @@ no wall-clock-only advancement of the spend window.
 - **S29h** (accounting: fee, change, self-transfer, RBF delta, dropped tx)
 - **S29i** (unconfirmed external payment does **not** raise the reference size)
 - **S29j** (sliding window across calendar boundary)
-- **S29k** (device-clock +24 h / backward / auto-sync off never resets the window; no `unwrap_kek`)
+- **S29k** (device-clock jump never resets the window: wall-forward / wall-backward veto with real source progress; missing wall is not a source; no `unwrap_kek`)
 - Counter survives restart and reboot; not resettable by deleting JS-readable files
 - Coverage 100 %, `cargo-mutants` without survivors
 

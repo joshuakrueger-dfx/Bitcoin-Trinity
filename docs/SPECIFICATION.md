@@ -1301,7 +1301,7 @@ sequenceDiagram
         U-->>PKS: gesture
         PKS-->>KS: KEK_A and KEK_B — separate keys, one prompt
     else amount > share · policy change · export · first use
-        S-->>NAT: passphrase required (or SignError::SpendLimitExceeded from sign_ab; then sign_ab_with_passphrase)
+        S-->>NAT: passphrase required (or SignError::SpendLimitExceeded from sign_ab; then sign_ab_with_passphrase). WindowLedgerFull: wait for the window; passphrase does not help
         NAT->>U: input (Data/ByteArray, NEVER String, autocomplete)
         U->>NAT: passphrase
         NAT->>FFI: sign_ab_with_passphrase(psbt_b64, pass: &[u8])
@@ -1475,7 +1475,7 @@ For user communication that means: **"€200 a day without passphrase, with larg
 
 **On the cap as a daily and not a per-transaction limit:** The €500 apply cumulatively per 24 hours, not per transfer. A per-transaction limit would achieve nothing because a thief splits — same rationale as above, S29 tests it.
 
-`sign_ab` checks the policy **before** unlocking B and fails with `SignError::SpendLimitExceeded` on exceedance; the platform then calls `sign_ab_with_passphrase` with a borrowed `&[u8]`. The tracked counter sits in the encrypted state of the core, not in a JS-readable file.
+`sign_ab` checks the policy **before** unlocking B and fails with `SignError::SpendLimitExceeded` on exceedance; the platform then calls `sign_ab_with_passphrase` with a borrowed `&[u8]`. A full booking table fails with `SignError::WindowLedgerFull` — the passphrase does not help, only the window sliding on. The tracked counter sits in the encrypted state of the core, not in a JS-readable file.
 
 **Why there is no per-transaction limit.** Such a limit achieves **nothing** security-wise: a thief who may not move 20% in one transfer makes three smaller ones. Only the cumulative window limit bounds the damage — the transaction limit creates exclusively friction. It is therefore dropped without replacement. One number instead of two, same security, fewer questions.
 
@@ -1737,7 +1737,7 @@ Runs on every merge to `main` against Signet **and** against a local regtest nod
 | **S25** | **Input performance:** 6-word passphrase with autocomplete, time until signable transaction | ≤ 15 s on a lower-tier reference device, including Argon2id. If the value is missed, KDF prefetch is not effective and the measure from 6.2.1 is not implemented. |
 | **S26** | **NFC tap performance** with hardware-B: time from confirm to fully signed PSBT | ≤ 5 s. Evidences the core claim from 6.2.1 that hardware-B is faster than any passphrase. |
 | **S27** | **One-gesture send** below the share: from confirm to broadcast | **Exactly one** biometric prompt. Two prompts are a failure — then context reuse (iOS) or the time window (Android) is not working. Total duration ≤ 5 s. |
-| **S28** | **Spending limit applies:** transaction above the share without passphrase | `SignError::SpendLimitExceeded`, **and** mock assertion that neither `unwrap_kek(A)` nor `unwrap_kek(B)` was called. No biometric prompt appears. |
+| **S28** | **Spending limit applies:** transaction above the share without passphrase | `SignError::SpendLimitExceeded`, **and** mock assertion that neither `unwrap_kek(A)` nor `unwrap_kek(B)` was called. No biometric prompt appears. A full booking table is `SignError::WindowLedgerFull`; the passphrase does not help, only the window sliding on. |
 | **S29** | **Window limit applies cumulatively:** many small transactions until the 24 h window is exhausted | from exceedance the passphrase is required. **The test evidences that splitting does not help** — exactly why there is no transaction limit. Counter survives app restart and device reboot and cannot be reset by deleting JS-readable files. |
 | **S29b** | **`clamp(share, floor, cap)`:** vary balance over all three ranges — under €1,000, between €1,000 and €2,500, over €2,500 | in every range the right quantity applies. Edge cases at exactly €1,000 and €2,500 tested, also balance **smaller than the floor** (then the balance itself limits) and `floor == cap`. |
 | **S29f** | **Invariant `floor ≤ cap`:** set floor above cap, lower cap under floor | both are rejected, not reshaped. Also checked directly over the FFI facade. |

@@ -109,9 +109,10 @@ pub(crate) struct CoreState {
     pub(crate) wall_unix_ns_at_anchor: Option<u64>,
     pub(crate) window_elapsed_ns: u64,
     /// Inclusive live-window start: `window_elapsed_ns` minus the configured
-    /// window length, saturating at 0. Written by `prune` and serialized in
-    /// the TRCS v1 blob. Can run backward if the user lengthens the window.
-    /// No reader today — kept so the blob layout stays at `VERSION` 1.
+    /// window length, saturating at 0. Written by `prune` and, on first
+    /// initialization, by `advance`. Serialized in the TRCS v1 blob. Can
+    /// run backward if the user lengthens the window. No reader today —
+    /// kept so the blob layout stays at `VERSION` 1.
     pub(crate) window_start_elapsed_ns: u64,
     pub(crate) passphrase_used_since_install: bool,
     pub(crate) bookings: Vec<BookedSpend>,

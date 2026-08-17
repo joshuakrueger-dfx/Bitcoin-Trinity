@@ -62,14 +62,22 @@ impl FakeClock {
 
     /// Advance by `delta` (saturating).
     ///
-    /// Clamps the addend so `fetch_add` cannot wrap, then applies it
-    /// atomically. `fetch_update` is deprecated on nightly; `try_update`
-    /// is not on stable 1.94.1.
+    /// Concurrent calls cannot wrap the clock backwards: a
+    /// `compare_exchange_weak` loop stores `now.saturating_add(delta)`
+    /// or retries from the value another caller just wrote.
     pub fn advance(&self, delta: Duration) {
         let extra = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
-        let now = self.now_ns.load(Ordering::SeqCst);
-        let addend = extra.min(u64::MAX - now);
-        self.now_ns.fetch_add(addend, Ordering::SeqCst);
+        let mut now = self.now_ns.load(Ordering::SeqCst);
+        loop {
+            let next = now.saturating_add(extra);
+            match self
+                .now_ns
+                .compare_exchange_weak(now, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return,
+                Err(actual) => now = actual,
+            }
+        }
     }
 
     /// New boot session: time restarts at zero, boot id increments.
@@ -171,6 +179,47 @@ mod tests {
         c.set(Duration::from_nanos(u64::MAX));
         c.advance(Duration::from_nanos(10));
         assert_eq!(c.now(), Duration::from_nanos(u64::MAX));
+    }
+
+    #[test]
+    fn fake_clock_concurrent_advances_do_not_wrap() {
+        use std::sync::Arc;
+        use std::thread;
+        let c = Arc::new(FakeClock::new());
+        c.set(Duration::from_nanos(u64::MAX - 5));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let clock = Arc::clone(&c);
+                thread::spawn(move || clock.advance(Duration::from_nanos(10)))
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(c.now(), Duration::from_nanos(u64::MAX));
+    }
+
+    #[test]
+    fn fake_clock_concurrent_advances_sum() {
+        use std::sync::Arc;
+        use std::thread;
+        let c = Arc::new(FakeClock::new());
+        const THREADS: u64 = 8;
+        const EACH: u64 = 5_000;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let clock = Arc::clone(&c);
+                thread::spawn(move || {
+                    for _ in 0..EACH {
+                        clock.advance(Duration::from_nanos(1));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(c.now(), Duration::from_nanos(THREADS * EACH));
     }
 
     #[test]

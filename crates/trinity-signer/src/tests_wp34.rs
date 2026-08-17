@@ -237,6 +237,42 @@ fn s29_full_booking_table_rejects_without_unwrap() {
 }
 
 #[test]
+fn s29_full_table_over_allowance_is_spend_limit() {
+    let wallet = default_wallet();
+    let (a, fake_a, b, fake_b) = pair_signers(&wallet);
+    let policy = SpendPolicy::standard();
+    let mut counter = ready_counter();
+    for i in 0..crate::core_state::MAX_BOOKINGS {
+        let set: BTreeSet<OutPoint> = [OutPoint {
+            txid: Txid::from_byte_array([(i % 256) as u8; 32]),
+            vout: i as u32,
+        }]
+        .into_iter()
+        .collect();
+        counter.commit(SpendApproval::new(set, 0));
+    }
+    let clock = FakeClock::new();
+    let blocks = FakeBlockHeightSource::new(Some(50));
+    // charge = 240 + 10 = 250 > allowance 200 at confirmed 1_000.
+    let built = build_foreign_send(&wallet, outpoint(43), 0, 0, 10_000, 240, 10);
+    fake_a.reset_calls();
+    fake_b.reset_calls();
+    let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, None);
+    let err = sign_ab(
+        &a,
+        &b,
+        built.psbt,
+        &wallet.receive,
+        &built.policy,
+        &mut spend,
+    )
+    .unwrap_err();
+    assert_eq!(err, SignError::SpendLimitExceeded);
+    assert_eq!(fake_a.unwrap_kek_calls(), 0);
+    assert_eq!(fake_b.unwrap_kek_calls(), 0);
+}
+
+#[test]
 fn s29b_clamp_via_authorize_matches_allowance() {
     let p = SpendPolicy::standard();
     let expected: &[(u64, u64)] = &[
@@ -504,9 +540,12 @@ fn s29k_device_clock_jump_never_resets_window() {
     }
     assert_eq!(counter.booked_sat(), 200);
 
-    // +24 h on the wall only. Mono and tip stay put.
+    // Wall-forward veto with real source progress: without the veto the
+    // 25 h step would slide the window and the probe would pass.
     fake_a.reset_calls();
     fake_b.reset_calls();
+    clock.advance(Duration::from_secs(25 * 3_600));
+    blocks.set(Some(50 + 150));
     let plus_day = build_foreign_send(&wallet, outpoint(7), 0, 0, 10_000, 45, 5);
     {
         let mut spend = session(
@@ -515,7 +554,7 @@ fn s29k_device_clock_jump_never_resets_window() {
             &clock,
             &blocks,
             1_000,
-            Some(WALL0 + 86_400 * 1_000_000_000),
+            Some(WALL0 + 2 * 86_400 * 1_000_000_000),
         );
         let err = sign_ab(
             &a,
@@ -531,9 +570,11 @@ fn s29k_device_clock_jump_never_resets_window() {
     assert_eq!(fake_a.unwrap_kek_calls(), 0);
     assert_eq!(fake_b.unwrap_kek_calls(), 0);
 
-    // Backward jump.
+    // Wall-backward veto with the same source progress.
     fake_a.reset_calls();
     fake_b.reset_calls();
+    clock.advance(Duration::from_secs(25 * 3_600));
+    blocks.set(Some(50 + 300));
     let back = build_foreign_send(&wallet, outpoint(8), 0, 0, 10_000, 45, 5);
     let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, Some(1));
     let err = sign_ab(&a, &b, back.psbt, &wallet.receive, &back.policy, &mut spend).unwrap_err();
@@ -541,16 +582,13 @@ fn s29k_device_clock_jump_never_resets_window() {
     assert_eq!(fake_a.unwrap_kek_calls(), 0);
     assert_eq!(fake_b.unwrap_kek_calls(), 0);
 
-    // "Automatic time sync off" is not a separate code path: it is what lets
-    // the holder set the wall clock at all, and both settings above are that
-    // clock moved forward and backward.
-    // Wall overshoots mono and blocks: the veto zeroes the step, so the
-    // 200-sat booking stays. Without the veto, 25 h of source progress
-    // would slide the window and the probe would pass.
+    // Second forward overshoot after the backward wall-anchor write.
+    // wall=None is a separate branch (`window.rs` apply_wall_veto else):
+    // `wall_absent_does_not_veto`, `s29k_block_height_jump_never_resets_window`.
     fake_a.reset_calls();
     fake_b.reset_calls();
     clock.advance(Duration::from_secs(25 * 3_600));
-    blocks.set(Some(50 + 150));
+    blocks.set(Some(50 + 450));
     let overshoot = build_foreign_send(&wallet, outpoint(41), 0, 0, 10_000, 45, 5);
     let mut spend = session(
         &policy,
@@ -558,7 +596,7 @@ fn s29k_device_clock_jump_never_resets_window() {
         &clock,
         &blocks,
         1_000,
-        Some(WALL0 + 2 * 86_400 * 1_000_000_000),
+        Some(WALL0 + 3 * 86_400 * 1_000_000_000),
     );
     let err = sign_ab(
         &a,

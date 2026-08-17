@@ -205,14 +205,14 @@ impl WindowCounter {
             .bookings
             .iter()
             .any(|b| same_inputs(&b.inputs, &input_set));
-        if !known && self.state.bookings.len() >= MAX_BOOKINGS {
-            return Err(SignError::WindowLedgerFull);
-        }
         let extra = extra_against_bookings(&self.state.bookings, &input_set, charge);
         let used = self.booked_sat();
         let remaining = allowed.saturating_sub(used);
         if extra > remaining {
             return Err(SignError::SpendLimitExceeded);
+        }
+        if !known && self.state.bookings.len() >= MAX_BOOKINGS {
+            return Err(SignError::WindowLedgerFull);
         }
         Ok(SpendApproval {
             input_set,
@@ -632,6 +632,38 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, SignError::SpendLimitExceeded);
         assert!(c.state.initialized);
+    }
+
+    #[test]
+    fn authorize_invalid_policy_does_not_advance_clock() {
+        let mut c = empty_counter();
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        let mut policy = SpendPolicy::standard();
+        policy.window_floor_sat = Some(800);
+        policy.window_cap_sat = Some(200);
+        let psbt = bare_psbt(1, 100, 50);
+        let desc = wallet_desc();
+        let err = c
+            .authorize(
+                &policy,
+                &psbt,
+                &desc,
+                &charge_verify(),
+                Balance {
+                    confirmed_sats: 1_000,
+                    trusted_pending_sats: 0,
+                    untrusted_pending_sats: 0,
+                    immature_sats: 0,
+                },
+                &clock,
+                &blocks,
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(err, SignError::FloorAboveCap);
+        assert!(!c.state.initialized);
+        assert_eq!(c.window_elapsed(), Duration::ZERO);
     }
 
     #[test]
