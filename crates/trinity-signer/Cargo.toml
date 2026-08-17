@@ -12,6 +12,7 @@ trinity-keystore = { path = "../trinity-keystore", version = "0.1.0" }
 trinity-verify = { path = "../trinity-verify", version = "0.1.0" }
 trinity-entropy = { path = "../trinity-entropy", version = "0.1.0" }
 bitcoin = { workspace = true }
+bitcoinconsensus = { workspace = true, optional = true }
 argon2 = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
@@ -30,6 +31,9 @@ test-util = []
 # `[dev-dependencies]`; the dep is therefore always listed, and this feature
 # only turns on `trinity-differential/differential` (RPC + `rpc_signer`).
 differential = ["trinity-differential/differential"]
+# O7: forwards rust-bitcoin's optional `bitcoinconsensus` feature (and the
+# exact workspace pin). Off by default — no production path uses it (WP-36).
+bitcoinconsensus = ["dep:bitcoinconsensus", "bitcoin/bitcoinconsensus"]
 
 [dev-dependencies]
 proptest = { workspace = true }
