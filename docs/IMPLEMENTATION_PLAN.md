@@ -948,11 +948,11 @@ checks, no findings.
 ---
 
 #### WP-34 · `SpendPolicy` and window counter
-**Spec:** 3.6.3, 3.6.5, 3.6.7, O18 · **Needs:** WP-33 · **State:** OPEN
+**Spec:** 3.6.3, 3.6.5, 3.6.7, O18 · **Needs:** WP-33 · **State:** DONE
 
 `clamp(20 % of balance, 200 €, 500 €)` per 24 h, sliding window, counter in
 encrypted core state. Accounting **exactly** per 3.6.7. Window time source per O18
-(open); fail-closed on wall-clock jump per 3.6.7 in every case.
+option (c); fail-closed on wall-clock jump per 3.6.7 in every case.
 
 **Files:** `crates/trinity-signer/**` (SpendPolicy), optionally `crates/trinity-types/**`
 **Prohibited:** No policy enforcement in the JS layer; no rate fetch at signature time;
@@ -967,6 +967,27 @@ no wall-clock-only advancement of the spend window.
 - **S29k** (device-clock +24 h / backward / auto-sync off never resets the window; no `unwrap_kek`)
 - Counter survives restart and reboot; not resettable by deleting JS-readable files
 - Coverage 100 %, `cargo-mutants` without survivors
+
+**Met:** `sign_ab` evaluates `SpendPolicy` before either `unwrap_kek`. O18 option
+(c): `min(monotonic, block height)` when both are trustworthy; monotonic only
+while offline on the same boot; monotonic untrusted (reboot) ⇒ no progress —
+block height is a brake via `min`, never a standalone source (`s29k_block_height_jump_never_resets_window`,
+`reboot_does_not_advance_from_blocks_alone`). Wall clock is a same-boot veto
+only, never a source of elapsed time.
+Core-state blob is a standalone XChaCha20-Poly1305 AEAD (`TRCS` / v1) with a
+dedicated 32-byte KEK — not `trinity-keystore::{encrypt,decrypt}` (those are
+slot-specific) and not `unwrap_kek(A|B)` (S28). `Ratio` is a two-integer
+fraction in `trinity-signer` (none in `trinity-types`). `cargo test --workspace
+--locked` **43 suites / 559 passed** (5 ignored). `cargo build` / `clippy -D
+warnings` green. `cargo +nightly llvm-cov -p trinity-signer --branch --locked
+--summary-only`: **100 % lines / 100 % branches** (regions 99.32 %).
+`python3 scripts/check_plan.py` 703 checks, no findings; S28/S29/S29b/S29f/
+S29h/S29i/S29j/S29k due and covered by real `fn s28_…` / `fn s29*_…` including
+`s29k_block_height_jump_never_resets_window`.
+`python3 scripts/dep_budget.py` **51** (MEASURED 51, budget 55). Nachbesserung 1:
+`(None, Some(b)) => b` restored → **2 of 2** new tests red
+(`reboot_does_not_advance_from_blocks_alone`, `s29k_block_height_jump…`).
+`cargo-mutants` remains CI-on-main only.
 
 **Tests:** S28, S29, S29b, S29f, S29h, S29i, S29j, S29k
 

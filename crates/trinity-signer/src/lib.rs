@@ -5,6 +5,9 @@
 //! independent verifier **before** any `unwrap_kek` (S9) and bind the
 //! unsigned txid between the two signatures (S10). FFI export is WP-40.
 //!
+//! [`sign_ab`] evaluates [`SpendPolicy`] against the encrypted window
+//! counter **before** either slot is unlocked (S28 / S29k).
+//!
 //! External signer kinds exist on [`SignerKind`] so the trait is complete;
 //! `ExternalSigner` itself lives in `trinity-transport` (WP-50+).
 
@@ -12,15 +15,23 @@
 #![deny(missing_docs)]
 #![deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)]
 
+mod clock;
+mod core_state;
 mod error;
 mod kind;
+mod limits;
 mod local;
 mod sign;
+mod window;
 
+pub use clock::{BlockHeightSource, FakeBlockHeightSource, FakeClock, MonotonicClock};
+pub use core_state::CoreStateError;
 pub use error::SignError;
 pub use kind::SignerKind;
+pub use limits::{allowance, set_spend_policy, Ratio, SpendPolicy};
 pub use local::LocalSigner;
 pub use sign::sign_ab;
+pub use window::{SpendApproval, SpendSession, WindowCounter};
 
 use bitcoin::psbt::Psbt;
 use trinity_types::Fingerprint;
@@ -45,5 +56,7 @@ pub trait Signer: Send + Sync {
 mod tests_d7_d8;
 #[cfg(test)]
 mod tests_wp33;
+#[cfg(test)]
+mod tests_wp34;
 #[cfg(test)]
 mod zeroize_proof;

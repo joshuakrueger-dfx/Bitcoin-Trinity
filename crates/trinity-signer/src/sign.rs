@@ -16,6 +16,7 @@ use trinity_types::Fingerprint;
 use trinity_verify::{parse, VerifyPolicy};
 
 use crate::error::SignError;
+use crate::window::SpendSession;
 use crate::Signer;
 
 /// Verify, then sign with key A. Crate-internal (Spec §1.3 / §3.3).
@@ -55,6 +56,8 @@ pub(crate) fn sign_b<S: Signer>(
 
 /// Crate-visible A-then-B composition. FFI export of this function is WP-40.
 ///
+/// Evaluates [`crate::SpendPolicy`] **before** either signer is called, so
+/// a rejected spend never reaches `unwrap_kek` on A or B (S28, S29k).
 /// Captures the unsigned txid **before** `sign_a` so the S10 check in
 /// [`sign_b`] is meaningful.
 pub fn sign_ab<A: Signer, B: Signer>(
@@ -63,10 +66,14 @@ pub fn sign_ab<A: Signer, B: Signer>(
     psbt: Psbt,
     descriptor: &str,
     policy: &VerifyPolicy,
+    spend: &mut SpendSession<'_>,
 ) -> Result<Psbt, SignError> {
+    let approval = spend.authorize(&psbt, descriptor, policy)?;
     let unsigned_txid = psbt.unsigned_tx.compute_txid();
     let after_a = sign_a(signer_a, psbt, descriptor, policy)?;
-    sign_b(signer_b, after_a, unsigned_txid, descriptor, policy)
+    let signed = sign_b(signer_b, after_a, unsigned_txid, descriptor, policy)?;
+    spend.commit(approval);
+    Ok(signed)
 }
 
 /// A's fingerprint is the first key expression (descriptor order A, B, C).

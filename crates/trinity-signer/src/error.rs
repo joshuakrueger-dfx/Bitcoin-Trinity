@@ -1,8 +1,8 @@
-//! Fail-closed signing errors — Spec §3.3 / §3.4.
+//! Fail-closed signing errors — Spec §3.3 / §3.4 / §3.6.
 //!
-//! Only variants this WP can actually produce. `PassphraseRequired` and
-//! `SpendLimitExceeded` belong to WP-34 / WP-35 and are not defined here.
-//! No string payload — a caller that wants a message maps a closed reason.
+//! `PassphraseRequired` belongs to WP-35 (passphrase verification) and is
+//! not defined here. No string payload — a caller that wants a message
+//! maps a closed reason.
 
 use thiserror::Error;
 use trinity_keystore::{BlobError, PlatformError};
@@ -107,6 +107,25 @@ pub enum SignError {
     /// PSBT has no inputs.
     #[error("PSBT has no inputs")]
     EmptyPsbt,
+
+    /// Spend is above the remaining window allowance, or this is the first
+    /// signature after install (Spec §3.6.3 / §3.6.5). Checked before any
+    /// `unwrap_kek` (S28, S29k). `PassphraseRequired` is WP-35.
+    #[error("spend exceeds the window allowance")]
+    SpendLimitExceeded,
+
+    /// `SpendPolicy` setter rejected `floor > cap` (S29f). Not reshaped.
+    #[error("spend-policy floor is above cap")]
+    FloorAboveCap,
+
+    /// `SpendPolicy` setter rejected a value that is not settable
+    /// (`passphrase_on_first_use = false`, or a zero-denominator ratio).
+    #[error("spend policy is not valid")]
+    InvalidSpendPolicy,
+
+    /// Encrypted core-state blob failed structural or AEAD checks.
+    #[error("encrypted core-state blob rejected")]
+    CoreState(#[from] crate::core_state::CoreStateError),
 }
 
 #[cfg(test)]
@@ -136,6 +155,10 @@ mod tests {
             SignError::PubkeyMismatch { input_index: 1 },
             SignError::Sighash { input_index: 1 },
             SignError::EmptyPsbt,
+            SignError::SpendLimitExceeded,
+            SignError::FloorAboveCap,
+            SignError::InvalidSpendPolicy,
+            SignError::CoreState(crate::core_state::CoreStateError::Aead),
         ];
         for e in cases {
             assert!(!e.to_string().is_empty(), "{e:?}");
@@ -155,6 +178,11 @@ mod tests {
         assert!(matches!(
             b,
             SignError::Blob(trinity_keystore::BlobError::Truncated)
+        ));
+        let c: SignError = crate::core_state::CoreStateError::BadMagic.into();
+        assert!(matches!(
+            c,
+            SignError::CoreState(crate::core_state::CoreStateError::BadMagic)
         ));
     }
 
