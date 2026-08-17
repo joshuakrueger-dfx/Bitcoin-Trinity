@@ -1,0 +1,20 @@
+# Mutations in test modules say nothing about production code: a mutated
+# test that stays green only shows that no second test checks that test.
+# cargo-mutants treats `#[cfg(test)]` as a test module but not
+# `#[cfg(all(test, feature = "..."))]`, so files named `tests_*.rs`
+# would otherwise be mutated. Production files are not excluded.
+exclude_globs = ["**/tests_*.rs"]
+
+# Semantically equivalent mutants (TESTING.md §3.3). cargo-mutants matches
+# `exclude_re` against the full mutant name from `--list`.
+exclude_re = [
+    # decode_plaintext: bei genau 18 Restbytes geht das Original weiter und fällt
+    # danach (`ni == 0` oder `need >= 36`); der Mutant bricht sofort ab. Beides
+    # `CoreStateError::Plaintext`. Ohne andere Fehlercodes nicht unterscheidbar.
+    "core_state\\.rs:264:\\d+: replace > with >= in decode_plaintext",
+    # step_elapsed: bei gleicher Mono-Zeit ist der Schritt 0, der Untrusted-Pfad
+    # ebenfalls 0. Kombinierer und Wall-Veto liefern in beiden Fällen `Duration::ZERO`.
+    "window\\.rs:306:\\d+: replace < with <= in step_elapsed",
+    # Ratio::of: bei `n == u64::MAX` sind Cast und Clamp dasselbe.
+    "limits\\.rs:50:\\d+: replace > with >= in Ratio::of",
+]

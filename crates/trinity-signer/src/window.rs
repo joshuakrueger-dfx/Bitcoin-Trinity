@@ -587,11 +587,14 @@ mod tests {
     #[test]
     fn seal_open_roundtrip() {
         let mut c = empty_counter();
+        assert!(!c.passphrase_used_since_install());
         c.set_passphrase_used_since_install(true);
         let blob = c.seal().unwrap();
         let opened = WindowCounter::open(kek(), &blob).unwrap();
         assert!(opened.passphrase_used_since_install());
         assert_eq!(opened.booked_sat(), 0);
+        c.set_passphrase_used_since_install(false);
+        assert!(!c.passphrase_used_since_install());
     }
 
     #[test]
@@ -704,6 +707,44 @@ mod tests {
         blocks.set(Some(11)); // +600 s
         c.advance(&clock, &blocks, None);
         assert_eq!(c.window_elapsed(), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn boot_id_change_without_mono_reset_is_untrusted() {
+        // FakeClock::reboot also rewinds time, so same_boot's (Some, Some)
+        // arm and the fallback (`now >= prev`) agree after a reboot. A
+        // new boot whose monotonic reading is still forward is the case
+        // that only the equality arm rejects.
+        struct FlipBoot {
+            now: std::sync::atomic::AtomicU64,
+            boot: std::sync::atomic::AtomicU64,
+        }
+        impl MonotonicClock for FlipBoot {
+            fn now(&self) -> Duration {
+                Duration::from_nanos(self.now.load(std::sync::atomic::Ordering::SeqCst))
+            }
+            fn boot_id(&self) -> Option<u64> {
+                Some(self.boot.load(std::sync::atomic::Ordering::SeqCst))
+            }
+        }
+        let clock = FlipBoot {
+            now: std::sync::atomic::AtomicU64::new(0),
+            boot: std::sync::atomic::AtomicU64::new(1),
+        };
+        let blocks = FakeBlockHeightSource::new(None);
+        let mut c = empty_counter();
+        c.advance(&clock, &blocks, None);
+        clock
+            .now
+            .store(5_000_000_000, std::sync::atomic::Ordering::SeqCst);
+        c.advance(&clock, &blocks, None);
+        assert_eq!(c.window_elapsed(), Duration::from_secs(5));
+        clock
+            .now
+            .store(10_000_000_000, std::sync::atomic::Ordering::SeqCst);
+        clock.boot.store(2, std::sync::atomic::Ordering::SeqCst);
+        c.advance(&clock, &blocks, None);
+        assert_eq!(c.window_elapsed(), Duration::from_secs(5));
     }
 
     #[test]
@@ -1011,6 +1052,25 @@ mod tests {
         };
         let psbt = Psbt::from_unsigned_tx(tx).unwrap();
         assert_eq!(input_set(&psbt).unwrap_err(), SignError::TooManyInputs);
+        let inputs = (0..MAX_INPUTS)
+            .map(|i| TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_byte_array([i as u8; 32]),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            })
+            .collect();
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: inputs,
+            output: vec![],
+        };
+        let psbt = Psbt::from_unsigned_tx(tx).unwrap();
+        assert_eq!(input_set(&psbt).unwrap().len(), MAX_INPUTS);
     }
 
     #[test]
@@ -1089,6 +1149,30 @@ mod tests {
         blocks.set(Some(106));
         c.advance(&clock, &blocks, Some(1));
         assert_eq!(c.window_elapsed(), Duration::ZERO);
+    }
+
+    #[test]
+    fn wall_delta_equal_to_mono_is_not_a_jump() {
+        let mut c = empty_counter();
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        let wall0 = 1_000_000_000u64;
+        c.advance(&clock, &blocks, Some(wall0));
+        clock.advance(Duration::from_secs(10));
+        c.advance(&clock, &blocks, Some(wall0 + 10_000_000_000));
+        assert_eq!(c.window_elapsed(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn unchanged_wall_does_not_veto_mono() {
+        let mut c = empty_counter();
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        let wall = 10_000_000_000u64;
+        c.advance(&clock, &blocks, Some(wall));
+        clock.advance(Duration::from_secs(10));
+        c.advance(&clock, &blocks, Some(wall));
+        assert_eq!(c.window_elapsed(), Duration::from_secs(10));
     }
 
     #[test]

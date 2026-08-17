@@ -358,4 +358,19 @@ mod tests {
         assert_eq!(SpendPolicy::default(), SpendPolicy::standard());
         assert_eq!(SpendPolicy::standard().window, Duration::from_secs(86_400));
     }
+
+    #[test]
+    fn off_matches_spec() {
+        assert_eq!(SpendPolicy::off().window, Duration::from_secs(86_400));
+        assert_eq!(
+            set_spend_policy(SpendPolicy::off()).unwrap(),
+            SpendPolicy {
+                window_fraction: None,
+                window_floor_sat: None,
+                window_cap_sat: None,
+                window: Duration::from_secs(86_400),
+                passphrase_on_first_use: true,
+            }
+        );
+    }
 }
