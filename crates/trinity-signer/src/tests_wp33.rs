@@ -24,7 +24,11 @@ use trinity_verify::{
 
 use crate::sign::preflight_inputs;
 use crate::sign::{check_key_a_signatures, sign_a, sign_b};
-use crate::{sign_ab, LocalSigner, SignError, Signer, SignerKind};
+use crate::{
+    sign_ab, FakeBlockHeightSource, FakeClock, LocalSigner, SignError, Signer, SignerKind,
+    SpendPolicy, SpendSession, WindowCounter,
+};
+use trinity_types::Balance;
 
 const KEK_A: [u8; 32] = [0x11; 32];
 const KEK_B: [u8; 32] = [0x22; 32];
@@ -114,17 +118,17 @@ fn with_checksum(script: &str) -> String {
 // Fixture
 // ---------------------------------------------------------------------------
 
-struct KeyMat {
-    entropy: Vec<u8>,
-    fp: Fingerprint,
-    xpub: String,
+pub(crate) struct KeyMat {
+    pub(crate) entropy: Vec<u8>,
+    pub(crate) fp: Fingerprint,
+    pub(crate) xpub: String,
 }
 
-struct WalletFixture {
-    a: KeyMat,
-    b: KeyMat,
-    receive: String,
-    change: String,
+pub(crate) struct WalletFixture {
+    pub(crate) a: KeyMat,
+    pub(crate) b: KeyMat,
+    pub(crate) receive: String,
+    pub(crate) change: String,
 }
 
 fn key_mat(entropy: &[u8]) -> KeyMat {
@@ -168,7 +172,7 @@ fn wallet_from_entropies(ea: &[u8], eb: &[u8], ec: &[u8]) -> WalletFixture {
     }
 }
 
-fn default_wallet() -> WalletFixture {
+pub(crate) fn default_wallet() -> WalletFixture {
     wallet_from_entropies(&ENTROPY_A, &ENTROPY_B, &ENTROPY_C)
 }
 
@@ -194,7 +198,7 @@ fn signer_for(
     .unwrap()
 }
 
-fn bip32_derivation_for(
+pub(crate) fn bip32_derivation_for(
     descriptor: &ParsedDescriptor,
     index: u32,
 ) -> BTreeMap<SecpPublicKey, KeySource> {
@@ -214,19 +218,19 @@ fn bip32_derivation_for(
     map
 }
 
-fn outpoint(n: u8) -> OutPoint {
+pub(crate) fn outpoint(n: u8) -> OutPoint {
     OutPoint {
         txid: Txid::from_byte_array([n; 32]),
         vout: 0,
     }
 }
 
-struct BuiltPsbt {
-    psbt: Psbt,
-    policy: VerifyPolicy,
+pub(crate) struct BuiltPsbt {
+    pub(crate) psbt: Psbt,
+    pub(crate) policy: VerifyPolicy,
 }
 
-fn build_psbt(
+pub(crate) fn build_psbt(
     wallet: &WalletFixture,
     input_index: u32,
     change_index: u32,
@@ -289,7 +293,7 @@ fn build_psbt(
     BuiltPsbt { psbt, policy }
 }
 
-fn pair_signers(
+pub(crate) fn pair_signers(
     wallet: &WalletFixture,
 ) -> (
     LocalSigner,
@@ -340,7 +344,33 @@ fn sign_a_then_sign_b_produces_two_partial_sigs() {
     );
 
     let again = build_psbt(&wallet, 0, 0, 5, 100_000, 40_000, 1_000);
-    let via_ab = sign_ab(&a, &b, again.psbt, &wallet.receive, &again.policy).unwrap();
+    let mut counter = WindowCounter::new(SecretBytes::from_slice(&[0x7Au8; 32])).unwrap();
+    counter.set_passphrase_used_since_install(true);
+    let clock = FakeClock::new();
+    let blocks = FakeBlockHeightSource::new(Some(100));
+    let policy = SpendPolicy::off();
+    let mut spend = SpendSession {
+        policy: &policy,
+        counter: &mut counter,
+        clock: &clock,
+        blocks: &blocks,
+        balance: Balance {
+            confirmed_sats: 100_000,
+            trusted_pending_sats: 0,
+            untrusted_pending_sats: 0,
+            immature_sats: 0,
+        },
+        wall_unix_ns: None,
+    };
+    let via_ab = sign_ab(
+        &a,
+        &b,
+        again.psbt,
+        &wallet.receive,
+        &again.policy,
+        &mut spend,
+    )
+    .unwrap();
     assert_eq!(via_ab.inputs[0].partial_sigs.len(), 2);
 }
 

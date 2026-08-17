@@ -1,8 +1,8 @@
-//! Fail-closed signing errors — Spec §3.3 / §3.4.
+//! Fail-closed signing errors — Spec §3.3 / §3.4 / §3.6.
 //!
-//! Only variants this WP can actually produce. `PassphraseRequired` and
-//! `SpendLimitExceeded` belong to WP-34 / WP-35 and are not defined here.
-//! No string payload — a caller that wants a message maps a closed reason.
+//! `PassphraseRequired` belongs to WP-35 (passphrase verification) and is
+//! not defined here. No string payload — a caller that wants a message
+//! maps a closed reason.
 
 use thiserror::Error;
 use trinity_keystore::{BlobError, PlatformError};
@@ -107,6 +107,42 @@ pub enum SignError {
     /// PSBT has no inputs.
     #[error("PSBT has no inputs")]
     EmptyPsbt,
+
+    /// PSBT has more inputs than the local resource bound.
+    #[error("PSBT has too many inputs")]
+    TooManyInputs,
+
+    /// Input sum overflowed or is smaller than the output sum.
+    #[error("PSBT input and output amounts are unbalanced")]
+    UnbalancedPsbt,
+
+    /// Spend is above the remaining window allowance, or this is the first
+    /// signature after install (Spec §3.6.3 / §3.6.5). Checked before any
+    /// `unwrap_kek` (S28, S29k). `PassphraseRequired` is WP-35.
+    #[error("spend exceeds the window allowance")]
+    SpendLimitExceeded,
+
+    /// The window booking table is at `MAX_BOOKINGS`. Waiting until the
+    /// window slides frees a slot; the passphrase does not.
+    #[error("window booking table is full; wait for the window to advance")]
+    WindowLedgerFull,
+
+    /// `SpendPolicy` setter rejected `floor > cap` (S29f). Not reshaped.
+    #[error("spend-policy floor is above cap")]
+    FloorAboveCap,
+
+    /// Share or window length is outside Spec §3.6.5 (1 %–100 %, 1 h–7 d).
+    #[error("spend-policy share or window is out of range")]
+    PolicyOutOfRange,
+
+    /// `SpendPolicy` setter rejected a value that is not settable
+    /// (`passphrase_on_first_use = false`, or a zero-denominator ratio).
+    #[error("spend policy is not valid")]
+    InvalidSpendPolicy,
+
+    /// Encrypted core-state blob failed structural or AEAD checks.
+    #[error("encrypted core-state blob rejected")]
+    CoreState(#[from] crate::core_state::CoreStateError),
 }
 
 #[cfg(test)]
@@ -136,6 +172,14 @@ mod tests {
             SignError::PubkeyMismatch { input_index: 1 },
             SignError::Sighash { input_index: 1 },
             SignError::EmptyPsbt,
+            SignError::TooManyInputs,
+            SignError::UnbalancedPsbt,
+            SignError::SpendLimitExceeded,
+            SignError::WindowLedgerFull,
+            SignError::FloorAboveCap,
+            SignError::PolicyOutOfRange,
+            SignError::InvalidSpendPolicy,
+            SignError::CoreState(crate::core_state::CoreStateError::Aead),
         ];
         for e in cases {
             assert!(!e.to_string().is_empty(), "{e:?}");
@@ -155,6 +199,11 @@ mod tests {
         assert!(matches!(
             b,
             SignError::Blob(trinity_keystore::BlobError::Truncated)
+        ));
+        let c: SignError = crate::core_state::CoreStateError::BadMagic.into();
+        assert!(matches!(
+            c,
+            SignError::CoreState(crate::core_state::CoreStateError::BadMagic)
         ));
     }
 

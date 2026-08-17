@@ -23,12 +23,13 @@
 
 use zeroize::ZeroizeOnDrop;
 
-use crate::LocalSigner;
+use crate::{LocalSigner, WindowCounter};
 
 const fn assert_zeroize_on_drop<T: ZeroizeOnDrop>() {}
 
 #[test]
 fn secret_types_impl_zeroize_on_drop() {
     assert_zeroize_on_drop::<LocalSigner>();
+    assert_zeroize_on_drop::<WindowCounter>();
     assert_zeroize_on_drop::<trinity_types::SecretBytes>();
 }
