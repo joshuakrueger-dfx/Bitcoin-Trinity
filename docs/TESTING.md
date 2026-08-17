@@ -144,8 +144,9 @@ remains enforceable; the branch threshold is fail-closed on "data missing".
 
 **Rule: no surviving mutant.** If one survives, a check is missing — the mutant is
 not exempted; the test is extended. Exceptions are only allowed for mutants
-that produce semantically equivalent code, and need an entry in
-`mutants-exclusions.toml` **with justification**.
+that produce semantically equivalent code, and need an `exclude_re` entry in
+`.cargo/mutants.toml` **with justification** — that is cargo-mutants' own
+configuration, the file the tool actually reads.
 
 ### 3.4 Exceptions file
 

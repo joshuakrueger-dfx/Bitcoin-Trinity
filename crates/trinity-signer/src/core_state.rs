@@ -409,6 +409,22 @@ mod tests {
         encrypt_with_nonce(&KEK, NONCE, &sample_state()).unwrap()
     }
 
+    fn n_bookings(n: usize) -> CoreState {
+        let mut s = CoreState::empty();
+        s.initialized = true;
+        s.bookings = (0..n)
+            .map(|i| BookedSpend {
+                inputs: vec![OutPoint {
+                    txid: Txid::from_byte_array([(i % 256) as u8; 32]),
+                    vout: i as u32,
+                }],
+                amount_sat: 1,
+                elapsed_at_ns: 0,
+            })
+            .collect();
+        s
+    }
+
     #[test]
     fn layout_and_roundtrip() {
         let blob = sample_blob();
@@ -426,6 +442,11 @@ mod tests {
         let a = encrypt(&KEK, &s).unwrap();
         let b = encrypt(&KEK, &s).unwrap();
         assert_ne!(&a[NONCE_OFFSET..HEADER_LEN], &b[NONCE_OFFSET..HEADER_LEN]);
+        // Exclude the Poly1305 tag: a stubbed nonce-from-header still
+        // produces distinct tags (the header is AAD) but the same keystream.
+        let ct_a = &a[HEADER_LEN..a.len() - TAG_LEN];
+        let ct_b = &b[HEADER_LEN..b.len() - TAG_LEN];
+        assert_ne!(ct_a, ct_b);
         assert_eq!(decrypt(&KEK, &a).unwrap(), s);
         assert_eq!(decrypt(&KEK, &b).unwrap(), s);
     }
@@ -455,6 +476,11 @@ mod tests {
             decrypt(&KEK, &[0u8; HEADER_LEN + TAG_LEN - 1]).unwrap_err(),
             CoreStateError::Truncated
         );
+        // Exact header+tag is long enough to parse; zeros fail magic, not length.
+        assert_eq!(
+            decrypt(&KEK, &[0u8; HEADER_LEN + TAG_LEN]).unwrap_err(),
+            CoreStateError::BadMagic
+        );
         let mut blob = sample_blob();
         blob[0] = b'X';
         assert_eq!(decrypt(&KEK, &blob).unwrap_err(), CoreStateError::BadMagic);
@@ -482,6 +508,9 @@ mod tests {
         let mut ct = blob.clone();
         ct[HEADER_LEN] ^= 1;
         assert_eq!(decrypt(&KEK, &ct).unwrap_err(), CoreStateError::Aead);
+        let mut nonce = blob.clone();
+        nonce[NONCE_OFFSET] ^= 1;
+        assert_eq!(decrypt(&KEK, &nonce).unwrap_err(), CoreStateError::Aead);
         let mut tag = blob;
         let last = tag.len() - 1;
         tag[last] ^= 1;
@@ -520,11 +549,19 @@ mod tests {
             encrypt_with_nonce(&KEK, NONCE, &s).unwrap_err(),
             CoreStateError::Plaintext
         );
-        // Too many inputs on one booking (the other arm of the ||).
+        // Exactly MAX_INPUTS is accepted; one more is not (the other arm of the ||).
+        s.bookings[0].inputs = (0..MAX_INPUTS)
+            .map(|i| OutPoint {
+                txid: Txid::from_byte_array([i as u8; 32]),
+                vout: i as u32,
+            })
+            .collect();
+        let blob = encrypt_with_nonce(&KEK, NONCE, &s).unwrap();
+        assert_eq!(decrypt(&KEK, &blob).unwrap(), s);
         s.bookings[0].inputs = (0..=MAX_INPUTS)
             .map(|i| OutPoint {
                 txid: Txid::from_byte_array([i as u8; 32]),
-                vout: 0,
+                vout: i as u32,
             })
             .collect();
         assert_eq!(
@@ -535,20 +572,12 @@ mod tests {
 
     #[test]
     fn too_many_bookings_rejected() {
-        let mut s = CoreState::empty();
-        s.initialized = true;
-        s.bookings = (0..MAX_BOOKINGS + 1)
-            .map(|i| BookedSpend {
-                inputs: vec![OutPoint {
-                    txid: Txid::from_byte_array([i as u8; 32]),
-                    vout: 0,
-                }],
-                amount_sat: 1,
-                elapsed_at_ns: 0,
-            })
-            .collect();
+        let s = n_bookings(MAX_BOOKINGS);
+        let blob = encrypt_with_nonce(&KEK, NONCE, &s).unwrap();
+        assert_eq!(decrypt(&KEK, &blob).unwrap(), s);
+        let over = n_bookings(MAX_BOOKINGS + 1);
         assert_eq!(
-            encrypt_with_nonce(&KEK, NONCE, &s).unwrap_err(),
+            encrypt_with_nonce(&KEK, NONCE, &over).unwrap_err(),
             CoreStateError::Plaintext
         );
     }
@@ -560,6 +589,11 @@ mod tests {
         raw[46..48].copy_from_slice(&(MAX_BOOKINGS as u16 + 1).to_le_bytes());
         let blob = seal(&KEK, &header, &raw).unwrap();
         assert_eq!(decrypt(&KEK, &blob).unwrap_err(), CoreStateError::Plaintext);
+        // n == MAX_BOOKINGS with well-formed rows is accepted (catches > → >= / ==).
+        let s = n_bookings(MAX_BOOKINGS);
+        let raw = encode_plaintext(&s).unwrap();
+        let blob = seal(&KEK, &header, &raw).unwrap();
+        assert_eq!(decrypt(&KEK, &blob).unwrap(), s);
     }
 
     #[test]

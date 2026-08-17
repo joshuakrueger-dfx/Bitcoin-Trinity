@@ -492,5 +492,16 @@ mod helper_tests {
             preflight_inputs(&psbt, fp).unwrap_err(),
             SignError::MissingDerivation { input_index: 0 }
         );
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        let pk = SecpPublicKey::from_secret_key(&secp, &sk);
+        psbt.inputs[0].bip32_derivation.insert(
+            pk,
+            (
+                bitcoin::bip32::Fingerprint::from(fp.to_bytes()),
+                bitcoin::bip32::DerivationPath::default(),
+            ),
+        );
+        preflight_inputs(&psbt, fp).unwrap();
     }
 }
