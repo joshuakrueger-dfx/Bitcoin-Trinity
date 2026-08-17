@@ -302,6 +302,7 @@ dependencies = [
  "bitcoin-io 0.1.101",
  "bitcoin-units",
  "bitcoin_hashes 0.14.101",
+ "bitcoinconsensus",
  "hex-conservative 0.2.2",
  "hex_lit",
  "secp256k1",
@@ -423,6 +424,15 @@ checksum = "5304e53726dbe5f93141535e102ed97b5bf4714fbecefdda8f9fb98d7fdaff0e"
 dependencies = [
  "bitcoin-consensus-encoding 1.1.0",
  "bitcoin-internals 0.6.0",
+]
+
+[[package]]
+name = "bitcoinconsensus"
+version = "0.105.0+25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f260ac8fb2c621329013fc0ed371c940fcc512552dcbcb9095ed0179098c9e18"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -1718,6 +1728,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "bitcoin",
+ "bitcoinconsensus",
  "chacha20poly1305",
  "getrandom 0.4.3",
  "proptest",
