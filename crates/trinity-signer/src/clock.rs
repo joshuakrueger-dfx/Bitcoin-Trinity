@@ -61,11 +61,15 @@ impl FakeClock {
     }
 
     /// Advance by `delta` (saturating).
+    ///
+    /// Clamps the addend so `fetch_add` cannot wrap, then applies it
+    /// atomically. `fetch_update` is deprecated on nightly; `try_update`
+    /// is not on stable 1.94.1.
     pub fn advance(&self, delta: Duration) {
         let extra = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
         let now = self.now_ns.load(Ordering::SeqCst);
-        self.now_ns
-            .store(now.saturating_add(extra), Ordering::SeqCst);
+        let addend = extra.min(u64::MAX - now);
+        self.now_ns.fetch_add(addend, Ordering::SeqCst);
     }
 
     /// New boot session: time restarts at zero, boot id increments.

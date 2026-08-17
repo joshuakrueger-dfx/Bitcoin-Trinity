@@ -893,7 +893,7 @@ depends on `trinity-entropy`; master derivation is `Xpriv::new_master`
 `Blob`, `Entropy`, `Bip32`, `InvalidKekLength`, `InvalidSlot`,
 `FingerprintMismatch`, `MissingWitnessUtxo`, `MissingWitnessScript`,
 `MissingDerivation`, `PubkeyMismatch`, `Sighash`, `EmptyPsbt`. No
-`PassphraseRequired` / `SpendLimitExceeded` (WP-34/35). No string payload.
+`PassphraseRequired` / `SpendLimitExceeded` / `WindowLedgerFull` (WP-34/35). No string payload.
 
 **S9 / S10:** crate-local `#[test]`s (`s9_manipulated_change_output_blocks_before_key_access`,
 `s10_manipulation_between_a_and_b_is_detected`) with `FakePlatformKeyStore`.
@@ -978,7 +978,7 @@ Core-state blob is a standalone XChaCha20-Poly1305 AEAD (`TRCS` / v1) with a
 dedicated 32-byte KEK — not `trinity-keystore::{encrypt,decrypt}` (those are
 slot-specific) and not `unwrap_kek(A|B)` (S28). `Ratio` is a two-integer
 fraction in `trinity-signer` (none in `trinity-types`). `cargo test --workspace
---locked` **43 suites / 565 passed** (5 ignored). `cargo build` / `clippy -D
+--locked` **43 suites / 567 passed** (5 ignored). `cargo build` / `clippy -D
 warnings` green. `cargo +nightly llvm-cov -p trinity-signer --branch --locked
 --summary-only`: **100 % lines / 100 % branches** (regions 99.32 %).
 `python3 scripts/check_plan.py` 703 checks, no findings; S28/S29/S29b/S29f/

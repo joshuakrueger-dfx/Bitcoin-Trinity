@@ -122,6 +122,11 @@ pub enum SignError {
     #[error("spend exceeds the window allowance")]
     SpendLimitExceeded,
 
+    /// The window booking table is at `MAX_BOOKINGS`. Waiting until the
+    /// window slides frees a slot; the passphrase does not.
+    #[error("window booking table is full; wait for the window to advance")]
+    WindowLedgerFull,
+
     /// `SpendPolicy` setter rejected `floor > cap` (S29f). Not reshaped.
     #[error("spend-policy floor is above cap")]
     FloorAboveCap,
@@ -170,6 +175,7 @@ mod tests {
             SignError::TooManyInputs,
             SignError::UnbalancedPsbt,
             SignError::SpendLimitExceeded,
+            SignError::WindowLedgerFull,
             SignError::FloorAboveCap,
             SignError::PolicyOutOfRange,
             SignError::InvalidSpendPolicy,

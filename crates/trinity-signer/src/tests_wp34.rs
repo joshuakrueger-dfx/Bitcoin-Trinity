@@ -231,7 +231,7 @@ fn s29_full_booking_table_rejects_without_unwrap() {
         &mut spend,
     )
     .unwrap_err();
-    assert_eq!(err, SignError::SpendLimitExceeded);
+    assert_eq!(err, SignError::WindowLedgerFull);
     assert_eq!(fake_a.unwrap_kek_calls(), 0);
     assert_eq!(fake_b.unwrap_kek_calls(), 0);
 }
@@ -345,18 +345,26 @@ fn s29h_accounting_change_fee_self_rbf_dropped() {
     }
     assert_eq!(counter.booked_sat(), 60);
 
-    // Never confirmed: still booked after an hour inside the 24 h window.
+    // Never confirmed: counts until the window ends, then expires.
     clock.advance(Duration::from_secs(3_600));
     blocks.set(Some(16));
     {
         let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, None);
         let probe = build_foreign_send(&wallet, outpoint(32), 0, 0, 10_000, 1, 1);
-        // Probe is tiny; authorize prunes then accepts. The dropped first
-        // spend must still occupy 60 sat.
         spend
             .authorize(&probe.psbt, &wallet.receive, &probe.policy)
             .unwrap();
         assert_eq!(counter.booked_sat(), 60);
+    }
+    clock.advance(Duration::from_secs(86_400));
+    blocks.set(Some(16 + 144));
+    {
+        let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, None);
+        let probe = build_foreign_send(&wallet, outpoint(33), 0, 0, 10_000, 1, 1);
+        spend
+            .authorize(&probe.psbt, &wallet.receive, &probe.policy)
+            .unwrap();
+        assert_eq!(counter.booked_sat(), 0);
     }
 }
 
@@ -383,6 +391,46 @@ fn s29i_unconfirmed_foreign_payment_does_not_raise_reference() {
         allowance(&p, honest.spend_policy_reference_sats()),
         allowance(&p, manipulated.spend_policy_reference_sats())
     );
+}
+
+#[test]
+fn s29i_authorize_rejects_when_only_untrusted_pending_would_allow() {
+    let wallet = default_wallet();
+    let (a, fake_a, b, fake_b) = pair_signers(&wallet);
+    let policy = SpendPolicy::standard();
+    let mut counter = ready_counter();
+    let clock = FakeClock::new();
+    let blocks = FakeBlockHeightSource::new(Some(50));
+    // charge = 240 + 10 = 250. Reference 200 → allowance 200 → reject.
+    // total_sats 50_200 → allowance 500 → would accept.
+    let built = build_foreign_send(&wallet, outpoint(42), 0, 0, 10_000, 240, 10);
+    fake_a.reset_calls();
+    fake_b.reset_calls();
+    let mut spend = SpendSession {
+        policy: &policy,
+        counter: &mut counter,
+        clock: &clock,
+        blocks: &blocks,
+        balance: Balance {
+            confirmed_sats: 200,
+            trusted_pending_sats: 0,
+            untrusted_pending_sats: 50_000,
+            immature_sats: 0,
+        },
+        wall_unix_ns: None,
+    };
+    let err = sign_ab(
+        &a,
+        &b,
+        built.psbt,
+        &wallet.receive,
+        &built.policy,
+        &mut spend,
+    )
+    .unwrap_err();
+    assert_eq!(err, SignError::SpendLimitExceeded);
+    assert_eq!(fake_a.unwrap_kek_calls(), 0);
+    assert_eq!(fake_b.unwrap_kek_calls(), 0);
 }
 
 #[test]
@@ -493,18 +541,31 @@ fn s29k_device_clock_jump_never_resets_window() {
     assert_eq!(fake_a.unwrap_kek_calls(), 0);
     assert_eq!(fake_b.unwrap_kek_calls(), 0);
 
-    // Automatic time sync off: no wall reading is supplied. Mono and tip
-    // stay put — we never invent progress from a missing network clock.
+    // "Automatic time sync off" is not a separate code path: it is what lets
+    // the holder set the wall clock at all, and both settings above are that
+    // clock moved forward and backward.
+    // Wall overshoots mono and blocks: the veto zeroes the step, so the
+    // 200-sat booking stays. Without the veto, 25 h of source progress
+    // would slide the window and the probe would pass.
     fake_a.reset_calls();
     fake_b.reset_calls();
-    let nosync = build_foreign_send(&wallet, outpoint(41), 0, 0, 10_000, 45, 5);
-    let mut spend = session(&policy, &mut counter, &clock, &blocks, 1_000, None);
+    clock.advance(Duration::from_secs(25 * 3_600));
+    blocks.set(Some(50 + 150));
+    let overshoot = build_foreign_send(&wallet, outpoint(41), 0, 0, 10_000, 45, 5);
+    let mut spend = session(
+        &policy,
+        &mut counter,
+        &clock,
+        &blocks,
+        1_000,
+        Some(WALL0 + 2 * 86_400 * 1_000_000_000),
+    );
     let err = sign_ab(
         &a,
         &b,
-        nosync.psbt,
+        overshoot.psbt,
         &wallet.receive,
-        &nosync.policy,
+        &overshoot.policy,
         &mut spend,
     )
     .unwrap_err();

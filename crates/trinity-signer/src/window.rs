@@ -173,8 +173,9 @@ impl WindowCounter {
         Duration::from_nanos(self.state.window_elapsed_ns)
     }
 
-    /// Check the PSBT against the policy. Updates the clock anchor even
-    /// when the spend is rejected (fail-closed on a time jump).
+    /// Check the PSBT against the policy. A rejected policy `validate`
+    /// returns before the clock advances; every later rejection still
+    /// updates the clock anchor (fail-closed on a time jump).
     #[allow(clippy::too_many_arguments)]
     pub fn authorize(
         &mut self,
@@ -205,7 +206,7 @@ impl WindowCounter {
             .iter()
             .any(|b| same_inputs(&b.inputs, &input_set));
         if !known && self.state.bookings.len() >= MAX_BOOKINGS {
-            return Err(SignError::SpendLimitExceeded);
+            return Err(SignError::WindowLedgerFull);
         }
         let extra = extra_against_bookings(&self.state.bookings, &input_set, charge);
         let used = self.booked_sat();
@@ -752,6 +753,25 @@ mod tests {
     }
 
     #[test]
+    fn prune_keeps_only_booking_inside_window() {
+        let mut c = empty_counter();
+        let window = Duration::from_secs(60);
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        c.advance(&clock, &blocks, None);
+        book_for_test(&mut c, 1, 5);
+        clock.advance(Duration::from_secs(1));
+        c.advance(&clock, &blocks, None);
+        book_for_test(&mut c, 2, 7);
+        clock.advance(Duration::from_secs(60));
+        c.advance(&clock, &blocks, None);
+        c.prune(window);
+        assert_eq!(c.state.bookings.len(), 1);
+        assert_eq!(c.state.bookings[0].amount_sat, 7);
+        assert_eq!(c.booked_sat(), 7);
+    }
+
+    #[test]
     fn rbf_tracks_input_set_not_txid() {
         let set: BTreeSet<OutPoint> = [OutPoint {
             txid: Txid::from_byte_array([1; 32]),
@@ -781,6 +801,9 @@ mod tests {
     #[test]
     fn commit_updates_existing_and_inserts_new() {
         let mut c = empty_counter();
+        let clock = FakeClock::new();
+        let blocks = FakeBlockHeightSource::new(None);
+        c.advance(&clock, &blocks, None);
         let set: BTreeSet<OutPoint> = [OutPoint {
             txid: Txid::from_byte_array([9; 32]),
             vout: 0,
@@ -791,16 +814,33 @@ mod tests {
             input_set: set.clone(),
             charge_sat: 10,
         });
+        clock.advance(Duration::from_secs(5));
+        c.advance(&clock, &blocks, None);
         c.commit(SpendApproval {
             input_set: set.clone(),
             charge_sat: 15,
         });
+        assert_eq!(c.state.bookings[0].elapsed_at_ns, 5_000_000_000);
+        clock.advance(Duration::from_secs(5));
+        c.advance(&clock, &blocks, None);
         c.commit(SpendApproval {
             input_set: set,
             charge_sat: 15,
         });
-        assert_eq!(c.booked_sat(), 15);
-        assert_eq!(c.state.bookings.len(), 1);
+        assert_eq!(c.state.bookings[0].amount_sat, 15);
+        assert_eq!(c.state.bookings[0].elapsed_at_ns, 5_000_000_000);
+        let other: BTreeSet<OutPoint> = [OutPoint {
+            txid: Txid::from_byte_array([8; 32]),
+            vout: 0,
+        }]
+        .into_iter()
+        .collect();
+        c.commit(SpendApproval {
+            input_set: other,
+            charge_sat: 7,
+        });
+        assert_eq!(c.booked_sat(), 22);
+        assert_eq!(c.state.bookings.len(), 2);
     }
 
     #[test]
@@ -823,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_witness_utxo_on_charge() {
+    fn spend_charge_rejects_missing_witness_utxo() {
         let tx = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -900,24 +940,12 @@ mod tests {
     }
 
     #[test]
-    fn charge_missing_utxo_with_parsed_descriptor() {
-        let tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint::null(),
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                witness: Witness::new(),
-            }],
-            output: vec![],
-        };
-        let psbt = Psbt::from_unsigned_tx(tx).unwrap();
-        let desc = wallet_desc();
-        assert_eq!(
-            spend_charge(&psbt, &desc, &charge_verify()).unwrap_err(),
-            SignError::MissingWitnessUtxo { input_index: 0 }
-        );
+    fn spend_charge_rejects_unparseable_descriptor() {
+        let psbt = bare_psbt(1, 100, 50);
+        assert!(matches!(
+            spend_charge(&psbt, "not-a-descriptor", &charge_verify()).unwrap_err(),
+            SignError::Verify(_)
+        ));
     }
 
     #[test]
@@ -992,7 +1020,7 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert_eq!(err, SignError::SpendLimitExceeded);
+        assert_eq!(err, SignError::WindowLedgerFull);
         assert_eq!(c.state.bookings.len(), MAX_BOOKINGS);
         let extra: BTreeSet<OutPoint> = [OutPoint {
             txid: Txid::from_byte_array([0xFD; 32]),
