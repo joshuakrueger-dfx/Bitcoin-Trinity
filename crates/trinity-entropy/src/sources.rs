@@ -582,6 +582,27 @@ mod tests {
             AdditionalEntropy::new().with_cards("ASAS").unwrap_err(),
             EntropyError::InvalidCard(CardError::Duplicate { card: "AS".into() })
         );
+        // AS is deck_index 0, where `1 << 0` equals `1 >> 0`. A non-zero
+        // index makes the shift direction observable.
+        assert_eq!(
+            AdditionalEntropy::new().with_cards("2H2H").unwrap_err(),
+            EntropyError::InvalidCard(CardError::Duplicate { card: "2H".into() })
+        );
+        assert_eq!(
+            AdditionalEntropy::new().with_cards("KDKD").unwrap_err(),
+            EntropyError::InvalidCard(CardError::Duplicate { card: "KD".into() })
+        );
+    }
+
+    #[test]
+    fn cards_known_sequence_roundtrip() {
+        let extra = AdditionalEntropy::new().with_cards("2HKDAS").unwrap();
+        assert_eq!(extra.cards_ascii().unwrap(), "2HKDAS");
+        assert_eq!(extra.countable().cards, 3);
+        let cards = extra.cards().unwrap();
+        assert_eq!(cards[0].encode(), "2H");
+        assert_eq!(cards[1].encode(), "KD");
+        assert_eq!(cards[2].encode(), "AS");
     }
 
     #[test]

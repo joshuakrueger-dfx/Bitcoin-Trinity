@@ -591,3 +591,79 @@ fn is_sighash_all(sht: PsbtSighashType) -> bool {
         Err(_) => false,
     }
 }
+
+#[cfg(test)]
+mod hint_tests {
+    use super::bip32_index_hint;
+    use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, KeySource};
+    use bitcoin::secp256k1::{PublicKey as SecpPublicKey, Secp256k1, SecretKey};
+    use std::collections::BTreeMap;
+
+    fn pk(seed: u8) -> SecpPublicKey {
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[seed; 32]).expect("nonzero secret");
+        SecpPublicKey::from_secret_key(&secp, &sk)
+    }
+
+    fn path_ending(last: ChildNumber) -> DerivationPath {
+        DerivationPath::from(vec![
+            ChildNumber::from_hardened_idx(48).unwrap(),
+            ChildNumber::from_hardened_idx(1).unwrap(),
+            ChildNumber::from_hardened_idx(0).unwrap(),
+            ChildNumber::from_hardened_idx(2).unwrap(),
+            ChildNumber::from_normal_idx(0).unwrap(),
+            last,
+        ])
+    }
+
+    fn map_from(lasts: &[ChildNumber]) -> BTreeMap<SecpPublicKey, KeySource> {
+        let fp = Fingerprint::from([0u8; 4]);
+        lasts
+            .iter()
+            .enumerate()
+            .map(|(i, last)| (pk((i as u8) + 1), (fp, path_ending(*last))))
+            .collect()
+    }
+
+    #[test]
+    fn agreeing_normal_indexes_yield_that_hint() {
+        let last = ChildNumber::from_normal_idx(5).unwrap();
+        assert_eq!(bip32_index_hint(&map_from(&[last, last, last])), Some(5));
+    }
+
+    #[test]
+    fn disagreeing_normal_indexes_yield_none() {
+        assert_eq!(
+            bip32_index_hint(&map_from(&[
+                ChildNumber::from_normal_idx(5).unwrap(),
+                ChildNumber::from_normal_idx(7).unwrap(),
+            ])),
+            None
+        );
+    }
+
+    #[test]
+    fn hardened_last_child_yields_none() {
+        assert_eq!(
+            bip32_index_hint(&map_from(&[ChildNumber::from_hardened_idx(0).unwrap()])),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_map_yields_none() {
+        assert_eq!(bip32_index_hint(&BTreeMap::new()), None);
+    }
+
+    #[test]
+    fn single_normal_entry_yields_its_index() {
+        assert_eq!(
+            bip32_index_hint(&map_from(&[ChildNumber::from_normal_idx(0).unwrap()])),
+            Some(0)
+        );
+        assert_eq!(
+            bip32_index_hint(&map_from(&[ChildNumber::from_normal_idx(1).unwrap()])),
+            Some(1)
+        );
+    }
+}

@@ -201,6 +201,24 @@ mod tests {
         assert_eq!(expand("0").unwrap().len(), 2); // symbol + 1 group remainder
         assert_eq!(expand("01").unwrap().len(), 3); // two symbols + combined group
         assert_eq!(expand("012").unwrap().len(), 4); // three symbols + group symbol
+
+        // Two-char remainder: groups[0] * 3 + groups[1], both groups non-zero.
+        // 'I' is charset[32] (group 1), 'i' is charset[64] (group 2).
+        assert_eq!(expand("Ii").unwrap(), [0, 0, 5]);
+    }
+
+    #[test]
+    fn known_checksums_cover_remainder_classes() {
+        // Each checksum is from Bitcoin Core `getdescriptorinfo` (regtest 30.2):
+        //   bitcoin-cli -regtest getdescriptorinfo '<payload>'
+        // → field `checksum`. Not minted by this crate's `create_checksum`.
+        // Lengths hit every expand remainder class (len mod 3).
+        assert_eq!("raw(dead)".len() % 3, 0);
+        assert_eq!("raw(deadbeef)".len() % 3, 1);
+        assert_eq!("raw(deadbe)".len() % 3, 2);
+        verify_checksum("raw(dead)#j7p6x6xf").unwrap(); // 9 ≡ 0; Core
+        verify_checksum("raw(deadbeef)#89f8spxm").unwrap(); // 13 ≡ 1; BIP-380 + Core
+        verify_checksum("raw(deadbe)#vwtc7tfv").unwrap(); // 11 ≡ 2; Core
     }
 
     #[test]
