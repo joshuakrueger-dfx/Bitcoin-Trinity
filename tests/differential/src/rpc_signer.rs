@@ -141,3 +141,75 @@ pub fn wallet_process_psbt(wallet: &Client, psbt: &Psbt) -> Psbt {
         last_err.expect("walletprocesspsbt error")
     );
 }
+
+/// `finalizepsbt` with `extract=true`. Returns the raw transaction bytes.
+pub fn finalize_psbt_extract(client: &Client, psbt: &Psbt) -> Vec<u8> {
+    use bitcoincore_rpc::json::FinalizePsbtResult;
+
+    let b64 = psbt.to_string();
+    let mut last_err = None;
+    for attempt in 1..=4 {
+        match client.finalize_psbt(&b64, Some(true)) {
+            Ok(FinalizePsbtResult {
+                hex: Some(hex),
+                complete: true,
+                ..
+            }) => return hex,
+            Ok(other) => panic!(
+                "D10: finalizepsbt did not extract a complete tx\nresult={other:?}\ninput={b64}"
+            ),
+            Err(e) => {
+                let retry = attempt < 4 && is_transport_error(&e);
+                last_err = Some(e);
+                if retry {
+                    std::thread::sleep(std::time::Duration::from_millis(200 * attempt));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    panic!(
+        "D10: finalizepsbt failed: {}\ninput={b64}",
+        last_err.expect("finalizepsbt error")
+    );
+}
+
+/// `testmempoolaccept` for one raw transaction. Panics if the node rejects
+/// the RPC itself; the caller asserts `allowed`.
+pub fn test_mempool_accept(client: &Client, tx: &bitcoin::Transaction) -> (bool, Option<String>) {
+    use bitcoincore_rpc::json::TestMempoolAcceptResult;
+
+    let mut last_err = None;
+    for attempt in 1..=4 {
+        match client.test_mempool_accept(&[tx]) {
+            Ok(results) => {
+                assert_eq!(
+                    results.len(),
+                    1,
+                    "D11: testmempoolaccept returned {}",
+                    results.len()
+                );
+                let TestMempoolAcceptResult {
+                    allowed,
+                    reject_reason,
+                    ..
+                } = results.into_iter().next().expect("one result");
+                return (allowed, reject_reason);
+            }
+            Err(e) => {
+                let retry = attempt < 4 && is_transport_error(&e);
+                last_err = Some(e);
+                if retry {
+                    std::thread::sleep(std::time::Duration::from_millis(200 * attempt));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    panic!(
+        "D11: testmempoolaccept failed: {}",
+        last_err.expect("testmempoolaccept error")
+    );
+}

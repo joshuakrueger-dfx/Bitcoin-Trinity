@@ -23,8 +23,8 @@ repository = "https://github.com/joshuakrueger-dfx/Bitcoin-Trinity"
 [workspace.dependencies]
 # --- Bitcoin core (versions from SPECIFICATION.md §0.3) ---
 bitcoin      = { version = "=0.32.11", default-features = false, features = ["std", "serde"] }
-# Optional. Version bitcoin 0.32.11 declares (`0.105.0+25.1`). Off unless a
-# crate enables its `bitcoinconsensus` feature; no production path uses it.
+# Optional. Version bitcoin 0.32.11 declares (`0.105.0+25.1`).
+# `trinity-signer` enables this by default (Spec §3.5 / O7, WP-36).
 bitcoinconsensus = { version = "=0.105.0", default-features = false }
 miniscript   = { version = "=12.3.7", default-features = false, features = ["std"] }
 bdk_wallet   = { version = "=3.1.0" }

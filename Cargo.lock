@@ -1727,6 +1727,7 @@ name = "trinity-signer"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "bdk_wallet",
  "bitcoin",
  "bitcoinconsensus",
  "chacha20poly1305",
@@ -1739,6 +1740,7 @@ dependencies = [
  "trinity-keystore",
  "trinity-types",
  "trinity-verify",
+ "trinity-watch",
  "zeroize",
 ]
 

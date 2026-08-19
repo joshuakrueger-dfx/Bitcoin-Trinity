@@ -143,6 +143,42 @@ pub enum SignError {
     /// Encrypted core-state blob failed structural or AEAD checks.
     #[error("encrypted core-state blob rejected")]
     CoreState(#[from] crate::core_state::CoreStateError),
+
+    /// Local `bitcoinconsensus` check rejected the finalized transaction
+    /// (Spec §3.5 / O7). The transaction is not returned.
+    #[error("finalized transaction failed local consensus checks")]
+    ConsensusRejected,
+
+    /// Exact feerate of the finalized transaction exceeds `max_feerate`.
+    #[error("finalized feerate {feerate_sat_vb} sat/vB exceeds max_feerate {max_sat_vb}")]
+    FinalFeerateTooHigh {
+        /// Effective feerate of the finished transaction (ceil sat/vB).
+        feerate_sat_vb: u64,
+        /// [`trinity_verify::VerifyPolicy::max_feerate`].
+        max_sat_vb: u64,
+    },
+
+    /// Fewer than two `SIGHASH_ALL` signatures in BIP-67 pubkey order.
+    #[error("input {input_index}: fewer than two signatures in BIP-67 order")]
+    IncompleteWitness {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// Independently derived witnessScript / scriptPubKey does not match
+    /// the PSBT input.
+    #[error("input {input_index}: witness script does not match BIP-67 derivation")]
+    WitnessScriptMismatch {
+        /// PSBT input index.
+        input_index: usize,
+    },
+
+    /// Input `bip32_derivation` path is not a Trinity receive/change path.
+    #[error("input {input_index}: derivation path is not a Trinity receive/change path")]
+    InvalidDerivationPath {
+        /// PSBT input index.
+        input_index: usize,
+    },
 }
 
 #[cfg(test)]
@@ -180,6 +216,14 @@ mod tests {
             SignError::PolicyOutOfRange,
             SignError::InvalidSpendPolicy,
             SignError::CoreState(crate::core_state::CoreStateError::Aead),
+            SignError::ConsensusRejected,
+            SignError::FinalFeerateTooHigh {
+                feerate_sat_vb: 10,
+                max_sat_vb: 5,
+            },
+            SignError::IncompleteWitness { input_index: 0 },
+            SignError::WitnessScriptMismatch { input_index: 0 },
+            SignError::InvalidDerivationPath { input_index: 0 },
         ];
         for e in cases {
             assert!(!e.to_string().is_empty(), "{e:?}");
@@ -217,6 +261,10 @@ mod tests {
         assert_ne!(
             SignError::NonSighashAll { input_index: 2 },
             SignError::NonSighashAll { input_index: 3 }
+        );
+        assert_ne!(
+            SignError::ConsensusRejected,
+            SignError::IncompleteWitness { input_index: 0 }
         );
     }
 }

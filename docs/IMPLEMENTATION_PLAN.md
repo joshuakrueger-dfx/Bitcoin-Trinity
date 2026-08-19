@@ -40,11 +40,11 @@ specification reference, acceptance criteria, and the tests that must pass.
 
 | WP | State | Evidence | What's missing |
 |---|---|---|---|
-| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **51 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **23** · `fmt` and `clippy -D warnings` clean | — |
+| **WP-00** | **DONE** | `cargo build --workspace --locked` **and** `--offline` green · `cargo deny check` **run and green** · Pinning verified · Signature path measured: **52 external crates** (MEASURED in `dep_budget.py`, union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`), `trinity-verify` alone **23** · `fmt` and `clippy -D warnings` clean | — |
 | WP-01 | IN PROGRESS | Workflow rewritten without job-level `hashFiles`; always-on check/test/supply-chain/coverage; FFI/differential/signet use in-job harness detection; actions pinned to full commit SHAs; `permissions.contents: read`; checkout `persist-credentials: false`; tools pinned `tool@x.y.z` with `fallback: none`. Gate tests under `scripts/tests/`. | **Never executed on a runner** (local structural tests ≠ GitHub acceptance). |
 | **WP-02** | **DONE** | Digests pinned in `docker/compose.yml`. `test-env-up` genuinely brings up Core 30.2 + electrs + CBF (same node, `-blockfilterindex=1`/`-peerblockfilters=1`), verified: 101 blocks, 50 BTC funded wallet, electrs on 127.0.0.1:60401, `getindexinfo` shows synced filter index. **Version rejection verified against a real Core 30.0 container** (not just code review) — the check genuinely fires. `test-env-down` verified to remove all containers/volumes/networks. ~15-25s warm start. macOS/colima measured; Linux path structurally identical (no host-specific paths, loopback-only ports). | Linux host not separately run; no dedicated Signet node (not an acceptance bullet). |
 | WP-03 | IN PROGRESS | `coverage_gate.py` (`--source-state` probe), `check_plan.py` (incl. fail-closed `INVENTORY_BASELINE`), `dep_budget.py` (shipped-target union) fail-closed; coverage **job** always schedules and no-ops on pure scaffolds until real source; gate tests wired into fast path. Nightly-only branch coverage enabled (WP-10 follow-up) — `trinity-types` measures 100%/100% on GitHub. | Real coverage/mutation run on the security-core crates pending until they have domain source. |
-| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 51 external crates measured (budget 55). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
+| **WP-04** | **DONE** | `vendor/` checked in (164 crate dirs, 112 MB), `.cargo/config.toml` redirects to it. Offline build verified with the exact `rust-toolchain.toml`-pinned 1.94.1 (not ambient), network killed via dead proxy. 52 external crates measured (budget 55). | Two-independent-runner bit-identical-hash proof deferred to WP-75, which depends on this. |
 | **WP-07** | **DONE** | Root cause (job-level `hashFiles` at the `if:` key, rejected by GitHub before any job scheduled) fixed by moving harness detection in-job via `$GITHUB_OUTPUT`. **Real GitHub-runner evidence obtained 2026-08-11**: run [31528761822](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31528761822) (branch, all 6 non-gated jobs `success`), run [31530227149](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530227149) (branch, post-resign re-run, all `success`), run [31530360173](https://github.com/joshuakrueger-dfx/Bitcoin-Trinity/actions/runs/31530360173) (`main` after merge, **all 8 jobs `success`** including the main-only Signet/Mutation jobs). Account-side concerns (minutes/spending limit) are moot — the runs executed. | — |
 
 **So: M0 is not fully done, but WP-00 and WP-07 are.** WP-01–03 still hang on
@@ -247,7 +247,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 - `vendor/` checked in, `.cargo/config.toml` with `replace-with = "vendored-sources"`
 - Build without network succeeds (proven in a container without network)
 - Two independent CI runners produce **bit-identical** artifact hashes
-- `scripts/dep_budget.py` runs in CI; budget limit **55**, measured **51 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
+- `scripts/dep_budget.py` runs in CI; budget limit **55**, measured **52 external crates** (`MEASURED` in `dep_budget.py`; union of shipped targets `aarch64-apple-ios` + `aarch64-linux-android`)
 
 **Tests:** —
 
@@ -1020,18 +1020,65 @@ Diceware check ≥ 6 words. Fiat→sat anchoring with plausibility filter and as
 ---
 
 #### WP-36 · Finalization and broadcast
-**Spec:** 3.5 · **Needs:** WP-33 · **State:** OPEN
+**Spec:** 3.5 · **Needs:** WP-33 · **State:** REVIEW
 
 Witness in **BIP-67 order** (not signature order — common error source),
 consensus check via `bitcoinconsensus` (O7), vsize measurement against `max_feerate`.
 
-**Files:** `crates/trinity-signer/**`, `crates/trinity-watch/**` (finalize/broadcast wiring)
+**Files:** `crates/trinity-signer/**`
 **Prohibited:** No signature order as witness order; no broadcast without consensus check.
+Broadcast wiring is **not** in this WP — it belongs in **WP-40** (`trinity-ffi`).
 
 **Acceptance**
 - **D10** (raw tx bit-identical to `finalizepsbt`), **D11** (`testmempoolaccept` allows)
 - **S11** (fee attack rejected before every key access), **S12** (RBF bump)
 - One test deliberately swaps signature order and still expects a valid witness
+
+**Met:** `finalize` builds `OP_0 <sig> <sig> <witnessScript>` from
+`DerivedOutput::sorted_pubkeys_slice` / `witness_script_2of3` (no second
+sort). Before any `witness_utxo` feeds the spent map or the fee,
+`finalize` applies V7 (`check_v7` in `trinity-verify`): missing
+`known_utxos` entry is `VerifyError::UnknownInput`, value/script
+mismatch is `VerifyError::MismatchedUtxo` — both via `SignError::Verify`.
+An empty map is UnknownInput, not a skip. Consensus is
+`Transaction::verify` (`bitcoinconsensus` **on by default**, O7); a failed
+check is `SignError::ConsensusRejected` and is not returned. Exact vsize
+feerate is checked with `>` against `VerifyPolicy::max_feerate`. `finalize` returns the transaction; it does
+not broadcast. `trinity-signer` does not depend on `trinity-chain`. The
+watch-layer `broadcast` helper and the `trinity-watch → trinity-chain`
+edge were removed: Spec §3.1 (facade calls `CH.broadcast` on a separate
+backend) and §1.6 requirement 1 put that call on the facade, not on watch.
+`cargo test --workspace --locked` **43 suites / 597 passed** (5 ignored).
+`cargo build` / `clippy -D warnings` / `cargo +nightly clippy -p trinity-signer
+--all-targets -- -D warnings` green. `cargo +nightly llvm-cov --workspace
+--locked --branch --summary-only`: **100 % lines / 100 % branches** on every
+`trinity-signer` file (regions on `error.rs` 91.11 % — `thiserror` Display).
+D10: **1 000** PSBTs bit-identical to Core `finalizepsbt` (WatchWallet
+`finish_with_aux_rand` + `PSBT_BUILD_SEED`). D11: **1 000** finalized txs
+`testmempoolaccept allowed = true`. `fn s11_…` / `fn s12_…` /
+`fn witness_follows_bip67_not_signing_order` present.
+`finalize_ignores_third_signature_after_first_two` nails witness stack
+slots 1–2 to the first two BIP-67 signatures and asserts C’s signature
+is in neither. `finalize_rejects_witness_utxo_not_matching_known_utxos`
+covers empty map / missing outpoint (`UnknownInput`) and value-only /
+script-only mismatch (`MismatchedUtxo`).
+`cargo mutants -p trinity-signer -j 8`: **350 tested, 318 caught, 32
+unviable, 0 missed, exit 0**. `python3 scripts/check_plan.py` 703 checks.
+`python3 scripts/dep_budget.py` **before 51 / after 52** (MEASURED 52,
+budget 55, not raised). Mutation probes (restore by file copy, SHA match):
+(a) reverse the two witness sigs → `witness_follows_bip67_not_signing_order`
+and D10 red (both `ConsensusRejected`); (b) skip `Transaction::verify` →
+`consensus_rejects_swapped_signatures` red (1 of 1); (c) `>` → `>=` on
+final feerate → `final_feerate_boundary_is_strict_greater` red (1 of 1);
+(d) delete the V7 `known_utxos` block →
+`finalize_rejects_witness_utxo_not_matching_known_utxos` red (1 of 1;
+empty map returns `Ok`); `||` → `&&` on the value/script compare →
+same test red (1 of 1; value-only mismatch becomes `UnbalancedPsbt`).
+
+**Open acceptance (why this WP is REVIEW, not DONE):**
+- Planner review of the `bitcoinconsensus`-on-by-default choice (C++ unit,
+  MEASURED 51→52). Signature-path counts in the spec/plan were updated
+  to 52 so `check_plan` stays consistent with MEASURED.
 
 **Tests:** D10, D11, S11, S12
 
@@ -1045,6 +1092,11 @@ consensus check via `bitcoinconsensus` (O7), vsize measurement against `max_feer
 uniffi facade **exactly** per the signature list in 1.3 (`sign_ab`, `sign_ab_with_passphrase`,
 `sign_with_recovery_key` with borrowed `&[u8]`; no exported `sign_a`/`sign_b`; no exported
 `SecretBytes` type), plus `ffi-allowlist.toml` and CI gate script.
+
+`finalize` and `broadcast` are two facade methods (§1.3 / §3.1): `finalize` returns
+tx hex from `trinity-signer`; `broadcast` calls `ChainBackend::broadcast` on a
+**separately configurable** backend (§1.6 requirement 1) — not through
+`trinity-watch`.
 
 **Files:** `crates/trinity-ffi/**`, `crates/trinity-ffi/ffi-allowlist.toml`, `scripts/check_ffi_boundary.py`
 **Prohibited:** No allowlist extension outside this WP without second review; no export of seed/mnemonic/xpriv; do not export `sign_a`/`sign_b`; do not export `SecretBytes` as a uniffi type.

@@ -21,21 +21,25 @@ chacha20poly1305 = { workspace = true }
 getrandom = { workspace = true }
 
 [features]
-default = []
+# O7 / Spec §3.5: consensus check is mandatory on the finalize path, so
+# `bitcoinconsensus` is on in the default. Turning it off is a compile error.
+default = ["bitcoinconsensus"]
 # Test doubles (`FakeClock`, `FakeBlockHeightSource`). Same gate as
 # `trinity-keystore`'s `FakePlatformKeyStore`.
 test-util = []
-# D7/D8 against Core `walletprocesspsbt`. Requires the WP-02 test environment.
+# D7/D8/D10/D11 against Core. Requires the WP-02 test environment.
 # Does not re-export `sign_a` / `sign_b` — those stay crate-internal and the
 # tests live in `src/` under `cfg(test)`. Cargo forbids optional
 # `[dev-dependencies]`; the dep is therefore always listed, and this feature
 # only turns on `trinity-differential/differential` (RPC + `rpc_signer`).
 differential = ["trinity-differential/differential"]
 # O7: forwards rust-bitcoin's optional `bitcoinconsensus` feature (and the
-# exact workspace pin). Off by default — no production path uses it (WP-36).
+# exact workspace pin). Required for [`finalize`].
 bitcoinconsensus = ["dep:bitcoinconsensus", "bitcoin/bitcoinconsensus"]
 
 [dev-dependencies]
 proptest = { workspace = true }
 trinity-keystore = { path = "../trinity-keystore", version = "0.1.0", features = ["test-util"] }
 trinity-differential = { path = "../../tests/differential", version = "0.1.0" }
+trinity-watch = { path = "../trinity-watch", version = "0.1.0" }
+bdk_wallet = { workspace = true }
