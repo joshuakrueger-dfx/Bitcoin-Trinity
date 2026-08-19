@@ -10,6 +10,11 @@
 //! is on [`sign_ab`] only — [`LocalSigner::sign`] is the WP-33 primitive
 //! and does not apply the limit.
 //!
+//! [`finalize`] turns a twice-signed PSBT into a transaction: BIP-67
+//! witness order, `bitcoinconsensus` (O7), then exact vsize against
+//! `max_feerate`. Nothing is sent here; broadcast belongs on the facade,
+//! with a separately configurable backend (Spec §1.6).
+//!
 //! External signer kinds exist on [`SignerKind`] so the trait is complete;
 //! `ExternalSigner` itself lives in `trinity-transport` (WP-50+).
 
@@ -20,6 +25,7 @@
 mod clock;
 mod core_state;
 mod error;
+mod finalize;
 mod kind;
 mod limits;
 mod local;
@@ -31,6 +37,7 @@ pub use clock::{BlockHeightSource, MonotonicClock};
 pub use clock::{FakeBlockHeightSource, FakeClock};
 pub use core_state::CoreStateError;
 pub use error::SignError;
+pub use finalize::finalize;
 pub use kind::SignerKind;
 pub use limits::{allowance, set_spend_policy, Ratio, SpendPolicy};
 pub use local::LocalSigner;
@@ -57,10 +64,14 @@ pub trait Signer: Send + Sync {
 }
 
 #[cfg(all(test, feature = "differential"))]
+mod tests_d10_d11;
+#[cfg(all(test, feature = "differential"))]
 mod tests_d7_d8;
 #[cfg(test)]
 mod tests_wp33;
 #[cfg(test)]
 mod tests_wp34;
+#[cfg(test)]
+mod tests_wp36;
 #[cfg(test)]
 mod zeroize_proof;

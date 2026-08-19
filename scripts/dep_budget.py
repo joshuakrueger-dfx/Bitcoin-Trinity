@@ -55,7 +55,7 @@ SHIPPED_TARGETS = (
 # must not be used for this gate.
 # A deviation from MEASURED is a deliberate decision, not a side effect —
 # MEASURED and the documents must then be updated together.
-MEASURED = 51  # as of 2026-08-13; +10 via chacha20poly1305 0.11 (WP-31)
+MEASURED = 52  # as of 2026-08-18; +1 bitcoinconsensus on trinity-signer default (WP-36 / O7)
 # The gate sits just above so a real expansion stands out instead of
 # slipping through. Raise only with justification in the PR.
 BUDGET = 55

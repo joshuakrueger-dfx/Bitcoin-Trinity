@@ -155,6 +155,53 @@ pub(crate) fn auth() -> Auth {
     Auth::UserPass(RPC_USER.to_owned(), RPC_PASS.to_owned())
 }
 
+/// RPC client for the `miner` wallet created by `scripts/test-env.sh`.
+pub fn miner_wallet() -> Client {
+    let url = format!("{RPC_URL}/wallet/miner");
+    Client::new(&url, auth()).unwrap_or_else(|e| {
+        panic!(
+            "cannot open miner wallet at {url}: {e}\n\
+             start with `./scripts/test-env.sh up`"
+        );
+    })
+}
+
+/// Send `sats` from the miner wallet to `address` and mine one confirming block.
+///
+/// Returns `(txid, raw funding transaction)`.
+pub fn fund_address(
+    address: &bitcoin::Address,
+    sats: u64,
+) -> (bitcoin::Txid, bitcoin::Transaction) {
+    use bitcoincore_rpc::RpcApi;
+
+    let node = connect();
+    let miner = miner_wallet();
+    let txid = miner
+        .send_to_address(
+            address,
+            bitcoin::Amount::from_sat(sats),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("fund_address: send_to_address failed: {e}"));
+    let sink = miner
+        .get_new_address(None, None)
+        .unwrap_or_else(|e| panic!("fund_address: miner getnewaddress: {e}"))
+        .require_network(bitcoin::Network::Regtest)
+        .unwrap_or_else(|e| panic!("fund_address: sink network: {e}"));
+    node.generate_to_address(1, &sink)
+        .unwrap_or_else(|e| panic!("fund_address: generate_to_address: {e}"));
+    let tx = node
+        .get_raw_transaction(&txid, None)
+        .unwrap_or_else(|e| panic!("fund_address: get_raw_transaction: {e}"));
+    (txid, tx)
+}
+
 /// Transient HTTP/socket failure (`jsonrpc::Error::Transport`), not a Core RPC
 /// rejection. `bitcoincore-rpc` 0.19 re-exports `jsonrpc` (`pub extern crate`)
 /// and wraps it as `Error::JsonRpc` — match the variant, not the Display text.

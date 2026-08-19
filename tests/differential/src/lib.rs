@@ -40,6 +40,8 @@ pub const SETUP_SEED: u64 = 0x5452_494e_4954_5923;
 pub const D7D8_SEED: u64 = 0x4437_4438_5053_4254;
 /// Spec §5.1: 1_000 PSBTs each for D7 (`sign_a`) and D8 (`sign_b`).
 pub const D7D8_PSBTS: u32 = 1_000;
+/// Spec §5.1: 1_000 PSBTs for D10 (`finalize` vs Core `finalizepsbt`).
+pub const D10_PSBTS: u32 = 1_000;
 
 /// One deterministic 2-of-3 descriptor document (receive + change).
 #[derive(Clone, Debug)]
