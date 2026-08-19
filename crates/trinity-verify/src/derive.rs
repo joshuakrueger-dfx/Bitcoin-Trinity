@@ -184,7 +184,22 @@ mod tests {
         assert_eq!(out.children[0].fingerprint.to_hex(), "73756c7f");
         let addr = out.address(Network::Regtest);
         assert!(addr.to_string().starts_with("bcrt1"));
-        let _ = out.sorted_pubkeys_slice();
+        let descriptor_order = [
+            out.children[0].public_key,
+            out.children[1].public_key,
+            out.children[2].public_key,
+        ];
+        // Fixture keys at i=0 are not already BIP-67-sorted; a constant
+        // `[[0;33];3]` / `[[1;33];3]` return from `sorted_pubkeys_slice` fails.
+        assert_ne!(
+            descriptor_order, out.sorted_pubkeys,
+            "BIP-67 must reorder these fixture keys"
+        );
+        let mut expected = descriptor_order;
+        expected.sort_unstable();
+        assert_eq!(out.sorted_pubkeys_slice(), &expected);
+        assert_ne!(*out.sorted_pubkeys_slice(), [[0u8; 33]; 3]);
+        assert_ne!(*out.sorted_pubkeys_slice(), [[1u8; 33]; 3]);
     }
 
     #[test]
@@ -194,6 +209,9 @@ mod tests {
             derive_child(&d.keys[0], 0x8000_0000),
             Err(DeriveError::HardenedIndex(0x8000_0000))
         );
+        // Exclusive: `>` not `>=` / `==`. The max non-hardened index is legal.
+        let max = derive_child(&d.keys[0], ckd::MAX_NON_HARDENED_INDEX).unwrap();
+        assert_eq!(max.address_index, ckd::MAX_NON_HARDENED_INDEX);
     }
 
     #[test]

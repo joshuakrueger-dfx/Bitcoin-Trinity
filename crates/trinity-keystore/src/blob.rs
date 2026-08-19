@@ -430,6 +430,11 @@ mod tests {
             &a[NONCE_OFFSET..BIRTHDAY_OFFSET],
             &b[NONCE_OFFSET..BIRTHDAY_OFFSET]
         );
+        // Exclude the Poly1305 tag: a stubbed nonce-from-header still
+        // produces distinct tags (the header is AAD) but the same keystream.
+        let ct_a = &a[HEADER_LEN..a.len() - TAG_LEN];
+        let ct_b = &b[HEADER_LEN..b.len() - TAG_LEN];
+        assert_ne!(ct_a, ct_b);
         let da = decrypt(&KEK, &a).unwrap();
         let db = decrypt(&KEK, &b).unwrap();
         assert_eq!(da.entropy().as_slice(), &ENTROPY24);
@@ -523,6 +528,12 @@ mod tests {
             decrypt(&KEK, &[0u8; HEADER_LEN + TAG_LEN - 1]).unwrap_err(),
             BlobError::Truncated
         );
+        // Exclusive bound: exactly header+tag is long enough to parse (`<`
+        // not `<=`). Zeros fail magic, not length.
+        assert_eq!(
+            decrypt(&KEK, &[0u8; HEADER_LEN + TAG_LEN]).unwrap_err(),
+            BlobError::BadMagic
+        );
     }
 
     #[test]
@@ -595,6 +606,9 @@ mod tests {
         let last = ct.len() - 1;
         ct[HEADER_LEN] ^= 0x01;
         assert_eq!(decrypt(&KEK, &ct).unwrap_err(), BlobError::Aead);
+        let mut nonce = blob.clone();
+        nonce[NONCE_OFFSET] ^= 0x01;
+        assert_eq!(decrypt(&KEK, &nonce).unwrap_err(), BlobError::Aead);
         let mut tag = blob;
         tag[last] ^= 0x01;
         assert_eq!(decrypt(&KEK, &tag).unwrap_err(), BlobError::Aead);

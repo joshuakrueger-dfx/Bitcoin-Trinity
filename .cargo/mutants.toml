@@ -17,4 +17,28 @@ exclude_re = [
     "window\\.rs:306:\\d+: replace < with <= in step_elapsed",
     # Ratio::of: bei `n == u64::MAX` sind Cast und Clamp dasselbe.
     "limits\\.rs:50:\\d+: replace > with >= in Ratio::of",
+    # validate_origin_path: die Bedingung steht hinter `segments.len() != 4`, also ist
+    # die Laenge nie 4 und `< 4` und `<= 4` sind identisch.
+    "parse\\.rs:192:\\d+: replace < with <= in validate_origin_path",
+    # FakePlatformKeyStore::drop: der Rumpf ruft nur zeroize(); die Felder sind
+    # ZeroizeOnDrop und wischen ohnehin beim Feld-Drop. Nach dem Drop ist das
+    # Objekt nicht mehr beobachtbar, und unsafe ist in der Crate verboten.
+    "fake\\.rs:164:\\d+: replace <impl Drop for FakePlatformKeyStore>::drop with \\(\\)",
+    # polymod: after `<< 5` the low 5 bits of chk are 0. Every production
+    # symbol is 0..=31 (expand: `v & 31`, packed groups ≤ 26, checksum charset
+    # 0..=31). XOR and OR into those zeros are identical. The only call sites
+    # are verify_checksum and create_checksum; neither feeds a value ≥ 32.
+    "checksum\\.rs:115:\\d+: replace \\^ with \\| in polymod",
+
+    # --- Tool limit, not semantic equivalence ---
+    # find_index_matching `h < gap_limit`: `==` / `>` skip the one-step hint
+    # path. The small-window tests (index == gap / gap+1) go red — the mutant
+    # is caught. The same suite also contains a coverage test with
+    # gap_limit = 2³¹+1, and the mutated variant then scans 0..2³¹ CKD
+    # steps. cargo-mutants waits for the whole `cargo test` process; libtest
+    # `--fail-fast` needs nightly `-Z unstable-options` and is unavailable on
+    # the pinned 1.94.1 toolchain. These two entries record that bound, not a
+    # missing check. Do not treat them as equivalent-code exceptions.
+    "verify.rs:314:\\d+: replace < with == in find_index_matching",
+    "verify.rs:314:\\d+: replace < with > in find_index_matching",
 ]

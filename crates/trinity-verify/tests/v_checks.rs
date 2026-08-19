@@ -182,10 +182,51 @@ fn v2_hint_at_or_above_gap_limit_falls_back_to_scan() {
 }
 
 #[test]
+fn v2_input_at_gap_limit_rejected_even_with_matching_hint() {
+    // Actual index == gap_limit, hint agrees. `h < gap_limit` must not take
+    // the fast path (`<=` / `==` would accept an out-of-window input).
+    let (psbt, mut policy) = build_valid(20, 0, 5, 100_000, 40_000, 1_000);
+    policy.gap_limit = 20;
+    assert_eq!(
+        trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
+        VerifyError::ForeignInput { input_index: 0 }
+    );
+}
+
+#[test]
+fn v2_input_just_above_gap_limit_rejected_even_with_matching_hint() {
+    // Actual index == gap_limit + 1. `h > gap_limit` would take the hint and
+    // accept; the exclusive window must still reject.
+    let (psbt, mut policy) = build_valid(21, 0, 5, 100_000, 40_000, 1_000);
+    policy.gap_limit = 20;
+    assert_eq!(
+        trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
+        VerifyError::ForeignInput { input_index: 0 }
+    );
+}
+
+#[test]
+fn v2_hardened_range_hint_outside_small_window_is_skipped() {
+    // Normal last-child 2³¹ is still a hint (`bip32_index_hint` only rejects
+    // the Hardened variant). A realistic `gap_limit` is far below that, so
+    // the fast-path (`h < gap_limit`) must skip `derive_at(2³¹)` and scan.
+    // A huge window here would make comparison mutants time out on `0..2³¹`.
+    let (mut psbt, mut policy) = build_valid(0, 0, 5, 100_000, 40_000, 1_000);
+    policy.gap_limit = 20;
+    for (_fp, path) in psbt.inputs[0].bip32_derivation.values_mut() {
+        let mut children: Vec<_> = path.into_iter().copied().collect();
+        children[5] = bitcoin::bip32::ChildNumber::Normal { index: 0x8000_0000 };
+        *path = DerivationPath::from(children);
+    }
+    assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+}
+
+#[test]
 fn v2_hint_hardened_range_index_is_derive_error() {
     // Normal last-child 2³¹ is still a hint (`bip32_index_hint` only rejects
     // the Hardened variant). `h < gap_limit` is true, then `derive_at` fails
-    // and `check_v2`'s `?` must surface `VerifyError::Derive`.
+    // and `check_v2`'s `?` must surface `VerifyError::Derive`. Unmutated this
+    // is one CKD attempt — the `0..gap_limit` scan is never entered.
     let (mut psbt, mut policy) = build_valid(0, 0, 5, 100_000, 40_000, 1_000);
     policy.gap_limit = 0x8000_0001;
     for (_fp, path) in psbt.inputs[0].bip32_derivation.values_mut() {
@@ -797,6 +838,40 @@ fn v5_negative_fee_and_feerate() {
         trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
         VerifyError::FeerateTooHigh { .. }
     ));
+}
+
+#[test]
+fn v5_fee_and_feerate_equal_to_cap_are_allowed() {
+    // V5 uses exclusive upper bounds (`>`). The value that still fits and the
+    // value one sat / sat/vB over must disagree.
+    let (psbt, mut policy) = build_valid(0, 0, 5, 100_000, 40_000, 1_000);
+    let v = trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap();
+    assert_eq!(v.fee_sats, 1_000);
+    assert!(v.feerate_sat_vb > 0);
+
+    policy.max_feerate = u64::MAX;
+    policy.max_absolute_fee = v.fee_sats;
+    assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+    policy.max_absolute_fee = v.fee_sats - 1;
+    assert_eq!(
+        trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
+        VerifyError::FeeTooHigh {
+            fee_sats: v.fee_sats,
+            max_sats: v.fee_sats - 1,
+        }
+    );
+
+    policy.max_absolute_fee = u64::MAX;
+    policy.max_feerate = v.feerate_sat_vb;
+    assert!(trinity_verify::verify(&psbt, RECEIVE, &policy).is_ok());
+    policy.max_feerate = v.feerate_sat_vb - 1;
+    assert_eq!(
+        trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err(),
+        VerifyError::FeerateTooHigh {
+            feerate_sat_vb: v.feerate_sat_vb,
+            max_sat_vb: v.feerate_sat_vb - 1,
+        }
+    );
 }
 
 #[test]
@@ -1438,9 +1513,8 @@ fn v8_negative_too_many_inputs() {
 #[test]
 fn v8_positive_at_max_outputs_bound_reaches_later_checks() {
     use trinity_verify::MAX_PSBT_INS_OR_OUTS;
-    // Exactly MAX outputs: bound does not fire; later checks reject for other
-    // reasons (empty scripts are not valid addresses). Proves the bound is
-    // exclusive upper (`>`), not `>=`.
+    // Exactly MAX outputs: bound does not fire (`>` not `>=`). Empty scripts
+    // then fail V3 address decode.
     let recv = parse(RECEIVE).unwrap();
     let in_der = derive_at(&recv, 0).unwrap();
     let op = outpoint(10);
@@ -1476,10 +1550,42 @@ fn v8_positive_at_max_outputs_bound_reaches_later_checks() {
         Network::Regtest,
     );
     let err = trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err();
-    assert!(
-        !matches!(err, VerifyError::TooManyInputsOutputs { .. }),
-        "at-bound must not hit TooManyInputsOutputs, got {err:?}"
+    assert_eq!(err, VerifyError::InvalidOutputAddress { output_index: 0 });
+}
+
+#[test]
+fn v8_positive_at_max_inputs_bound_reaches_later_checks() {
+    use trinity_verify::MAX_PSBT_INS_OR_OUTS;
+    // Exactly MAX inputs: bound does not fire (`>` not `>=`). V9 then rejects
+    // the empty witness_utxo maps (`MissingWitnessUtxo`). Cheap: no CKD.
+    let inputs: Vec<TxIn> = (0..MAX_PSBT_INS_OR_OUTS)
+        .map(|i| TxIn {
+            previous_output: outpoint((i % 250) as u8),
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        })
+        .collect();
+    let tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: inputs,
+        output: vec![txout(ScriptBuf::new(), 1)],
+    };
+    let psbt = Psbt::from_unsigned_tx(tx).unwrap();
+    let policy = VerifyPolicy::new(
+        vec![],
+        0,
+        1,
+        1,
+        None,
+        1,
+        BTreeMap::new(),
+        None,
+        Network::Regtest,
     );
+    let err = trinity_verify::verify(&psbt, RECEIVE, &policy).unwrap_err();
+    assert_eq!(err, VerifyError::MissingWitnessUtxo { input_index: 0 });
 }
 
 #[test]

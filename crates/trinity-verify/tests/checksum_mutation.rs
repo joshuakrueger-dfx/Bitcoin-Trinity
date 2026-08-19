@@ -39,9 +39,16 @@ fn bip380_reference_vector() {
     // Direct vector from BIP-380 (not a Trinity descriptor — WrongTopLevel
     // after checksum). Proves checksum path accepts the published vector.
     use trinity_verify::parse;
-    // raw(deadbeef)#89f8spxm — checksum OK, grammar not Trinity.
+    // Core getdescriptorinfo "raw(dead)" → j7p6x6xf (len 9 ≡ 0).
+    assert_eq!(parse("raw(dead)#j7p6x6xf"), Err(ParseError::WrongTopLevel));
+    // BIP-380 + Core getdescriptorinfo "raw(deadbeef)" → 89f8spxm (len 13 ≡ 1).
     assert_eq!(
         parse("raw(deadbeef)#89f8spxm"),
+        Err(ParseError::WrongTopLevel)
+    );
+    // Core getdescriptorinfo "raw(deadbe)" → vwtc7tfv (len 11 ≡ 2).
+    assert_eq!(
+        parse("raw(deadbe)#vwtc7tfv"),
         Err(ParseError::WrongTopLevel)
     );
 }

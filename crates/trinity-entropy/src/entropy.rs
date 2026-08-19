@@ -408,6 +408,14 @@ mod tests {
         assert_eq!(c.word_count(), WordCount::Words24);
         assert_eq!(c.entropy().len(), 32);
         assert_eq!(c.mnemonic_phrase().split_whitespace().count(), 24);
+
+        // Two live draws must differ. A stubbed `read_raw_csprng` that
+        // returns `[0; 32]` / `[1; 32]` makes both calls collide.
+        let b = generate(WordCount::Words12, &extra).unwrap();
+        assert_ne!(a.raw_csprng().as_slice(), b.raw_csprng().as_slice());
+        assert_ne!(a.raw_csprng().as_slice(), &[0u8; 32]);
+        assert_ne!(a.raw_csprng().as_slice(), &[1u8; 32]);
+        assert_ne!(c.raw_csprng().as_slice(), a.raw_csprng().as_slice());
     }
 
     #[test]
