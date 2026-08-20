@@ -446,6 +446,38 @@ class TestCiWorkflowInvariants(unittest.TestCase):
             probe_chunk.split("run:")[0],
         )
 
+    def test_trinity_skip_live_only_on_jobs_without_test_env(self) -> None:
+        """Live tests fail loud unless TRINITY_SKIP_LIVE is set.
+
+        Unit · Property and Coverage run without ./scripts/test-env.sh, so
+        they must set the variable. Differential starts the environment and
+        must not, or a missing peer would skip instead of fail the job.
+        """
+        before_jobs = self.text.split("jobs:", 1)[0]
+        self.assertNotIn(
+            "TRINITY_SKIP_LIVE",
+            before_jobs,
+            "TRINITY_SKIP_LIVE must not be workflow-global (would skip Differential)",
+        )
+        test_body = self._job_body("test")
+        self.assertRegex(
+            test_body,
+            r"(?m)^\s+TRINITY_SKIP_LIVE:\s*[\"']?1[\"']?\s*$",
+            "Unit · Property must set TRINITY_SKIP_LIVE (no test-env in that job)",
+        )
+        cov_body = self._job_body("coverage")
+        self.assertRegex(
+            cov_body,
+            r"(?m)^\s+TRINITY_SKIP_LIVE:\s*[\"']?1[\"']?\s*$",
+            "Coverage gate must set TRINITY_SKIP_LIVE (llvm-cov runs tests, no test-env)",
+        )
+        diff_body = self._job_body("differential")
+        self.assertNotRegex(
+            diff_body,
+            r"(?m)^\s+TRINITY_SKIP_LIVE:",
+            "Differential must not set TRINITY_SKIP_LIVE so live tests run for real",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

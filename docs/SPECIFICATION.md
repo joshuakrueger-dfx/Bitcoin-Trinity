@@ -1409,7 +1409,7 @@ Additionally the internal step for B checks that the already present signature o
 | Finalization | Witness `OP_0 <sigA> <sigB> <witnessScript>`; signature order must follow the **BIP-67-sorted pubkey order** in the witnessScript, not signature order. Common error source. |
 | Consensus check | The finalized transaction is validated locally against script rules before it leaves the device ⟨optional `bitcoinconsensus` — trade-off: one more dependency in the critical path vs. a real consensus validation. **Recommendation: yes**, because it excludes a whole bug class.⟩ |
 | Size/fee final | vsize of the finished transaction is measured; effective feerate is checked against `max_feerate`. A finalized transaction above the cap is **not** sent. |
-| Broadcast | Via a separately configurable backend (1.6). Failure ⇒ the transaction is kept locally and can be resent; no automatic rebroadcast over another path without user action. |
+| Broadcast | Via a separately configurable backend (1.6). Failure ⇒ the transaction is kept locally and can be resent; no automatic rebroadcast over another path without user action. Compact-filter announcement is an `inv` to one peer: if that peer already has the transaction it never fetches the payload, so delivery stays unconfirmed even though the payment may already be propagating — not a network failure; resending is neither required nor harmful. |
 
 ### 3.6 One-gesture signature and spending limits (Decision E7)
 

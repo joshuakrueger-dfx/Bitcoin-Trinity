@@ -94,6 +94,9 @@ mod trait_surface_tests {
         assert!(e.to_string().contains("protocol"));
         let e = ChainError::Broadcast("reject".into());
         assert!(e.to_string().contains("broadcast"));
+        let e = ChainError::DeliveryUnconfirmed;
+        assert!(e.to_string().contains("delivery unconfirmed"));
+        assert!(!e.to_string().contains("network"));
         let e = ChainError::Unavailable("ibd".into());
         assert!(e.to_string().contains("unavailable"));
         let e = ChainError::Other("x".into());

@@ -7,16 +7,17 @@
 //!
 //! Parallel WP-14/WP-15 sessions may already hold those ports — tests use the
 //! loopback peer as-is (project name collision is handled by whoever started
-//! the stack). When the peer is absent, tests are ignored rather than failed.
+//! the stack). A missing peer is a failure unless `TRINITY_SKIP_LIVE` is set.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bdk_wallet::bitcoin::{self, Amount, Network};
 use bdk_wallet::{KeychainKind, Wallet};
+use bitcoin::consensus::encode::deserialize_hex;
 use trinity_chain::{CbfBackend, CbfConfig, ChainBackend, ChainError};
 
 const RPC_URL: &str = "http://127.0.0.1:18443";
@@ -36,6 +37,31 @@ const CHANGE: &str = "wpkh([9122d9e0/84'/1'/0']tpubDCYVtmaSaDzTxcgvoP5AHZNbZKZzr
 
 fn regtest_up() -> bool {
     rpc_call(None, "getblockchaininfo", "[]").is_ok()
+}
+
+/// Live tests run when RPC is up. A missing node is a failure unless
+/// `TRINITY_SKIP_LIVE` is set (explicit skip, not a silent green).
+fn require_live_regtest() -> bool {
+    if regtest_up() {
+        return true;
+    }
+    if std::env::var_os("TRINITY_SKIP_LIVE").is_some() {
+        eprintln!("skip: regtest RPC not reachable at {RPC_URL} (TRINITY_SKIP_LIVE)");
+        return false;
+    }
+    panic!(
+        "regtest RPC not reachable at {RPC_URL}. Run `./scripts/test-env.sh up` \
+         or set TRINITY_SKIP_LIVE=1 to skip this live test."
+    );
+}
+
+fn rpc_result(wallet: Option<&str>, method: &str, params_json: &str) -> serde_json::Value {
+    let text = rpc_call(wallet, method, params_json).unwrap_or_else(|e| panic!("{method}: {e}"));
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+        panic!("{method} json: {e}; body={text}");
+    });
+    assert!(v["error"].is_null(), "{method} error: {text}");
+    v["result"].clone()
 }
 
 fn rpc_call(wallet: Option<&str>, method: &str, params_json: &str) -> Result<String, String> {
@@ -99,8 +125,7 @@ fn make_backend(label: &str) -> CbfBackend {
 
 #[test]
 fn cbf_tip_height_matches_regtest_peer() {
-    if !regtest_up() {
-        eprintln!("skip: regtest RPC not reachable at {RPC_URL}");
+    if !require_live_regtest() {
         return;
     }
     let _guard = REGTEST_LOCK.lock().expect("regtest lock");
@@ -119,8 +144,7 @@ fn cbf_tip_height_matches_regtest_peer() {
 
 #[test]
 fn cbf_full_scan_balance_matches_funded_address() {
-    if !regtest_up() {
-        eprintln!("skip: regtest RPC not reachable at {RPC_URL}");
+    if !require_live_regtest() {
         return;
     }
     let _guard = REGTEST_LOCK.lock().expect("regtest lock");
@@ -308,8 +332,7 @@ fn cbf_privacy_profile_matches_spec_table() {
 
 #[test]
 fn cbf_fee_estimates_and_sync_against_peer() {
-    if !regtest_up() {
-        eprintln!("skip: regtest RPC not reachable at {RPC_URL}");
+    if !require_live_regtest() {
         return;
     }
     let _guard = REGTEST_LOCK.lock().expect("regtest lock");
@@ -339,8 +362,7 @@ fn cbf_fee_estimates_and_sync_against_peer() {
 
 #[test]
 fn cbf_broadcast_announces_to_peer() {
-    if !regtest_up() {
-        eprintln!("skip: regtest RPC not reachable at {RPC_URL}");
+    if !require_live_regtest() {
         return;
     }
     let _guard = REGTEST_LOCK.lock().expect("regtest lock");
@@ -365,4 +387,103 @@ fn cbf_broadcast_announces_to_peer() {
     let txid = backend.broadcast(&junk).expect("announce to peer");
     assert_eq!(txid, junk.compute_txid());
     eprintln!("broadcast announced txid={txid}");
+}
+
+/// Lowered from the 120s production default so the hang is bearable. The
+/// wait itself is unchanged — do not raise this to "make the test stable".
+const CBF_RESUBMIT_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Re-announcing a transaction the peer already has does not look like a
+/// network failure. `submit_package` waits for `getdata` that never comes;
+/// the wall-clock deadline surfaces as [`ChainError::DeliveryUnconfirmed`].
+#[test]
+fn cbf_resubmit_of_already_announced_tx_is_delivery_unconfirmed() {
+    if !require_live_regtest() {
+        return;
+    }
+    let _guard = REGTEST_LOCK.lock().expect("regtest lock");
+    ensure_miner_wallet();
+
+    // Signed, valid tx that has *not* been sent via RPC. First CBF announce
+    // should therefore elicit `getdata`. Second announce of the same tx
+    // should not — that is today's hang.
+    let dest = rpc_result(Some("miner"), "getnewaddress", "[]");
+    let dest = dest.as_str().expect("dest");
+    let raw = rpc_result(
+        Some("miner"),
+        "createrawtransaction",
+        &format!(r#"[[], {{"{dest}": 0.01000000}}]"#),
+    );
+    let raw_hex = raw.as_str().expect("raw hex");
+    let funded = rpc_result(
+        Some("miner"),
+        "fundrawtransaction",
+        &format!(r#"["{raw_hex}"]"#),
+    );
+    let funded_hex = funded["hex"].as_str().expect("funded hex");
+    let signed = rpc_result(
+        Some("miner"),
+        "signrawtransactionwithwallet",
+        &format!(r#"["{funded_hex}"]"#),
+    );
+    assert_eq!(
+        signed["complete"].as_bool(),
+        Some(true),
+        "miner must finalize the package: {signed}"
+    );
+    let signed_hex = signed["hex"].as_str().expect("signed hex");
+    let tx: bitcoin::Transaction = deserialize_hex(signed_hex).expect("decode signed tx");
+    let txid = tx.compute_txid();
+    eprintln!("resubmit fixture txid={txid}");
+
+    let first = make_backend("resubmit-1");
+    let t0 = Instant::now();
+    let first_result = first.broadcast(&tx);
+    let first_elapsed = t0.elapsed();
+    eprintln!("first CBF broadcast {first_result:?} in {first_elapsed:?}");
+    let announced = first_result.unwrap_or_else(|e| {
+        panic!(
+            "first CBF announce of an unknown valid tx must succeed so the \
+             resubmit hang is isolated; got {e:?} after {first_elapsed:?}"
+        )
+    });
+    assert_eq!(announced, txid);
+    assert!(
+        first_elapsed < CBF_RESUBMIT_TIMEOUT,
+        "first announce must complete well inside the wall cap; elapsed {first_elapsed:?}"
+    );
+
+    let second_cfg = CbfConfig::regtest_peer(P2P_ADDR)
+        .data_dir(data_dir("resubmit-2"))
+        .operation_timeout(CBF_RESUBMIT_TIMEOUT);
+    let second = CbfBackend::new(second_cfg).expect("cbf runtime");
+    let t1 = Instant::now();
+    let second_result = second.broadcast(&tx);
+    eprintln!(
+        "second CBF broadcast {second_result:?} in {:?}",
+        t1.elapsed()
+    );
+
+    match second_result {
+        Err(ChainError::DeliveryUnconfirmed) => {
+            eprintln!(
+                "resubmit DeliveryUnconfirmed after {:?} (cap {}s)",
+                t1.elapsed(),
+                CBF_RESUBMIT_TIMEOUT.as_secs()
+            );
+        }
+        other => panic!(
+            "expected ChainError::DeliveryUnconfirmed on CBF resubmit of \
+             {txid}, got {other:?} after {:?}",
+            t1.elapsed()
+        ),
+    }
+    // A `submit_package` ClientError mapped onto DeliveryUnconfirmed would
+    // return as soon as filters synced (~2s), not after the wall wait.
+    assert!(
+        t1.elapsed() >= CBF_RESUBMIT_TIMEOUT.saturating_sub(Duration::from_secs(2)),
+        "DeliveryUnconfirmed must come from the wall wait after submit_package \
+         started, not from an immediate send/recv error; elapsed {:?}",
+        t1.elapsed()
+    );
 }

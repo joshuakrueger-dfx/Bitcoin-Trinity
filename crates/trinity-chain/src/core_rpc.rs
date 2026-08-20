@@ -186,11 +186,17 @@ impl CoreRpcBackend {
     }
 
     /// Scan `spks` via BIP-158 filters and optional mempool; return graph + tip.
+    ///
+    /// `known_outpoints` is the caller's already-owned UTXO set (from
+    /// expected txs / request outpoints). Without it, a changeless spend of
+    /// an output created *before* `chain_tip` is not relevant: FilterIter
+    /// starts after the checkpoint, so this run never re-learns that outpoint.
     fn scan_spks(
         &self,
         spks: &[ScriptBuf],
         chain_tip: Option<CheckPoint>,
         start_time: u64,
+        mut known_outpoints: HashSet<OutPoint>,
     ) -> Result<(TxUpdate<ConfirmationBlockTime>, Option<CheckPoint>), ChainError> {
         let start_cp = match chain_tip {
             Some(cp) => cp,
@@ -204,7 +210,6 @@ impl CoreRpcBackend {
 
         let spk_set: HashSet<ScriptBuf> = spks.iter().cloned().collect();
         let mut tx_update = TxUpdate::<ConfirmationBlockTime>::default();
-        let mut known_outpoints: HashSet<OutPoint> = HashSet::new();
         let mut seen_txids: HashSet<Txid> = HashSet::new();
         let mut tip_cp = start_cp.clone();
 
@@ -250,29 +255,55 @@ impl CoreRpcBackend {
         }
 
         // Mempool: unconfirmed txs that touch watched scripts / outpoints.
+        // Two-pass like the block path: getrawmempool is not topological, so a
+        // changeless child listed before its parent would otherwise be skipped.
         let mempool = self.client.get_raw_mempool().map_err(Self::map_rpc)?;
+        let mut pending = Vec::new();
         for txid in mempool {
-            if !seen_txids.insert(txid) {
+            if seen_txids.contains(&txid) {
                 continue;
             }
             let Some(tx) = self.get_tx_optional(&txid)? else {
                 continue;
             };
-            if !tx_is_relevant(&tx, &spk_set, &known_outpoints) {
-                continue;
+            pending.push(tx);
+        }
+        for _ in 0..2 {
+            for tx in &pending {
+                if !tx_is_relevant(tx, &spk_set, &known_outpoints) {
+                    continue;
+                }
+                let txid = tx.compute_txid();
+                if !seen_txids.insert(txid) {
+                    continue;
+                }
+                for (vout, out) in tx.output.iter().enumerate() {
+                    if spk_set.contains(&out.script_pubkey) {
+                        known_outpoints.insert(OutPoint {
+                            txid,
+                            vout: vout as u32,
+                        });
+                    }
+                }
+                tx_update.txs.push(Arc::new(tx.clone()));
+                tx_update.seen_ats.insert((txid, start_time));
             }
-            tx_update.txs.push(Arc::new(tx));
-            tx_update.seen_ats.insert((txid, start_time));
         }
 
         Ok((tx_update, Some(tip_cp)))
     }
 
-    /// `getrawtransaction`, mapping "not found" to `None` (no fallback).
+    /// `getrawtransaction`, mapping true "not found" to `None`.
+    ///
+    /// `-5` with a txindex/block-hash hint is not "not found": the node may
+    /// hold the transaction but cannot return it. That fails loud.
     fn get_tx_optional(&self, txid: &Txid) -> Result<Option<Transaction>, ChainError> {
         match self.client.get_raw_transaction(txid, None) {
             Ok(tx) => Ok(Some(tx)),
             Err(e) if is_not_found(&e) => Ok(None),
+            Err(e) if is_lookup_unavailable(&e) => Err(ChainError::Unavailable(format!(
+                "rpc: cannot retrieve {txid} without txindex or a block hash: {e}"
+            ))),
             Err(e) => Err(Self::map_rpc(e)),
         }
     }
@@ -383,11 +414,32 @@ fn tx_is_relevant(
         .any(|i| known_outpoints.contains(&i.previous_output))
 }
 
+fn rpc_app_error(err: &RpcError) -> Option<&jsonrpc::error::RpcError> {
+    match err {
+        RpcError::JsonRpc(jsonrpc::Error::Rpc(e)) => Some(e),
+        _ => None,
+    }
+}
+
+/// Core `-5` for a transaction it cannot retrieve without `-txindex` / a block
+/// hash. Distinct from a genuine missing tx (also `-5`, different message).
+fn lookup_requires_index(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("txindex") || m.contains("block hash")
+}
+
 fn is_not_found(err: &RpcError) -> bool {
-    matches!(
-        err,
-        RpcError::JsonRpc(jsonrpc::Error::Rpc(e)) if e.code == -5
-    )
+    match rpc_app_error(err) {
+        Some(e) if e.code == -5 => !lookup_requires_index(&e.message),
+        _ => false,
+    }
+}
+
+fn is_lookup_unavailable(err: &RpcError) -> bool {
+    match rpc_app_error(err) {
+        Some(e) if e.code == -5 => lookup_requires_index(&e.message),
+        _ => false,
+    }
 }
 
 impl ChainBackend for CoreRpcBackend {
@@ -395,7 +447,8 @@ impl ChainBackend for CoreRpcBackend {
         let start_time = req.start_time();
         let chain_tip = req.chain_tip();
         let plan = self.collect_full_scan_spks(&mut req)?;
-        let (tx_update, chain) = self.scan_spks(&plan.spks, chain_tip, start_time)?;
+        let (tx_update, chain) =
+            self.scan_spks(&plan.spks, chain_tip, start_time, HashSet::new())?;
         Ok(Update {
             last_active_indices: plan.last_active,
             tx_update,
@@ -414,10 +467,40 @@ impl ChainBackend for CoreRpcBackend {
             spks.push(item.spk);
         }
 
-        let (mut tx_update, chain) = self.scan_spks(&spks, chain_tip, start_time)?;
+        // Wallet::start_sync_with_revealed_spks puts canonical txs in
+        // `expected_spk_txids`, not in `outpoints`. Fetch those txs from this
+        // node so (1) their watched outputs seed `known_outpoints` for the
+        // scan and (2) a still-existing tx is `present` and is not evicted
+        // merely because it sits before the incremental checkpoint.
+        let spk_set: HashSet<ScriptBuf> = spks.iter().cloned().collect();
+        let mut known_outpoints: HashSet<OutPoint> = HashSet::new();
+        let mut present: HashSet<Txid> = HashSet::new();
+        for txids in expected.values() {
+            for &txid in txids {
+                let Some(tx) = self.get_tx_optional(&txid)? else {
+                    continue;
+                };
+                present.insert(txid);
+                for (vout, out) in tx.output.iter().enumerate() {
+                    if spk_set.contains(&out.script_pubkey) {
+                        known_outpoints.insert(OutPoint {
+                            txid,
+                            vout: vout as u32,
+                        });
+                    }
+                }
+            }
+        }
+
+        let request_outpoints: Vec<OutPoint> = req.iter_outpoints().collect();
+        known_outpoints.extend(request_outpoints.iter().copied());
+
+        let (mut tx_update, chain) =
+            self.scan_spks(&spks, chain_tip, start_time, known_outpoints)?;
+
+        present.extend(tx_update.txs.iter().map(|tx| tx.compute_txid()));
 
         // Evictions: expected txids missing from history of that SPK.
-        let mut present: HashSet<Txid> = tx_update.txs.iter().map(|tx| tx.compute_txid()).collect();
         for (spk, expected_txids) in expected {
             // Only mark eviction when the SPK was among the requested set.
             let _ = spk;
@@ -457,12 +540,17 @@ impl ChainBackend for CoreRpcBackend {
                 Err(e) if is_not_found(&e) => {
                     tx_update.evicted_ats.insert((txid, start_time));
                 }
+                Err(e) if is_lookup_unavailable(&e) => {
+                    return Err(ChainError::Unavailable(format!(
+                        "rpc: cannot retrieve {txid} without txindex or a block hash: {e}"
+                    )));
+                }
                 Err(e) => return Err(Self::map_rpc(e)),
             }
         }
 
         // Outpoints: fetch containing tx when possible.
-        for op in req.iter_outpoints() {
+        for op in request_outpoints {
             if present.contains(&op.txid) {
                 continue;
             }
@@ -652,12 +740,58 @@ mod tests {
             data: None,
         }));
         assert!(is_not_found(&not_found));
+        assert!(!is_lookup_unavailable(&not_found));
         let other = RpcError::JsonRpc(jsonrpc::Error::Rpc(jsonrpc::error::RpcError {
             code: -8,
             message: "other".into(),
             data: None,
         }));
         assert!(!is_not_found(&other));
+        assert!(!is_lookup_unavailable(&other));
+        let needs_index = RpcError::JsonRpc(jsonrpc::Error::Rpc(jsonrpc::error::RpcError {
+            code: -5,
+            message: "No such mempool transaction. Use -txindex or provide a block hash".into(),
+            data: None,
+        }));
+        assert!(
+            !is_not_found(&needs_index),
+            "txindex-required -5 must not look like a missing tx"
+        );
+        assert!(is_lookup_unavailable(&needs_index));
+
+        // Each hint alone is enough. `||` → `&&` would drop these.
+        let txindex_only = RpcError::JsonRpc(jsonrpc::Error::Rpc(jsonrpc::error::RpcError {
+            code: -5,
+            message: "Use -txindex to enable blockchain transaction queries.".into(),
+            data: None,
+        }));
+        assert!(
+            lookup_requires_index("Use -txindex to enable blockchain transaction queries."),
+            "txindex hint without 'block hash' must still require index"
+        );
+        assert!(is_lookup_unavailable(&txindex_only));
+        assert!(!is_not_found(&txindex_only));
+        let block_hash_only = RpcError::JsonRpc(jsonrpc::Error::Rpc(jsonrpc::error::RpcError {
+            code: -5,
+            message: "Provide a block hash to enable blockchain transaction queries.".into(),
+            data: None,
+        }));
+        assert!(
+            lookup_requires_index("Provide a block hash to enable blockchain transaction queries."),
+            "block-hash hint without 'txindex' must still require index"
+        );
+        assert!(is_lookup_unavailable(&block_hash_only));
+        assert!(!is_not_found(&block_hash_only));
+
+        // The code must be -5, not merely a matching message. Guard `== -5`
+        // replaced with `true` would treat this as unavailable.
+        let hint_wrong_code = RpcError::JsonRpc(jsonrpc::Error::Rpc(jsonrpc::error::RpcError {
+            code: -8,
+            message: "Use -txindex or provide a block hash".into(),
+            data: None,
+        }));
+        assert!(!is_lookup_unavailable(&hint_wrong_code));
+        assert!(!is_not_found(&hint_wrong_code));
     }
 
     /// S13 / dead port: every ChainBackend method returns a clean ChainError.
