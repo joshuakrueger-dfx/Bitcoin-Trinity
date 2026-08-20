@@ -215,8 +215,9 @@ containerized and startable via a script.
 **Spec:** 5.5 · **Needs:** WP-01 · **State:** IN PROGRESS
 
 `cargo-llvm-cov` with **thresholds per crate** per TESTING.md §3, plus `cargo-mutants` for the
-security cores. Gates are fail-closed: missing line or branch data for crates with
-source code are findings, not silent 100 %. On pure scaffolds, `cargo llvm-cov`
+mutation-testing subset of SPECIFICATION.md §1.8 (TESTING.md §3.3). Gates are fail-closed:
+missing line or branch data for crates with source code are findings, not silent 100 %.
+On pure scaffolds, `cargo llvm-cov`
 exits with `no coverage data found` before the gate can run; CI therefore probes
 with `coverage_gate.py --source-state` and only runs report+gate when real source
 exists. The coverage **job** still schedules every push (no job-level skip).
@@ -229,7 +230,7 @@ exists. The coverage **job** still schedules every push (no job-level skip).
 - First non-scaffold source activates fail-closed `cargo llvm-cov` + `coverage_gate.py`
 - Coverage report per crate; gate breaks the build on under-threshold
 - Exception list exists as a file with **justification per entry**; an entry without justification breaks the build
-- `cargo-mutants` runs against `trinity-verify` and `trinity-signer`; surviving mutants break the build
+- `cargo-mutants` runs against `trinity-verify`, `trinity-signer`, `trinity-keystore`, `trinity-entropy` (the named subset in SPECIFICATION.md §1.8 / TESTING.md §3.3, same invocation as CI); surviving mutants break the build
 - Missing BRF/BRH lines in lcov are a finding (not silent 100 % branches)
 - Branch coverage: CI/`just coverage` run `cargo +nightly llvm-cov … --branch` (decision recorded in SPECIFICATION.md §0.3 / WP-00); missing BRF/BRH remains a finding if the report lacks branch data
 
@@ -1498,13 +1499,26 @@ Scope depends on **WP-06** via WP-60.
 ---
 
 #### WP-74 · External security audit
-**Spec:** 5.5 · **Needs:** WP-40, WP-41, WP-42 · **State:** OPEN
+**Spec:** 1.8, 5.5, O11 · **Needs:** WP-40, WP-41, WP-42 · **State:** OPEN
+
+External audit of the security-critical surface (SPECIFICATION.md §1.8). The
+auditor sees the **full-tier** crates plus both platform keystore
+implementations — more than the earlier four-crate list (`keystore`, `signer`,
+`verify`, `ffi`). Newly in scope: `trinity-types`, `trinity-entropy`,
+`trinity-chain`. That costs more; omitting them would not audit seed entropy or
+the path money leaves the device. Weaker-tier `trinity-watch` and deferred
+`trinity-transport`/`trinity-export` stay out (reasons in §1.8). Needs stay
+WP-40/41/42: those are still the last pieces not yet built; types, entropy, and
+chain already have their WPs (chain WP-13–16 is DONE).
 
 **Files:** Audit report (external), fix PRs after findings
-**Prohibited:** Do not leave critical/high findings with "later".
+**Prohibited:** Do not leave critical/high findings with "later". Do not shrink
+the §1.8 full-tier scope without changing the Spec first (R3).
 
 **Acceptance**
-- Scope: `keystore`, `signer`, `verify`, `ffi`, both platform layers
+- Scope is SPECIFICATION.md §1.8 full-tier: `trinity-types`, `-entropy`,
+  `-keystore`, `-signer`, `-verify`, `-ffi`, `-chain`, and both platform
+  keystore implementations (WP-41, WP-42)
 - Critical and high closed
 
 **Tests:** —
