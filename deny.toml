@@ -116,6 +116,14 @@ deny = [
     # must fail the build. Only the signer/FFI may touch keystore/signer.
     { name = "trinity-keystore", wrappers = ["trinity-signer", "trinity-ffi"], reason = "secrets; trinity-watch must stay watch-only (WP-12)" },
     { name = "trinity-signer", wrappers = ["trinity-ffi"], reason = "signing; trinity-watch must stay watch-only (WP-12)" },
+
+    # Reverse of the WP-12 watch-only rule: trinity-signer must not depend
+    # on trinity-chain, so the network libraries (bdk_wallet,
+    # electrum-client, bdk_kyoto) cannot enter the signature path.
+    # trinity-ffi uses it today; trinity-watch is the edge in the
+    # SPECIFICATION.md crate graph. An unused wrapper is a warning
+    # (same precedent as trinity-ffi on trinity-keystore).
+    { name = "trinity-chain", wrappers = ["trinity-ffi", "trinity-watch"], reason = "network I/O; signature path must stay offline" },
 ]
 
 # Accepted multiple versions. EVERY entry needs a justification, and the
