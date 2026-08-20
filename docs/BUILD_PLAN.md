@@ -206,9 +206,12 @@ matters; protocol-level injection alone is not enough for display/firmware claim
 ### Two standing rules
 
 1. **Coverage is not the gate; mutation testing is** (`TESTING.md` §3.3). Line coverage
-   shows a path ran; surviving mutants show a path was not checked. Security cores:
-   `trinity-verify`, `trinity-signer`, `trinity-keystore`, `trinity-entropy` — no
-   surviving mutants without a justified exclusion entry.
+   shows a path ran; surviving mutants show a path was not checked. The four crates
+   `just mutants` / CI run (`trinity-verify`, `trinity-signer`, `trinity-keystore`,
+   `trinity-entropy`) are the **mutation-testing subset** of the security-critical
+   surface (SPECIFICATION.md §1.8), not that surface itself: `trinity-types`,
+   `-chain`, and `-ffi` are full-tier there and omitted here for the reasons in §1.8.
+   No surviving mutant without a justified exclusion entry.
 2. **A suite that does not compile counts zero tests.** Always compare **suite count and
    test count**, not only “green”. A compile error can drop an entire suite so that fewer
    tests run while the summary still looks clean. Unexpected green is an **alarm** (§7),
@@ -332,7 +335,7 @@ Same commands as CI fast path / tools:
 - `just check` → `fmt-check`, `clippy`, `build`, `gate-tests`, `check-plan`, `dep-budget`
 - `just test` → `cargo test --workspace --locked`
 - `just coverage` → llvm-cov + gate (heavy)
-- `just mutants` → mutation testing on security cores (heavy; also on `main` in CI)
+- `just mutants` → mutation testing on the §1.8 mutants subset (TESTING.md §3.3; heavy; also on `main` in CI)
 - `just diff-test` / `just signet-test` when those features exist (heavy)
 
 **Machine load:** do not fire the full heavy suite (coverage, mutants, signet, differential,

@@ -61,7 +61,7 @@ just diff-test          # D1–D19 against Core 30.2              (< 20 min)
 just signet-test        # S1–S36 on regtest and signet       (< 45 min)
 just fuzz <target>      # cargo-fuzz
 just coverage           # report + gate check
-just mutants            # cargo-mutants on verify and signer
+just mutants            # cargo-mutants on verify, signer, keystore, entropy (§1.8 named subset)
 just gate-tests         # stdlib gates: CI workflow, inventory, dep budget, compose
 just check-plan         # §6: Test-IDs ↔ WPs ↔ Spec
 ```
@@ -86,7 +86,11 @@ interface; container-to-container traffic stays on the Compose network.
 ### 3.1 The honest frame
 
 **100 % line and branch coverage is required for the security cores and is
-reachable there.** For two areas it is not, and naming that honestly is better than
+reachable there.** In this document "security cores" means the secret-handling
+subset of the security-critical surface (SPECIFICATION.md §1.8): `trinity-types`,
+`-entropy`, `-keystore`, `-signer`, `-verify` — the crates with a 100 % threshold
+in §3.2. That is narrower than the surface; the deviation is named in §3.2.
+For two areas 100 % is not reachable, and naming that honestly is better than
 forcing a number that says nothing:
 
 - **Platform code** (Keychain, Secure Enclave, StrongBox, BiometricPrompt) cannot be fully
@@ -121,6 +125,15 @@ remains enforceable; the branch threshold is fail-closed on "data missing".
 
 ### 3.2 Thresholds per crate
 
+The 100 % line/branch rows are the §1.8 secret-handling subset (`trinity-types`,
+`-entropy`, `-keystore`, `-signer`, `-verify`). `trinity-chain` and `trinity-ffi`
+are **full-tier** in SPECIFICATION.md §1.8 but keep the lower thresholds here:
+chain's uncovered remainder is network error paths per backend; ffi is still a
+scaffold plus the uniffi generator. `trinity-watch` is weaker-tier in §1.8
+(independent verify). `trinity-transport` and `trinity-export` are deferred in
+§1.8; their rows stay because every workspace crate has a gate, not because they
+are classified yet. Implemented by `scripts/coverage_gate.py` (same numbers).
+
 | Crate | Lines | Branches | Tool | Exceptions |
 |---|---|---|---|---|
 | `trinity-types` | **100 %** | **100 %** | llvm-cov | none |
@@ -140,7 +153,15 @@ remains enforceable; the branch threshold is fail-closed on "data missing".
 ### 3.3 Mutation testing — the real gate
 
 `cargo-mutants` against `trinity-verify`, `trinity-signer`, `trinity-keystore`,
-`trinity-entropy`.
+`trinity-entropy` — the same invocation as `.github/workflows/ci.yml` and
+`just mutants`.
+
+This is a **deliberate subset** of the security-critical surface
+(SPECIFICATION.md §1.8). It omits `trinity-types` (value types; `SecretBytes`
+invariants are type-level: no `Clone`, redacted `Debug`/`Display`, proven by
+trybuild, not by mutants) and omits `trinity-chain` and `trinity-ffi` (network
+backends / still a scaffold). Widening the CI/`just mutants` invocation is a
+configuration change and is not done from this document.
 
 **Rule: no surviving mutant.** If one survives, a check is missing — the mutant is
 not exempted; the test is extended. Exceptions are only allowed for mutants
