@@ -53,6 +53,8 @@ struct MockState {
     phantom_mempool: Vec<bitcoin::Txid>,
     /// Txids for which getrawtransaction / info returns a non-not-found error.
     hard_fail_txids: HashSet<bitcoin::Txid>,
+    /// Txids that return Core's -5 txindex hint (not a genuine missing tx).
+    txindex_fail_txids: HashSet<bitcoin::Txid>,
     /// Extra txs served by getrawtransaction (e.g. already-confirmed lookups).
     extras: Map<bitcoin::Txid, StoredTx>,
     /// conf_target → sat/vB (0 means omit feerate / errors path).
@@ -307,6 +309,14 @@ fn dispatch_rpc(body: &[u8], state: &Arc<Mutex<MockState>>) -> String {
             if let Ok(id_parsed) = txid.parse::<bitcoin::Txid>() {
                 if st.hard_fail_txids.contains(&id_parsed) {
                     return rpc_err(id, -1, "forced hard fail");
+                }
+                if st.txindex_fail_txids.contains(&id_parsed) {
+                    return rpc_err(
+                        id,
+                        -5,
+                        "No such mempool transaction. Use -txindex or provide a block hash \
+                         to enable blockchain transaction queries.",
+                    );
                 }
             }
             // Search mempool, extras, then block txs.
@@ -610,6 +620,7 @@ fn base_state(blocks: Vec<MockBlock>) -> MockState {
         mempool: vec![],
         phantom_mempool: vec![],
         hard_fail_txids: HashSet::new(),
+        txindex_fail_txids: HashSet::new(),
         extras: Map::new(),
         fees: default_fees(),
         auth: Some(("trinity".into(), "regtest".into())),
@@ -1114,5 +1125,79 @@ fn mock_tip_checkpoint_overflow_on_empty_scan() {
     assert!(
         matches!(err, ChainError::Protocol(_) | ChainError::Network(_)),
         "got {err:?}"
+    );
+}
+
+#[test]
+fn mock_txindex_required_fails_loud_on_expected_txid() {
+    let pay_spk = watch_spk(0xe1);
+    let (blocks, pay) = chain_with_payment(pay_spk.clone());
+    let pay_txid = pay.compute_txid();
+    let mut state = base_state(blocks);
+    state.txindex_fail_txids.insert(pay_txid);
+    let mock = MockRpc::spawn(state);
+    let b = mock.backend();
+    let req = SyncRequest::<(KeychainKind, u32)>::builder_at(0)
+        .spks_with_indexes(vec![((KeychainKind::External, 0), pay_spk.clone())])
+        .expected_spk_txids(vec![(pay_spk, pay_txid)])
+        .build();
+    let err = b.sync(req).expect_err("txindex must not look like missing");
+    assert!(matches!(err, ChainError::Unavailable(_)), "got {err:?}");
+}
+
+#[test]
+fn mock_mempool_two_pass_sees_changeless_child_listed_first() {
+    // Parent pays the watched spk; child spends that outpoint with no change
+    // to a foreign script. Mempool lists the child first (not topological).
+    let pay_spk = watch_spk(0xe2);
+    let genesis = bitcoin::constants::genesis_block(Network::Regtest);
+    let g_filter = filter_for(&genesis);
+    let blocks = vec![MockBlock {
+        height: 0,
+        block: genesis,
+        filter: g_filter,
+    }];
+    let parent = payment_tx(pay_spk.clone(), 50_000);
+    let parent_txid = parent.compute_txid();
+    let child = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: parent_txid,
+                vout: 0,
+            },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(49_000),
+            script_pubkey: watch_spk(0xee),
+        }],
+    };
+    let child_txid = child.compute_txid();
+    let mut state = base_state(blocks);
+    state.mempool = vec![child, parent];
+    let mock = MockRpc::spawn(state);
+    let b = mock.backend();
+    let req = SyncRequest::<(KeychainKind, u32)>::builder_at(0)
+        .spks_with_indexes(vec![((KeychainKind::External, 0), pay_spk)])
+        .build();
+    let up = b.sync(req).expect("sync mempool pair");
+    let ids: Vec<_> = up
+        .tx_update
+        .txs
+        .iter()
+        .map(|tx| tx.compute_txid())
+        .collect();
+    assert!(
+        ids.contains(&parent_txid),
+        "parent must be relevant; got {ids:?}"
+    );
+    assert!(
+        ids.contains(&child_txid),
+        "changeless child listed first must still be relevant after the parent \
+         outpoint is learned; got {ids:?}"
     );
 }

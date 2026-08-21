@@ -23,7 +23,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bdk_chain::spk_client::{FullScanRequest, SyncRequest};
@@ -380,27 +381,46 @@ impl CbfBackend {
         let timeout = self.config.operation_timeout;
         let shutdown = requester.clone();
         let handle = self.runtime.handle().clone();
+        let is_broadcast = matches!(op, ReadyOp::Broadcast(_));
+        let reached_submit = Arc::new(AtomicBool::new(false));
+        let reached_for_wait = Arc::clone(&reached_submit);
+        let reached_for_work = Arc::clone(&reached_submit);
+        let timeout_secs = timeout.as_secs();
 
-        let result = run_with_wall_timeout(timeout, move || {
-            handle.block_on(async move {
-                tokio::spawn(async move {
-                    let _ = node.run().await;
-                });
+        // Timeout before `submit_package` (dead peer, filter sync) → Network.
+        // Timeout after `submit_package` started (peer never sent `getdata`) →
+        // DeliveryUnconfirmed. `submit_package` Err → Broadcast. Disconnected
+        // worker → Network. The wall deadline is unchanged.
+        let result = run_with_wall_timeout_or(
+            timeout,
+            move || {
+                map_operation_timeout(
+                    is_broadcast,
+                    reached_for_wait.load(Ordering::SeqCst),
+                    timeout_secs,
+                )
+            },
+            move || {
+                handle.block_on(async move {
+                    tokio::spawn(async move {
+                        let _ = node.run().await;
+                    });
 
-                loop {
-                    match event_rx.recv().await {
-                        Some(Event::FiltersSynced(_)) => break,
-                        Some(_) => continue,
-                        None => {
-                            return Err(ChainError::Network(
-                                "cbf node stopped before ready".into(),
-                            ));
+                    loop {
+                        match event_rx.recv().await {
+                            Some(Event::FiltersSynced(_)) => break,
+                            Some(_) => continue,
+                            None => {
+                                return Err(ChainError::Network(
+                                    "cbf node stopped before ready".into(),
+                                ));
+                            }
                         }
                     }
-                }
-                run_ready_op(&requester, op).await
-            })
-        });
+                    run_ready_op(&requester, op, &reached_for_work).await
+                })
+            },
+        );
 
         let _ = shutdown.shutdown();
         result
@@ -417,6 +437,43 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, ChainError> + Send + 'static,
 {
+    let secs = timeout.as_secs();
+    run_with_wall_timeout_or(
+        timeout,
+        move || ChainError::Network(format!("cbf operation timed out after {secs}s")),
+        f,
+    )
+}
+
+/// Wall-clock deadline → error. Broadcast that has started `submit_package`
+/// (`reached_submit`) is [`ChainError::DeliveryUnconfirmed`]; anything else
+/// is [`ChainError::Network`]. Isolated so the four combinations are testable
+/// without a peer or a wait.
+fn map_operation_timeout(
+    is_broadcast: bool,
+    reached_submit: bool,
+    timeout_secs: u64,
+) -> ChainError {
+    if is_broadcast && reached_submit {
+        ChainError::DeliveryUnconfirmed
+    } else {
+        ChainError::Network(format!("cbf operation timed out after {timeout_secs}s"))
+    }
+}
+
+/// Like [`run_with_wall_timeout`], but the timeout error is supplied by the
+/// caller so broadcast can map a hang after `submit_package` to
+/// [`ChainError::DeliveryUnconfirmed`] without changing scan/tip/fee timeouts.
+fn run_with_wall_timeout_or<T, F, E>(
+    timeout: Duration,
+    on_timeout: E,
+    f: F,
+) -> Result<T, ChainError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, ChainError> + Send + 'static,
+    E: FnOnce() -> ChainError,
+{
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("trinity-cbf-op".into())
@@ -427,17 +484,18 @@ where
 
     match rx.recv_timeout(timeout) {
         Ok(r) => r,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(ChainError::Network(format!(
-            "cbf operation timed out after {}s",
-            timeout.as_secs()
-        ))),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(on_timeout()),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(ChainError::Network(
             "cbf worker ended without a result".into(),
         )),
     }
 }
 
-async fn run_ready_op(requester: &Requester, op: ReadyOp) -> Result<ReadyResult, ChainError> {
+async fn run_ready_op(
+    requester: &Requester,
+    op: ReadyOp,
+    reached_submit: &AtomicBool,
+) -> Result<ReadyResult, ChainError> {
     match op {
         ReadyOp::Tip => {
             let tip = requester
@@ -461,6 +519,10 @@ async fn run_ready_op(requester: &Requester, op: ReadyOp) -> Result<ReadyResult,
             ])))
         }
         ReadyOp::Broadcast(tx) => {
+            // Earliest honest point: we are about to call submit_package.
+            // Setting the flag at FiltersSynced would claim an announcement
+            // that has not started (timeout between sync and send).
+            reached_submit.store(true, Ordering::SeqCst);
             let txid = tx.compute_txid();
             requester
                 .submit_package(tx)
@@ -612,6 +674,39 @@ mod tests {
     use super::*;
     use crate::privacy::BackendKind;
     use std::net::{Ipv4Addr, SocketAddrV4};
+
+    #[test]
+    fn map_operation_timeout_four_cases() {
+        // Broadcast after submit_package started: announcement may be in flight.
+        assert_eq!(
+            map_operation_timeout(true, true, 25),
+            ChainError::DeliveryUnconfirmed
+        );
+        // Broadcast before submit_package: the old FiltersSynced merker lied here.
+        assert!(
+            matches!(
+                map_operation_timeout(true, false, 25),
+                ChainError::Network(_)
+            ),
+            "broadcast timeout with merker unset must stay Network"
+        );
+        // Non-broadcast (scan/tip/fees) never claims an announcement, even if
+        // the merker were spuriously set.
+        assert!(
+            matches!(
+                map_operation_timeout(false, true, 25),
+                ChainError::Network(_)
+            ),
+            "non-broadcast timeout with merker set must stay Network"
+        );
+        assert!(
+            matches!(
+                map_operation_timeout(false, false, 25),
+                ChainError::Network(_)
+            ),
+            "non-broadcast timeout with merker unset must stay Network"
+        );
+    }
 
     #[test]
     fn privacy_profile_is_cbf_table_row() {
@@ -1055,9 +1150,45 @@ mod tests {
             }],
         };
         let bcast_err = backend.broadcast(&junk).expect_err("dead peer broadcast");
-        assert!(matches!(
-            bcast_err,
-            ChainError::Network(_) | ChainError::Unavailable(_) | ChainError::Broadcast(_)
-        ));
+        assert!(
+            matches!(
+                bcast_err,
+                ChainError::Network(_) | ChainError::Unavailable(_)
+            ),
+            "dead peer never reaches submit_package, so must stay Network/Unavailable, got {bcast_err:?}"
+        );
+        assert!(
+            !matches!(bcast_err, ChainError::DeliveryUnconfirmed),
+            "unconfirmed delivery is only the hang after announcement, not a refused connection"
+        );
+    }
+
+    #[test]
+    fn dead_peer_broadcast_is_network_not_unconfirmed() {
+        // Real transport failure: nothing listens. Distinct from the
+        // already-known-tx hang, which is DeliveryUnconfirmed.
+        let dir =
+            std::env::temp_dir().join(format!("trinity-cbf-bcast-net-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let cfg =
+            CbfConfig::regtest_peer(SocketAddr::from(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9)))
+                .data_dir(dir)
+                .operation_timeout(Duration::from_secs(6));
+        let backend = CbfBackend::new(cfg).expect("runtime");
+        let junk = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![bitcoin::TxOut {
+                value: bitcoin::Amount::from_sat(1),
+                script_pubkey: ScriptBuf::new_op_return([0u8]),
+            }],
+        };
+        let err = backend.broadcast(&junk).expect_err("dead peer");
+        assert!(
+            matches!(err, ChainError::Network(_) | ChainError::Unavailable(_)),
+            "got {err:?}"
+        );
+        assert_ne!(err, ChainError::DeliveryUnconfirmed);
     }
 }

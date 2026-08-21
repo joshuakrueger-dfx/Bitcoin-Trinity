@@ -1,9 +1,8 @@
 //! Live Core RPC tests — WP-15 / S2 contribution / S13.
 //!
 //! Requires `./scripts/test-env.sh up` (Bitcoin Core 30.2 regtest on
-//! `127.0.0.1:18443`, user/pass `trinity`/`regtest`). When the node is
-//! unreachable the tests **skip with a visible message** (not a silent
-//! green pass of the balance/error claims).
+//! `127.0.0.1:18443`, user/pass `trinity`/`regtest`). A missing node is a
+//! failure unless `TRINITY_SKIP_LIVE` is set.
 
 use std::process::{Command, Stdio};
 use std::str::FromStr;
@@ -64,6 +63,9 @@ fn compose_project_candidates() -> Vec<String> {
     {
         v.push(name.to_owned());
     }
+    // `./scripts/test-env.sh` uses docker/compose.yml with no `-p`, so the
+    // project name is the compose-file directory.
+    v.push("docker".into());
     // Explicit WP-15 project used when starting test-env on this Studio box.
     v.push("wp15-corerpc".into());
     v.dedup();
@@ -133,16 +135,17 @@ fn detect_rpc() -> Option<RpcMode> {
 }
 
 fn require_core() -> Option<RpcMode> {
-    match detect_rpc() {
-        Some(m) => Some(m),
-        None => {
-            eprintln!(
-                "SKIP core_rpc_live: Bitcoin Core not reachable at {RPC_URL}. \
-                 Run `./scripts/test-env.sh up` first."
-            );
-            None
-        }
+    if let Some(m) = detect_rpc() {
+        return Some(m);
     }
+    if std::env::var_os("TRINITY_SKIP_LIVE").is_some() {
+        eprintln!("skip: Bitcoin Core not reachable at {RPC_URL} (TRINITY_SKIP_LIVE)");
+        return None;
+    }
+    panic!(
+        "regtest RPC not reachable at {RPC_URL}. Run `./scripts/test-env.sh up` \
+         or set TRINITY_SKIP_LIVE=1 to skip this live test."
+    );
 }
 
 fn cli(mode: &RpcMode, wallet: Option<&str>, args: &[&str]) -> String {

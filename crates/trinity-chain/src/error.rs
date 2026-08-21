@@ -22,6 +22,20 @@ pub enum ChainError {
     #[error("broadcast failed: {0}")]
     Broadcast(String),
 
+    /// Announcement went out but the peer did not fetch the payload.
+    ///
+    /// Compact-filter broadcast sends `inv` to one peer and waits for `getdata`.
+    /// If that peer already has the transaction it never fetches, so delivery
+    /// stays unconfirmed even though the payment may already be propagating.
+    /// Resending is neither required nor harmful. This is not a transport
+    /// failure and not a rejection.
+    #[error(
+        "chain delivery unconfirmed: announcement was not fetched; \
+         the transaction may already be propagating — resending is neither \
+         required nor harmful"
+    )]
+    DeliveryUnconfirmed,
+
     /// Backend is not ready (not connected, still IBD, …).
     #[error("chain backend unavailable: {0}")]
     Unavailable(String),
