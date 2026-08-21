@@ -29,9 +29,9 @@ use std::time::Duration;
 
 use bdk_chain::spk_client::{FullScanRequest, SyncRequest};
 use bdk_chain::spk_txout::SpkTxOutIndex;
-use bdk_chain::{BlockId, CheckPoint, ConfirmationBlockTime, IndexedTxGraph};
+use bdk_chain::{BlockId, CheckPoint, ConfirmationBlockTime, IndexedTxGraph, Indexer};
 use bdk_wallet::{KeychainKind, Update};
-use bitcoin::{Network, ScriptBuf, Transaction, Txid};
+use bitcoin::{Network, OutPoint, ScriptBuf, Transaction, Txid};
 
 use bdk_kyoto::bip157::chain::{BlockHeaderChanges, ChainState};
 use bdk_kyoto::bip157::tokio;
@@ -286,7 +286,7 @@ impl CbfBackend {
     /// Run a filter scan for the given scripts and produce a wallet [`Update`].
     fn scan_indexed(
         &self,
-        index: SpkTxOutIndex<(KeychainKind, u32)>,
+        index: RelevantSpkIndex,
         chain_tip: Option<CheckPoint>,
     ) -> Result<Update, ChainError> {
         let network = self.config.network;
@@ -345,7 +345,7 @@ impl CbfBackend {
                                 hash: tip.hash,
                             });
 
-                            let last_active = last_active_indices(&graph.index);
+                            let last_active = last_active_indices(&graph.index.inner);
                             let tx_update = graph.graph().clone().into();
                             return Ok(Update {
                                 last_active_indices: last_active,
@@ -573,6 +573,67 @@ fn walk_back_reorg(checkpoint: CheckPoint) -> HashCheckpoint {
     ret
 }
 
+/// Scripts plus request-carried predecessors, so a changeless spend of an
+/// already-known output is relevant without fetching that output from a peer.
+///
+/// `SpkTxOutIndex::is_relevant` only treats an input as ours when the spent
+/// outpoint is already in `txouts`. That map is filled by `scan_txout`, which
+/// needs a [`bitcoin::TxOut`]. [`SyncRequest`] does not carry TxOuts: wallet
+/// `start_sync_with_revealed_spks` puts canonical txs in `expected_spk_txids`
+/// and (optionally) raw [`OutPoint`]s in `outpoints`. Matching those locally
+/// is the input-side of relevance; the output-side (pay-to-watched-script)
+/// stays `inner.is_relevant`.
+#[derive(Debug)]
+struct RelevantSpkIndex {
+    inner: SpkTxOutIndex<(KeychainKind, u32)>,
+    known_outpoints: HashSet<OutPoint>,
+    known_txids: HashSet<Txid>,
+}
+
+impl RelevantSpkIndex {
+    fn scripts_only(inner: SpkTxOutIndex<(KeychainKind, u32)>) -> Self {
+        Self {
+            inner,
+            known_outpoints: HashSet::new(),
+            known_txids: HashSet::new(),
+        }
+    }
+
+    fn all_spks(&self) -> &BTreeMap<(KeychainKind, u32), ScriptBuf> {
+        self.inner.all_spks()
+    }
+}
+
+impl Indexer for RelevantSpkIndex {
+    type ChangeSet = ();
+
+    fn index_txout(&mut self, outpoint: OutPoint, txout: &bitcoin::TxOut) -> Self::ChangeSet {
+        self.inner.index_txout(outpoint, txout)
+    }
+
+    fn index_tx(&mut self, tx: &Transaction) -> Self::ChangeSet {
+        self.inner.index_tx(tx)
+    }
+
+    fn apply_changeset(&mut self, changeset: Self::ChangeSet) {
+        self.inner.apply_changeset(changeset)
+    }
+
+    fn initial_changeset(&self) -> Self::ChangeSet {
+        self.inner.initial_changeset()
+    }
+
+    fn is_tx_relevant(&self, tx: &Transaction) -> bool {
+        if self.inner.is_relevant(tx) {
+            return true;
+        }
+        tx.input.iter().any(|input| {
+            self.known_outpoints.contains(&input.previous_output)
+                || self.known_txids.contains(&input.previous_output.txid)
+        })
+    }
+}
+
 fn last_active_indices(index: &SpkTxOutIndex<(KeychainKind, u32)>) -> BTreeMap<KeychainKind, u32> {
     let mut out: BTreeMap<KeychainKind, u32> = BTreeMap::new();
     for ((keychain, idx), _op) in index.outpoints() {
@@ -598,32 +659,51 @@ fn collect_full_scan_spks(
     (index, chain_tip)
 }
 
-/// Collect sync SPKs.
+/// Collect sync SPKs and the predecessor ids the request already carries.
 ///
 /// `SyncRequest` does not re-expose the index type `I` once drained via the
 /// public iterators (only the script). For sync, [`Update::last_active_indices`]
 /// is empty anyway (`From<SyncResponse> for Update`); filter matching only
 /// needs the script set. Indices are filled with a monotone counter under
 /// [`KeychainKind::External`] so `SpkTxOutIndex` stays populated.
+///
+/// Wallet `start_sync_with_revealed_spks` puts canonical txs in
+/// `expected_spk_txids`, not in `outpoints`. Those txids (and any explicit
+/// outpoints / loose txids) seed input-side relevance so a changeless spend
+/// of a pre-checkpoint output is not dropped. No peer lookup.
 fn collect_sync_spks(
     mut req: SyncRequest<(KeychainKind, u32)>,
-) -> (SpkTxOutIndex<(KeychainKind, u32)>, Option<CheckPoint>) {
+) -> (RelevantSpkIndex, Option<CheckPoint>) {
     let chain_tip = req.chain_tip();
-    let mut index = SpkTxOutIndex::default();
+    let mut inner = SpkTxOutIndex::default();
+    let mut known_txids = HashSet::new();
     let mut n = 0u32;
     while let Some(item) = req.next_spk_with_expected_txids() {
-        index.insert_spk((KeychainKind::External, n), item.spk);
+        known_txids.extend(item.expected_txids);
+        inner.insert_spk((KeychainKind::External, n), item.spk);
         n = n.saturating_add(1);
     }
-    while req.next_txid().is_some() {}
-    while req.next_outpoint().is_some() {}
-    (index, chain_tip)
+    while let Some(txid) = req.next_txid() {
+        known_txids.insert(txid);
+    }
+    let mut known_outpoints = HashSet::new();
+    while let Some(op) = req.next_outpoint() {
+        known_outpoints.insert(op);
+    }
+    (
+        RelevantSpkIndex {
+            inner,
+            known_outpoints,
+            known_txids,
+        },
+        chain_tip,
+    )
 }
 
 impl ChainBackend for CbfBackend {
     fn full_scan(&self, req: FullScanRequest<KeychainKind>) -> Result<Update, ChainError> {
         let (index, tip) = collect_full_scan_spks(req, self.config.full_scan_script_limit);
-        self.scan_indexed(index, tip)
+        self.scan_indexed(RelevantSpkIndex::scripts_only(index), tip)
     }
 
     fn sync(&self, req: SyncRequest<(KeychainKind, u32)>) -> Result<Update, ChainError> {
@@ -996,11 +1076,168 @@ mod tests {
             .txids(vec![txid])
             .outpoints(vec![op])
             .build();
-        // Drains `while next_txid` / `while next_outpoint` bodies (CBF ignores
-        // those items for filter matching but must not leave them unread).
         let (index, tip) = collect_sync_spks(req);
         assert!(tip.is_none());
         assert_eq!(index.all_spks().len(), 1);
+        assert!(index.known_txids.contains(&txid));
+        assert!(index.known_outpoints.contains(&op));
+    }
+
+    #[test]
+    fn collect_sync_keeps_expected_spk_txids() {
+        use bitcoin::hashes::Hash;
+
+        let spk = ScriptBuf::new_op_return([4u8]);
+        let txid = bitcoin::Txid::from_byte_array([7u8; 32]);
+        let req = SyncRequest::<(KeychainKind, u32)>::builder_at(0)
+            .spks_with_indexes(vec![((KeychainKind::External, 0), spk.clone())])
+            .expected_spk_txids(vec![(spk, txid)])
+            .build();
+        let (index, _) = collect_sync_spks(req);
+        assert!(index.known_txids.contains(&txid));
+        assert!(index.known_outpoints.is_empty());
+    }
+
+    #[test]
+    fn relevant_spk_index_input_side_from_request_ids() {
+        use bitcoin::hashes::Hash;
+        use bitcoin::{Amount, Sequence, TxIn, TxOut, Witness};
+
+        let spend_spk = ScriptBuf::new_op_return([1u8]);
+        let foreign_spk = ScriptBuf::new_op_return([2u8]);
+        let mut inner = SpkTxOutIndex::default();
+        inner.insert_spk((KeychainKind::External, 0), spend_spk.clone());
+
+        let funding_txid = bitcoin::Txid::from_byte_array([0x11; 32]);
+        let known_op = bitcoin::OutPoint {
+            txid: bitcoin::Txid::from_byte_array([0x22; 32]),
+            vout: 1,
+        };
+        let index = RelevantSpkIndex {
+            inner,
+            known_outpoints: HashSet::from([known_op]),
+            known_txids: HashSet::from([funding_txid]),
+        };
+
+        let changeless = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: funding_txid,
+                    vout: 3,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: foreign_spk.clone(),
+            }],
+        };
+        assert!(
+            index.is_tx_relevant(&changeless),
+            "spend of an expected-spk txid must be relevant without scanning that TxOut"
+        );
+
+        let by_outpoint = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: known_op,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: foreign_spk.clone(),
+            }],
+        };
+        assert!(index.is_tx_relevant(&by_outpoint));
+
+        let receive = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: spend_spk,
+            }],
+        };
+        assert!(
+            index.is_tx_relevant(&receive),
+            "pay-to-watched-script must stay relevant (receive path)"
+        );
+
+        let foreign = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: bitcoin::Txid::from_byte_array([0x33; 32]),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: foreign_spk,
+            }],
+        };
+        assert!(!index.is_tx_relevant(&foreign));
+    }
+
+    #[test]
+    fn relevant_spk_index_index_tx_records_matching_outpoint() {
+        use bitcoin::{Amount, TxOut};
+
+        let spk = ScriptBuf::new_op_return([6u8]);
+        let foreign_spk = ScriptBuf::new_op_return([7u8]);
+        let mut inner = SpkTxOutIndex::default();
+        inner.insert_spk((KeychainKind::External, 0), spk.clone());
+        let mut index = RelevantSpkIndex::scripts_only(inner);
+        assert!(
+            index.inner.outpoints().is_empty(),
+            "watching a script does not record an outpoint until a matching tx is indexed"
+        );
+
+        let pay = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: spk,
+            }],
+        };
+        index.index_tx(&pay);
+        assert_eq!(
+            index.inner.outpoints().len(),
+            1,
+            "index_tx must scan matching outputs into the inner index"
+        );
+        let last = last_active_indices(&index.inner);
+        assert_eq!(last.get(&KeychainKind::External), Some(&0));
+
+        let foreign = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut {
+                value: Amount::from_sat(1),
+                script_pubkey: foreign_spk,
+            }],
+        };
+        index.index_tx(&foreign);
+        assert_eq!(
+            index.inner.outpoints().len(),
+            1,
+            "a foreign output must not be recorded"
+        );
     }
 
     #[test]

@@ -12,13 +12,25 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::process::Command;
+use std::str::FromStr;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bdk_wallet::bitcoin::{self, Amount, Network};
-use bdk_wallet::{KeychainKind, Wallet};
-use bitcoin::consensus::encode::deserialize_hex;
-use trinity_chain::{CbfBackend, CbfConfig, ChainBackend, ChainError};
+use bdk_wallet::{KeychainKind, SignOptions, Wallet};
+use bitcoin::consensus::encode::{deserialize_hex, serialize_hex};
+use bitcoin::{Address, FeeRate};
+use trinity_chain::{
+    CbfBackend, CbfConfig, ChainBackend, ChainError, CoreRpcBackend, CoreRpcConfig,
+};
+
+/// Amount funded to the watch address before the changeless drain.
+const FUND_SATS: u64 = 2_500_000;
+
+/// `cbf.rs` `REORG_WALKBACK` is 7. Incremental CBF resumes that many headers
+/// behind the wallet tip, so the funding block must sit strictly older than
+/// that window or it is re-indexed and the spend looks relevant.
+const CBF_REORG_WALKBACK: u32 = 7;
 
 const RPC_URL: &str = "http://127.0.0.1:18443";
 const RPC_USER: &str = "trinity";
@@ -121,6 +133,49 @@ fn make_backend(label: &str) -> CbfBackend {
         .data_dir(data_dir(label))
         .operation_timeout(Duration::from_secs(90));
     CbfBackend::new(cfg).expect("cbf runtime")
+}
+
+fn make_signable_wallet() -> Wallet {
+    let mut seed = [0u8; 32];
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos()
+        .to_le_bytes();
+    seed[..16].copy_from_slice(&nanos);
+    let pid = std::process::id().to_le_bytes();
+    seed[16..20].copy_from_slice(&pid);
+    seed[20..28].copy_from_slice(b"CBFREPRO");
+    seed[28..32].copy_from_slice(&[0x1c, 0x1d, 0x1e, 0x1f]);
+
+    let xprv = bitcoin::bip32::Xpriv::new_master(Network::Regtest, &seed).expect("xprv");
+    let ext = format!("wpkh({xprv}/84'/1'/0'/0/*)");
+    let int = format!("wpkh({xprv}/84'/1'/0'/1/*)");
+    Wallet::create(ext, int)
+        .network(Network::Regtest)
+        .create_wallet_no_persist()
+        .expect("create wallet")
+}
+
+fn mine_blocks(n: u32) {
+    let miner_addr = rpc_result(Some("miner"), "getnewaddress", "[]");
+    let miner_addr = miner_addr.as_str().expect("miner addr");
+    rpc_result(
+        Some("miner"),
+        "generatetoaddress",
+        &format!(r#"[{n}, "{miner_addr}"]"#),
+    );
+}
+
+fn tx_exists_on_node(txid: &str) -> bool {
+    match rpc_call(None, "getrawtransaction", &format!(r#"["{txid}"]"#)) {
+        Ok(text) => {
+            let v: serde_json::Value =
+                serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+            v["error"].is_null() && v["result"].is_string()
+        }
+        Err(_) => false,
+    }
 }
 
 #[test]
@@ -485,5 +540,177 @@ fn cbf_resubmit_of_already_announced_tx_is_delivery_unconfirmed() {
         "DeliveryUnconfirmed must come from the wall wait after submit_package \
          started, not from an immediate send/recv error; elapsed {:?}",
         t1.elapsed()
+    );
+}
+
+/// CBF incremental sync must surface a changeless spend whose funding
+/// outpoint sits before the scan window.
+///
+/// Compact filters match the spent script, so the block is fetched.
+/// Input-side relevance uses the request's `expected_spk_txids` (and any
+/// outpoints) — not a peer lookup of the predecessor. A same-block receive
+/// still applies via the output match (unchanged).
+#[test]
+fn cbf_sync_surfaces_changeless_spend_of_older_output() {
+    if !require_live_regtest() {
+        return;
+    }
+    let _guard = REGTEST_LOCK.lock().expect("regtest lock");
+    ensure_miner_wallet();
+
+    let mut wallet = make_signable_wallet();
+    let addr_info = wallet.reveal_next_address(KeychainKind::External);
+    let receive_spk = addr_info.script_pubkey();
+    let addr = addr_info.address.to_string();
+
+    let fund_btc = format!("{:.8}", FUND_SATS as f64 / 100_000_000.0);
+    let fund_txid = rpc_result(
+        Some("miner"),
+        "sendtoaddress",
+        &format!(r#"["{addr}", {fund_btc}]"#),
+    );
+    let fund_txid = fund_txid.as_str().expect("fund txid").to_owned();
+    mine_blocks(1);
+
+    // Bootstrap UTXO + chain via Core RPC so the only CBF node in this test
+    // is the observation scan. A second short-lived CBF peer against the
+    // same bitcoind has been seen to drop before FiltersSynced.
+    let rpc_backend =
+        CoreRpcBackend::connect(CoreRpcConfig::user_pass(RPC_URL, RPC_USER, RPC_PASS))
+            .expect("connect Core RPC");
+    let req = wallet.start_full_scan().build();
+    let update = rpc_backend
+        .full_scan(req)
+        .expect("rpc full_scan after funding");
+    wallet.apply_update(update).expect("apply funding");
+    assert_eq!(
+        wallet.balance().confirmed.to_sat(),
+        FUND_SATS,
+        "wallet must hold the confirmed funding UTXO before the drain"
+    );
+    let funding_height = wallet.latest_checkpoint().height();
+    eprintln!(
+        "funded {FUND_SATS} sats to {addr} via {fund_txid}; wallet checkpoint height={funding_height}"
+    );
+
+    // Push the funding block strictly behind CBF's reorg walk-back so the
+    // later incremental scan cannot re-learn the spent outpoint.
+    let filler = CBF_REORG_WALKBACK + 1;
+    mine_blocks(filler);
+    let advance_req = wallet.start_sync_with_revealed_spks().build();
+    let advance_update = rpc_backend
+        .sync(advance_req)
+        .expect("rpc sync to advance checkpoint past funding");
+    wallet
+        .apply_update(advance_update)
+        .expect("apply checkpoint advance");
+    let advanced_height = wallet.latest_checkpoint().height();
+    eprintln!("advanced wallet checkpoint height={advanced_height} (filler={filler})");
+    assert!(
+        advanced_height >= funding_height + filler,
+        "incremental sync must move the tip past the funding block + walk-back; \
+         funding={funding_height} tip={advanced_height}"
+    );
+
+    let dest = rpc_result(Some("miner"), "getnewaddress", "[]");
+    let dest = dest.as_str().expect("drain dest");
+    let dest_addr = Address::from_str(dest)
+        .expect("dest parse")
+        .require_network(Network::Regtest)
+        .expect("dest network");
+
+    let mut builder = wallet.build_tx();
+    builder
+        .drain_wallet()
+        .drain_to(dest_addr.script_pubkey())
+        .fee_rate(FeeRate::from_sat_per_vb(1).expect("1 sat/vb"));
+    let mut psbt = builder.finish().expect("drain psbt");
+    let signed = wallet
+        .sign(&mut psbt, SignOptions::default())
+        .expect("sign drain");
+    assert!(signed, "descriptor xprv must finalize the drain");
+    let spend_tx = psbt.extract_tx().expect("extract drain");
+    let spend_txid = spend_tx.compute_txid();
+
+    assert_eq!(
+        spend_tx.output.len(),
+        1,
+        "drain must be changeless (single output); outputs={:?}",
+        spend_tx
+            .output
+            .iter()
+            .map(|o| o.script_pubkey.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert_ne!(
+        spend_tx.output[0].script_pubkey, receive_spk,
+        "drain output must not land on the funded receive script"
+    );
+
+    // Same-block receive: proves the filter matched and the block was
+    // applied. Without it, a missed block would look like the same gap.
+    let probe_info = wallet.reveal_next_address(KeychainKind::External);
+    let probe_spk = probe_info.script_pubkey();
+    let probe_addr = probe_info.address.to_string();
+    let probe = rpc_result(
+        Some("miner"),
+        "sendtoaddress",
+        &format!(r#"["{probe_addr}", 0.00100000]"#),
+    );
+    let probe_txid: bitcoin::Txid = probe
+        .as_str()
+        .expect("probe txid")
+        .parse()
+        .expect("probe parse");
+
+    let spend_hex = serialize_hex(&spend_tx);
+    rpc_result(None, "sendrawtransaction", &format!(r#"["{spend_hex}"]"#));
+    mine_blocks(1);
+
+    let spend_id = spend_txid.to_string();
+    assert!(
+        tx_exists_on_node(&spend_id),
+        "drain {spend_id} must be in a block before the CBF sync — \
+         otherwise this is not a reproduction of a dropped confirmed spend"
+    );
+    eprintln!(
+        "changeless spend {spend_txid} mined; same-block receive {probe_txid} to {probe_addr}"
+    );
+
+    let sync_backend = make_backend("changeless-sync");
+    let sync_req = wallet.start_sync_with_revealed_spks().build();
+    let sync_update = sync_backend
+        .sync(sync_req)
+        .expect("cbf incremental sync after drain");
+    let present: Vec<_> = sync_update
+        .tx_update
+        .txs
+        .iter()
+        .map(|tx| tx.compute_txid())
+        .collect();
+    eprintln!("cbf sync present txs={present:?}");
+
+    assert!(
+        present.contains(&probe_txid),
+        "same-block receive {probe_txid} must be applied so we know the \
+         filter matched and the block was loaded; present={present:?}"
+    );
+    assert!(
+        sync_update
+            .tx_update
+            .txs
+            .iter()
+            .any(|tx| tx.output.iter().any(|o| o.script_pubkey == probe_spk)),
+        "applied receive must pay the probed script"
+    );
+
+    assert!(
+        present.contains(&spend_txid),
+        "changeless spend {spend_txid} must be in the CBF update even though \
+         its funding sits before the scan window; present={present:?}"
+    );
+    assert!(
+        tx_exists_on_node(&spend_id),
+        "drain {spend_id} is still on chain after the CBF sync that dropped it"
     );
 }
